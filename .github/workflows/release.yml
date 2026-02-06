@@ -36,13 +36,31 @@ jobs:
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
+      - name: Rename installer
+        run: |
+          $exeFile = Get-ChildItem -Path src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $newName = "tif_downloader_${{ steps.version.outputs.VERSION }}_x64-setup.exe"
+          Rename-Item -Path $exeFile.FullName -NewName $newName
+          echo "SETUP_PATH=src-tauri/target/release/bundle/nsis/$newName" >> $env:GITHUB_OUTPUT
+        id: rename
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           name: 'TIF地图下载工具 v${{ steps.version.outputs.VERSION }}'
           generate_release_notes: false
-          body: '查看 [更新日志](https://github.com/gaopengbin/tif-downloader/blob/tauri-version/docs/tauri-version-changelog.md) 了解详情。'
+          body: |
+            ## 主要更新
+            - Tauri + Rust 重构，安装包仅 ~6MB
+            - 内置 10+ 图源（OSM、ArcGIS、天地图、高德、Google Maps 等）
+            - 支持自定义瓦片图源（添加/编辑/删除）
+            - 多任务并行下载，独立进度显示
+            - 下载历史记录管理
+            - GeoTIFF 导出（EPSG:4326 + LZW 压缩）
+            - GCJ-02 坐标自动校正
+            - 行政区划边界裁剪
+            - 软件内自动检查更新
           files: |
-            src-tauri/target/release/bundle/nsis/*-setup.exe
+            ${{ steps.rename.outputs.SETUP_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

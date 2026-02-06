@@ -547,7 +547,7 @@ function initSettingsPanel() {
 
 // ============ 自动更新 ============
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const GITHUB_REPO = 'gaopengbin/tif-downloader';
 
 function compareVersions(a, b) {
