@@ -50,9 +50,12 @@ pub struct AppSettings {
     /// 自定义图源列表
     #[serde(default)]
     pub custom_sources: Vec<CustomTileSource>,
+    /// 内置图源覆盖配置（用户修改后的内置图源）
+    #[serde(default)]
+    pub source_overrides: Vec<CustomTileSource>,
 }
 
-fn default_proxy_enabled() -> bool { true }
+fn default_proxy_enabled() -> bool { false }
 fn default_proxy_url() -> String { "http://127.0.0.1:10808".to_string() }
 fn default_concurrency() -> u32 { 30 }
 fn default_zoom() -> u8 { 15 }
@@ -70,6 +73,7 @@ impl Default for AppSettings {
             default_format: default_format(),
             default_source: default_source(),
             custom_sources: vec![],
+            source_overrides: vec![],
         }
     }
 }

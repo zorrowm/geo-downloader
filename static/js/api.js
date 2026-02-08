@@ -21,6 +21,13 @@
         return res.json();
     }
 
+    async function getBuiltinSources(tiandituToken = null) {
+        if (checkTauri()) {
+            return await invoke('get_builtin_sources', { tiandituToken });
+        }
+        return {};
+    }
+
     async function estimateDownload(bounds, zoom) {
         if (checkTauri()) {
             return await invoke('estimate_download', { bounds, zoom });
@@ -86,8 +93,32 @@
         return false;
     }
 
+    async function togglePauseTask(taskId) {
+        if (checkTauri()) return await invoke('toggle_pause_task', { taskId });
+        return false;
+    }
+
     async function removeTask(taskId) {
         if (checkTauri()) return await invoke('remove_task', { taskId });
+    }
+
+    async function getTaskLogs(taskId) {
+        if (checkTauri()) return await invoke('get_task_logs', { taskId });
+        return [];
+    }
+
+    async function getResumableTasks() {
+        if (checkTauri()) return await invoke('get_resumable_tasks');
+        return [];
+    }
+
+    async function resumeTask(taskId) {
+        if (checkTauri()) return await invoke('resume_task', { taskId });
+        throw new Error('仅支持桌面版');
+    }
+
+    async function discardResumableTask(taskId) {
+        if (checkTauri()) return await invoke('discard_resumable_task', { taskId });
     }
 
     async function createOsmDownloadTask(bounds, featureType, savePath, proxy, polygon, taskName) {
@@ -233,6 +264,7 @@
         _checkIsTauri: checkTauri,
         isDesktopApp: checkTauri,
         getTileSources,
+        getBuiltinSources,
         estimateDownload,
         downloadTiles,
         getProvinces,
@@ -259,7 +291,12 @@
         createDownloadTask,
         createOsmDownloadTask,
         getActiveTasks,
+        getTaskLogs,
+        getResumableTasks,
+        resumeTask,
+        discardResumableTask,
         cancelTask,
+        togglePauseTask,
         removeTask
     };
 

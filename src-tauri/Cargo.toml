@@ -1,6 +1,6 @@
 [package]
 name = "tif-downloader"
-version = "1.0.0"
+version = "2.0.0"
 description = "TIF地图下载工具 - 地图瓦片下载与拼接"
 authors = ["you"]
 license = "MIT"

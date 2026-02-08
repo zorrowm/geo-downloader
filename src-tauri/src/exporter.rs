@@ -69,84 +69,111 @@ pub fn export_jpeg_bytes(image: &RgbImage, quality: u8) -> Result<Vec<u8>, Strin
     Ok(buffer.into_inner())
 }
 
-/// 写入 GeoTIFF 标签的辅助宏
+/// 写入 GeoTIFF 标签的辅助宏——使用 EPSG:3857 (Web Mercator) 坐标
 macro_rules! write_geotiff_tags {
     ($encoder:expr, $bounds:expr, $width:expr, $height:expr) => {
         if let Some(b) = $bounds {
             use tiff::tags::Tag;
+            use crate::tile::bounds_to_mercator;
             
-            let x_res = (b.east - b.west) / $width as f64;
-            let y_res = (b.north - b.south) / $height as f64;
+            let (west_m, south_m, east_m, north_m) = bounds_to_mercator(b);
+            let x_res = (east_m - west_m) / $width as f64;
+            let y_res = (north_m - south_m) / $height as f64;
             
             let pixel_scale: [f64; 3] = [x_res, y_res, 0.0];
-            let tiepoint: [f64; 6] = [0.0, 0.0, 0.0, b.west, b.north, 0.0];
-            let geo_keys: [u16; 24] = [
-                1, 1, 0, 5,
-                1024, 0, 1, 2,
-                1025, 0, 1, 1,
-                2048, 0, 1, 4326,
-                2054, 0, 1, 9102,
-                2049, 34737, 6, 0,
+            let tiepoint: [f64; 6] = [0.0, 0.0, 0.0, west_m, north_m, 0.0];
+            let geo_keys: [u16; 16] = [
+                1, 1, 0, 3,
+                1024, 0, 1, 1,       // GTModelTypeGeoKey = ModelTypeProjected
+                1025, 0, 1, 1,       // GTRasterTypeGeoKey = RasterPixelIsArea
+                3072, 0, 1, 3857,    // ProjectedCSTypeGeoKey = EPSG:3857
             ];
-            let geo_ascii = "WGS 84|";
             
             $encoder.encoder().write_tag(Tag::Unknown(33550), &pixel_scale[..]).map_err(|e| e.to_string())?;
             $encoder.encoder().write_tag(Tag::Unknown(33922), &tiepoint[..]).map_err(|e| e.to_string())?;
             $encoder.encoder().write_tag(Tag::Unknown(34735), &geo_keys[..]).map_err(|e| e.to_string())?;
-            $encoder.encoder().write_tag(Tag::Unknown(34737), geo_ascii).map_err(|e| e.to_string())?;
         }
     };
 }
 
-/// 导出 RGB 图片为 GeoTIFF 字节 (带地理坐标信息)
+/// 判断是否需要 BigTIFF（图像数据 > 4GB 时使用）
+fn need_bigtiff(width: u32, height: u32, channels: u32) -> bool {
+    (width as u64) * (height as u64) * (channels as u64) > 3_800_000_000
+}
+
+/// 导出 RGB 图片为 GeoTIFF 字节 (带地理坐标信息，超大图像自动使用 BigTIFF)
 pub fn export_tiff_bytes(image: &RgbImage, bounds: Option<&TileBounds>, compress: bool) -> Result<Vec<u8>, String> {
     use tiff::encoder::{TiffEncoder, colortype::RGB8, compression::{Lzw, Uncompressed}};
     
     let (width, height) = image.dimensions();
     let mut buffer = Cursor::new(Vec::new());
+    let big = need_bigtiff(width, height, 3);
     
-    let mut encoder = TiffEncoder::new(&mut buffer)
-        .map_err(|e| format!("TIFF 编码器创建失败: {}", e))?;
+    macro_rules! encode_rgb {
+        ($encoder:expr) => {
+            if compress {
+                let mut img = $encoder
+                    .new_image_with_compression::<RGB8, _>(width, height, Lzw::default())
+                    .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                write_geotiff_tags!(img, bounds, width, height);
+                img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+            } else {
+                let mut img = $encoder
+                    .new_image_with_compression::<RGB8, _>(width, height, Uncompressed::default())
+                    .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                write_geotiff_tags!(img, bounds, width, height);
+                img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+            }
+        };
+    }
     
-    if compress {
-        let mut img_encoder = encoder
-            .new_image_with_compression::<RGB8, _>(width, height, Lzw::default())
-            .map_err(|e| format!("TIFF 导出失败: {}", e))?;
-        write_geotiff_tags!(img_encoder, bounds, width, height);
-        img_encoder.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+    if big {
+        let mut encoder = TiffEncoder::new_big(&mut buffer)
+            .map_err(|e| format!("BigTIFF 编码器创建失败: {}", e))?;
+        encode_rgb!(encoder);
     } else {
-        let mut img_encoder = encoder
-            .new_image_with_compression::<RGB8, _>(width, height, Uncompressed::default())
-            .map_err(|e| format!("TIFF 导出失败: {}", e))?;
-        write_geotiff_tags!(img_encoder, bounds, width, height);
-        img_encoder.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+        let mut encoder = TiffEncoder::new(&mut buffer)
+            .map_err(|e| format!("TIFF 编码器创建失败: {}", e))?;
+        encode_rgb!(encoder);
     }
     
     Ok(buffer.into_inner())
 }
 
-/// 导出 RGBA 图片为 GeoTIFF 字节 (带地理坐标信息)
+/// 导出 RGBA 图片为 GeoTIFF 字节 (带地理坐标信息，超大图像自动使用 BigTIFF)
 pub fn export_rgba_tiff_bytes(image: &RgbaImage, bounds: Option<&TileBounds>, compress: bool) -> Result<Vec<u8>, String> {
     use tiff::encoder::{TiffEncoder, colortype::RGBA8, compression::{Lzw, Uncompressed}};
     
     let (width, height) = image.dimensions();
     let mut buffer = Cursor::new(Vec::new());
+    let big = need_bigtiff(width, height, 4);
     
-    let mut encoder = TiffEncoder::new(&mut buffer)
-        .map_err(|e| format!("TIFF 编码器创建失败: {}", e))?;
+    macro_rules! encode_rgba {
+        ($encoder:expr) => {
+            if compress {
+                let mut img = $encoder
+                    .new_image_with_compression::<RGBA8, _>(width, height, Lzw::default())
+                    .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                write_geotiff_tags!(img, bounds, width, height);
+                img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+            } else {
+                let mut img = $encoder
+                    .new_image_with_compression::<RGBA8, _>(width, height, Uncompressed::default())
+                    .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                write_geotiff_tags!(img, bounds, width, height);
+                img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+            }
+        };
+    }
     
-    if compress {
-        let mut img_encoder = encoder
-            .new_image_with_compression::<RGBA8, _>(width, height, Lzw::default())
-            .map_err(|e| format!("TIFF 导出失败: {}", e))?;
-        write_geotiff_tags!(img_encoder, bounds, width, height);
-        img_encoder.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+    if big {
+        let mut encoder = TiffEncoder::new_big(&mut buffer)
+            .map_err(|e| format!("BigTIFF 编码器创建失败: {}", e))?;
+        encode_rgba!(encoder);
     } else {
-        let mut img_encoder = encoder
-            .new_image_with_compression::<RGBA8, _>(width, height, Uncompressed::default())
-            .map_err(|e| format!("TIFF 导出失败: {}", e))?;
-        write_geotiff_tags!(img_encoder, bounds, width, height);
-        img_encoder.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+        let mut encoder = TiffEncoder::new(&mut buffer)
+            .map_err(|e| format!("TIFF 编码器创建失败: {}", e))?;
+        encode_rgba!(encoder);
     }
     
     Ok(buffer.into_inner())

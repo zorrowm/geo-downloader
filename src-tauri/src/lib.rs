@@ -8,6 +8,7 @@ pub mod admin;
 pub mod history;
 pub mod settings;
 pub mod task;
+pub mod streaming_tiff;
 
 // Tauri commands
 mod commands;
@@ -34,12 +35,18 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_tile_sources,
+            commands::get_builtin_sources,
             commands::estimate_download,
             // 任务管理
             commands::create_download_task,
             commands::get_active_tasks,
+            commands::get_task_logs,
             commands::cancel_task,
+            commands::toggle_pause_task,
             commands::remove_task,
+            commands::get_resumable_tasks,
+            commands::resume_task,
+            commands::discard_resumable_task,
             // 行政区划
             commands::get_provinces,
             commands::get_cities,

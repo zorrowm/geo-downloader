@@ -10,56 +10,51 @@ let currentBounds = null;
 let currentPolygon = null;
 let boundaryLayer = null;
 let mapLayers = {}; // Store layer objects by ID
+let overlayLayers = {}; // 叠加图层（标注等）
 let layerControl = null; // 图层控制器引用
 let activeTaskListeners = {}; // 活动任务的事件监听器 { taskId: unlisten函数 }
+let activeTaskLogListeners = {}; // 任务日志事件监听器
+let taskLogs = {}; // 任务日志数据 { taskId: [log1, log2, ...] }
 
 // ============ 工具函数 ============
 /**
- * 从 GeoJSON 中提取多边形坐标
- * 支持 Polygon 和 MultiPolygon，返回最大的多边形
+ * 从 GeoJSON 中提取所有多边形坐标
+ * 支持 Polygon、MultiPolygon、FeatureCollection（多个 Feature）
+ * 返回 [[{lat,lng},...], [{lat,lng},...]] 格式（多个多边形外环）
  */
 function extractPolygonFromGeoJSON(geojson) {
     if (!geojson) return null;
     
-    let coordinates = null;
+    const allRings = [];
     
-    // 处理 FeatureCollection
-    if (geojson.type === 'FeatureCollection' && geojson.features && geojson.features.length > 0) {
-        const geometry = geojson.features[0].geometry;
+    function extractFromGeometry(geometry) {
+        if (!geometry) return;
         if (geometry.type === 'Polygon') {
-            coordinates = geometry.coordinates[0]; // 外环
+            allRings.push(geometry.coordinates[0]); // 外环
         } else if (geometry.type === 'MultiPolygon') {
-            // 找最大的多边形（通常是主要边界）
-            let maxLen = 0;
             for (const poly of geometry.coordinates) {
-                if (poly[0].length > maxLen) {
-                    maxLen = poly[0].length;
-                    coordinates = poly[0];
-                }
-            }
-        }
-    } else if (geojson.type === 'Feature') {
-        const geometry = geojson.geometry;
-        if (geometry.type === 'Polygon') {
-            coordinates = geometry.coordinates[0];
-        } else if (geometry.type === 'MultiPolygon') {
-            let maxLen = 0;
-            for (const poly of geometry.coordinates) {
-                if (poly[0].length > maxLen) {
-                    maxLen = poly[0].length;
-                    coordinates = poly[0];
-                }
+                allRings.push(poly[0]); // 每个子多边形的外环
             }
         }
     }
     
-    if (!coordinates) return null;
+    if (geojson.type === 'FeatureCollection' && geojson.features) {
+        for (const feature of geojson.features) {
+            extractFromGeometry(feature.geometry);
+        }
+    } else if (geojson.type === 'Feature') {
+        extractFromGeometry(geojson.geometry);
+    } else {
+        // 裸 Geometry
+        extractFromGeometry(geojson);
+    }
     
-    // GeoJSON 坐标是 [lng, lat]，转换为 {lat, lng} 格式
-    return coordinates.map(coord => ({
-        lat: coord[1],
-        lng: coord[0]
-    }));
+    if (allRings.length === 0) return null;
+    
+    // GeoJSON 坐标是 [lng, lat]，转换为 [{lat, lng},...] 格式
+    return allRings.map(ring =>
+        ring.map(coord => ({ lat: coord[1], lng: coord[0] }))
+    );
 }
 
 // ============ 初始化 ============
@@ -76,7 +71,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     initSettingsPanel();
     initHistoryListEvents();
     initTaskListEvents();
+    initResumableTaskEvents();
     loadProvinces();
+    loadResumableTasks();
     loadDownloadHistory();
     checkForUpdates(true);
 });
@@ -142,7 +139,7 @@ async function initSettings() {
         console.error('Failed to load settings:', error);
         appSettings = {
             tianditu_token: null,
-            proxy_enabled: true,
+            proxy_enabled: false,
             proxy_url: 'http://127.0.0.1:10808',
             default_concurrency: 30,
             default_zoom: 15
@@ -185,11 +182,20 @@ function getTianDiTuToken() {
 }
 
 async function refreshMapLayers() {
-    // 记录当前激活的图层
+    // 记录当前激活的基础图层
     let activeLayerKey = null;
     for (const [key, layer] of Object.entries(mapLayers)) {
         if (map.hasLayer(layer)) {
             activeLayerKey = key;
+            map.removeLayer(layer);
+        }
+    }
+    
+    // 记录当前激活的叠加图层
+    const activeOverlays = [];
+    for (const [key, layer] of Object.entries(overlayLayers)) {
+        if (map.hasLayer(layer)) {
+            activeOverlays.push(key);
             map.removeLayer(layer);
         }
     }
@@ -202,11 +208,12 @@ async function refreshMapLayers() {
     
     // 清空旧图层引用
     mapLayers = {};
+    overlayLayers = {};
     
     // 重新加载图源
     await loadMapSources();
     
-    // 恢复之前激活的图层（如果仍存在）
+    // 恢复之前激活的基础图层
     if (activeLayerKey && mapLayers[activeLayerKey]) {
         for (const [key, layer] of Object.entries(mapLayers)) {
             if (map.hasLayer(layer) && key !== activeLayerKey) {
@@ -215,6 +222,13 @@ async function refreshMapLayers() {
         }
         if (!map.hasLayer(mapLayers[activeLayerKey])) {
             mapLayers[activeLayerKey].addTo(map);
+        }
+    }
+    
+    // 恢复之前激活的叠加图层
+    for (const key of activeOverlays) {
+        if (overlayLayers[key]) {
+            overlayLayers[key].addTo(map);
         }
     }
 }
@@ -241,6 +255,20 @@ async function initMap() {
         setTimeout(() => map.invalidateSize(), delay);
     });
     
+    // 状态栏：显示鼠标经纬度和缩放级别
+    const statusCoords = document.getElementById('status-coords');
+    const statusZoom = document.getElementById('status-zoom');
+    statusZoom.textContent = `缩放: ${map.getZoom()}`;
+    map.on('mousemove', function(e) {
+        statusCoords.textContent = `经度: ${e.latlng.lng.toFixed(6)}  纬度: ${e.latlng.lat.toFixed(6)}`;
+    });
+    map.on('mouseout', function() {
+        statusCoords.textContent = '经度: --  纬度: --';
+    });
+    map.on('zoomend', function() {
+        statusZoom.textContent = `缩放: ${map.getZoom()}`;
+    });
+
     // 窗口大小改变时刷新
     window.addEventListener('resize', () => map.invalidateSize());
     
@@ -298,8 +326,25 @@ async function loadMapSources() {
             firstLayer.addTo(map);
         }
         
+        // 创建天地图标注叠加图层
+        const token = customToken || '436ce7e50d27eede2f2929307e6b33c0';
+        const tdtSubdomains = ['0','1','2','3','4','5','6','7'];
+        const overlayMaps = {};
+        
+        const ciaLayer = L.tileLayer(
+            `https://t{s}.tianditu.gov.cn/cia_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cia&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${token}`,
+            { subdomains: tdtSubdomains, maxZoom: 18, transparent: true }
+        );
+        const cvaLayer = L.tileLayer(
+            `https://t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${token}`,
+            { subdomains: tdtSubdomains, maxZoom: 18, transparent: true }
+        );
+        overlayLayers = { tianditu_cia: ciaLayer, tianditu_cva: cvaLayer };
+        overlayMaps['天地图 影像标注'] = ciaLayer;
+        overlayMaps['天地图 矢量标注'] = cvaLayer;
+        
         if (layerControl) layerControl.remove();
-        layerControl = L.control.layers(sortedBaseMaps).addTo(map);
+        layerControl = L.control.layers(sortedBaseMaps, overlayMaps).addTo(map);
         syncDropdownWithMap();
         
     } catch (error) {
@@ -433,7 +478,7 @@ function initDrawControls() {
             currentPolygon = null;
         } else if (e.layerType === 'polygon') {
             const latlngs = e.layer.getLatLngs()[0];
-            currentPolygon = latlngs.map(ll => ({ lat: ll.lat, lng: ll.lng }));
+            currentPolygon = [latlngs.map(ll => ({ lat: ll.lat, lng: ll.lng }))];
             // 计算边界框
             const bounds = e.layer.getBounds();
             currentBounds = {
@@ -485,6 +530,7 @@ function initTabNavigation() {
             // 切换到下载中心时刷新任务和历史
             if (tabId === 'history') {
                 refreshActiveTasks();
+                loadResumableTasks();
                 loadDownloadHistory();
             }
         });
@@ -531,24 +577,53 @@ function initSettingsPanel() {
         clearHistoryBtn.addEventListener('click', clearAllHistory);
     }
     
-    // 自定义图源
-    const addSourceBtn = document.getElementById('add-custom-source-btn');
-    if (addSourceBtn) {
-        addSourceBtn.addEventListener('click', addOrUpdateCustomSource);
-    }
+    // 图源管理
+    initSourceDialog();
+    initBuiltinSourcesList();
     initCustomSourcesList();
+    loadBuiltinDefaults().then(() => renderBuiltinSourcesList());
+    const addSourceBtn = document.getElementById('add-source-btn');
+    if (addSourceBtn) {
+        addSourceBtn.addEventListener('click', () => {
+            editingSourceId = null;
+            editingBuiltin = false;
+            openSourceDialog('添加自定义图源', null);
+        });
+    }
+    
+    // 版本号显示
+    const versionEl = document.getElementById('app-version');
+    if (versionEl) versionEl.textContent = APP_VERSION;
     
     // 检查更新按钮
     const checkUpdateBtn = document.getElementById('check-update-btn');
     if (checkUpdateBtn) {
         checkUpdateBtn.addEventListener('click', () => checkForUpdates(false));
     }
+    
+    // 更新对话框按钮
+    const updateLaterBtn = document.getElementById('update-later-btn');
+    if (updateLaterBtn) updateLaterBtn.addEventListener('click', closeUpdateDialog);
+    const updateNowBtn = document.getElementById('update-now-btn');
+    if (updateNowBtn) updateNowBtn.addEventListener('click', doUpdateNow);
 }
 
 // ============ 自动更新 ============
 
-const APP_VERSION = '1.0.1';
+let APP_VERSION = '2.0.0';
 const GITHUB_REPO = 'gaopengbin/tif-downloader';
+
+// 从 Tauri 配置动态读取版本号，保持单一数据源 (tauri.conf.json)
+async function initAppVersion() {
+    try {
+        if (window.__TAURI__?.app?.getVersion) {
+            APP_VERSION = await window.__TAURI__.app.getVersion();
+            const el = document.getElementById('app-version');
+            if (el) el.textContent = APP_VERSION;
+        }
+    } catch (_) {}
+}
+initAppVersion();
 
 function compareVersions(a, b) {
     const pa = a.split('.').map(Number);
@@ -559,6 +634,96 @@ function compareVersions(a, b) {
         if (na < nb) return -1;
     }
     return 0;
+}
+
+function extractKeyUpdates(body) {
+    if (!body) return [];
+    const updates = [];
+    for (const line of body.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
+            let content = trimmed.slice(1).trim();
+            const boldMatch = content.match(/\*\*(.+?)\*\*/);
+            if (boldMatch) content = boldMatch[1];
+            if (content.length > 0 && content.length < 60) updates.push(content);
+        }
+    }
+    return updates.slice(0, 8);
+}
+
+let _updateDownloadUrl = null;
+let _updateVersion = null;
+let _updateUnlisten = null;
+
+function showUpdateDialog(latestVersion, downloadUrl, releaseUrl, body) {
+    document.getElementById('update-current-ver').textContent = 'v' + APP_VERSION;
+    document.getElementById('update-new-ver').textContent = 'v' + latestVersion;
+    
+    // 更新内容
+    const notes = extractKeyUpdates(body);
+    const notesEl = document.getElementById('update-notes');
+    const listEl = document.getElementById('update-notes-list');
+    if (notes.length > 0) {
+        listEl.innerHTML = notes.map(n => `<li>${n}</li>`).join('');
+        notesEl.style.display = '';
+    } else {
+        notesEl.style.display = 'none';
+    }
+    
+    // 重置进度
+    document.getElementById('update-progress').style.display = 'none';
+    document.getElementById('update-dialog-footer').style.display = '';
+    
+    _updateDownloadUrl = downloadUrl;
+    _updateVersion = latestVersion;
+    
+    const nowBtn = document.getElementById('update-now-btn');
+    if (downloadUrl) {
+        nowBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>立即更新';
+    } else {
+        nowBtn.innerHTML = '前往下载';
+        _updateDownloadUrl = releaseUrl;
+    }
+    
+    document.getElementById('update-dialog').style.display = '';
+}
+
+function closeUpdateDialog() {
+    document.getElementById('update-dialog').style.display = 'none';
+    if (_updateUnlisten) { _updateUnlisten(); _updateUnlisten = null; }
+}
+
+async function doUpdateNow() {
+    if (!_updateDownloadUrl) return;
+    
+    // 如果没有直接下载链接，打开网页
+    if (!_updateDownloadUrl.endsWith('.exe')) {
+        window.open(_updateDownloadUrl, '_blank');
+        closeUpdateDialog();
+        return;
+    }
+    
+    // 显示进度条，隐藏按钮
+    document.getElementById('update-progress').style.display = '';
+    document.getElementById('update-dialog-footer').style.display = 'none';
+    
+    _updateUnlisten = await window.__TAURI__.event.listen('update-download-progress', (e) => {
+        document.getElementById('update-progress-percent').textContent = e.payload + '%';
+        document.getElementById('update-progress-fill').style.width = e.payload + '%';
+    });
+    
+    try {
+        await window.__TAURI__.core.invoke('download_and_install_update', {
+            url: _updateDownloadUrl,
+            version: _updateVersion
+        });
+    } catch (error) {
+        document.getElementById('update-progress').style.display = 'none';
+        document.getElementById('update-dialog-footer').style.display = '';
+        const statusEl = document.getElementById('update-status');
+        if (statusEl) statusEl.textContent = '下载更新失败: ' + (error.message || error);
+        closeUpdateDialog();
+    }
 }
 
 async function checkForUpdates(silent = false) {
@@ -580,29 +745,8 @@ async function checkForUpdates(silent = false) {
         if (compareVersions(latestVersion, APP_VERSION) > 0) {
             const assets = data.assets || [];
             const setupAsset = assets.find(a => a.name.endsWith('_setup.exe') || a.name.endsWith('-setup.exe'));
-            
-            if (confirm(`发现新版本 v${latestVersion}，是否立即更新？`)) {
-                if (setupAsset?.browser_download_url) {
-                    if (statusEl) statusEl.textContent = '正在下载更新...';
-                    // 监听下载进度
-                    const unlisten = await window.__TAURI__.event.listen('update-download-progress', (e) => {
-                        if (statusEl) statusEl.textContent = `下载中... ${e.payload}%`;
-                    });
-                    try {
-                        await window.__TAURI__.core.invoke('download_and_install_update', {
-                            url: setupAsset.browser_download_url,
-                            version: latestVersion
-                        });
-                    } finally {
-                        unlisten();
-                    }
-                } else {
-                    // 没找到安装包，打开 Release 页面
-                    window.open(data.html_url, '_blank');
-                }
-            } else {
-                if (statusEl) statusEl.textContent = `v${latestVersion} 可用，已跳过`;
-            }
+            showUpdateDialog(latestVersion, setupAsset?.browser_download_url, data.html_url, data.body);
+            if (statusEl) statusEl.textContent = '';
         } else {
             if (!silent && statusEl) statusEl.textContent = '✅ 已是最新版本';
         }
@@ -613,78 +757,170 @@ async function checkForUpdates(silent = false) {
     if (btn) btn.disabled = false;
 }
 
-// ============ 自定义图源管理 ============
+// ============ 图源管理 ============
 let editingSourceId = null; // 当前编辑的图源 ID
+let editingBuiltin = false; // 是否正在编辑内置图源
+let builtinDefaults = {};   // 内置图源原始默认值
 
-async function addOrUpdateCustomSource() {
-    const nameInput = document.getElementById('custom-source-name');
-    const urlInput = document.getElementById('custom-source-url');
-    const subdomainsInput = document.getElementById('custom-source-subdomains');
-    const maxZoomInput = document.getElementById('custom-source-maxzoom');
-    
-    const name = nameInput.value.trim();
-    const url = urlInput.value.trim();
-    if (!name || !url) {
-        alert('请填写图源名称和 URL 模板');
-        return;
+async function loadBuiltinDefaults() {
+    try {
+        builtinDefaults = await TifApi.getBuiltinSources(getTianDiTuToken());
+    } catch (e) {
+        console.error('Failed to load builtin sources:', e);
     }
-    
-    if (!appSettings.custom_sources) appSettings.custom_sources = [];
-    
-    if (editingSourceId) {
-        // 更新已有图源
+}
+
+// === 图源编辑弹框 ===
+
+function openSourceDialog(title, source) {
+    document.getElementById('source-dialog-title').textContent = title;
+    document.getElementById('source-dlg-name').value = source?.name || '';
+    document.getElementById('source-dlg-url').value = source?.url || '';
+    document.getElementById('source-dlg-subdomains').value =
+        Array.isArray(source?.subdomains) ? source.subdomains.join(',') : (source?.subdomains || '');
+    document.getElementById('source-dlg-maxzoom').value = source?.max_zoom || 18;
+    document.getElementById('source-dialog').style.display = '';
+}
+
+function closeSourceDialog() {
+    document.getElementById('source-dialog').style.display = 'none';
+    editingSourceId = null;
+    editingBuiltin = false;
+}
+
+function collectDialogSource() {
+    const name = document.getElementById('source-dlg-name').value.trim();
+    const url = document.getElementById('source-dlg-url').value.trim();
+    if (!name || !url) { alert('请填写图源名称和 URL 模板'); return null; }
+    return {
+        name, url,
+        subdomains: document.getElementById('source-dlg-subdomains').value.trim(),
+        max_zoom: parseInt(document.getElementById('source-dlg-maxzoom').value) || 18
+    };
+}
+
+async function confirmSourceDialog() {
+    const data = collectDialogSource();
+    if (!data) return;
+
+    if (editingBuiltin && editingSourceId) {
+        if (!appSettings.source_overrides) appSettings.source_overrides = [];
+        const idx = appSettings.source_overrides.findIndex(s => s.id === editingSourceId);
+        const entry = { id: editingSourceId, ...data };
+        if (idx >= 0) { appSettings.source_overrides[idx] = entry; }
+        else { appSettings.source_overrides.push(entry); }
+    } else if (editingSourceId) {
+        if (!appSettings.custom_sources) appSettings.custom_sources = [];
         const idx = appSettings.custom_sources.findIndex(s => s.id === editingSourceId);
         if (idx >= 0) {
-            appSettings.custom_sources[idx] = {
-                id: editingSourceId,
-                name, url,
-                subdomains: subdomainsInput.value.trim(),
-                max_zoom: parseInt(maxZoomInput.value) || 18
-            };
+            appSettings.custom_sources[idx] = { id: editingSourceId, ...data };
         }
     } else {
-        // 新增图源
-        appSettings.custom_sources.push({
-            id: 'custom_' + Date.now(),
-            name, url,
-            subdomains: subdomainsInput.value.trim(),
-            max_zoom: parseInt(maxZoomInput.value) || 18
-        });
+        if (!appSettings.custom_sources) appSettings.custom_sources = [];
+        appSettings.custom_sources.push({ id: 'custom_' + Date.now(), ...data });
     }
-    
+
     try {
         await TifApi.saveSettings(appSettings);
-        clearSourceForm();
+        closeSourceDialog();
+        renderBuiltinSourcesList();
         renderCustomSourcesList();
         refreshMapLayers();
     } catch (error) {
-        if (!editingSourceId) appSettings.custom_sources.pop();
         alert('保存失败: ' + error.message);
     }
 }
 
+function initSourceDialog() {
+    document.getElementById('source-dialog-close').addEventListener('click', closeSourceDialog);
+    document.getElementById('source-dialog-cancel').addEventListener('click', closeSourceDialog);
+    document.getElementById('source-dialog-confirm').addEventListener('click', confirmSourceDialog);
+    // 点击遮罩层关闭
+    document.getElementById('source-dialog').addEventListener('click', (e) => {
+        if (e.target.id === 'source-dialog') closeSourceDialog();
+    });
+}
+
+// === 内置图源 ===
+
+function editBuiltinSource(id) {
+    const ovr = appSettings?.source_overrides?.find(s => s.id === id);
+    const def = builtinDefaults[id];
+    const source = ovr || def;
+    if (!source) return;
+    editingSourceId = id;
+    editingBuiltin = true;
+    openSourceDialog(`编辑: ${source.name}`, source);
+}
+
+async function resetBuiltinSource(id) {
+    if (!appSettings.source_overrides) return;
+    appSettings.source_overrides = appSettings.source_overrides.filter(s => s.id !== id);
+    try {
+        await TifApi.saveSettings(appSettings);
+        renderBuiltinSourcesList();
+        refreshMapLayers();
+    } catch (error) {
+        alert('重置失败: ' + error.message);
+    }
+}
+
+function renderBuiltinSourcesList() {
+    const listEl = document.getElementById('builtin-sources-list');
+    if (!listEl) return;
+    const ids = Object.keys(builtinDefaults).sort((a, b) => {
+        return (builtinDefaults[a].name || a).localeCompare(builtinDefaults[b].name || b);
+    });
+    if (ids.length === 0) {
+        listEl.innerHTML = '<p class="hint">加载中...</p>';
+        return;
+    }
+    const overrideIds = new Set((appSettings?.source_overrides || []).map(s => s.id));
+    listEl.innerHTML = ids.map(id => {
+        const isModified = overrideIds.has(id);
+        const src = isModified
+            ? appSettings.source_overrides.find(s => s.id === id)
+            : builtinDefaults[id];
+        const name = src.name || id;
+        const zoom = src.max_zoom || builtinDefaults[id]?.max_zoom || '?';
+        const tag = isModified ? '<span class="source-tag source-tag-modified">已修改</span>' : '';
+        return `<div class="source-item">
+            <div class="source-item-info">
+                <span class="source-item-name">${name}</span>
+                <span class="badge badge-secondary" style="font-size:10px;padding:1px 5px">z${zoom}</span>
+                ${tag}
+            </div>
+            <div class="source-item-actions">
+                <button class="btn-icon btn-edit-builtin" data-id="${id}" title="编辑">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+                ${isModified ? `<button class="btn-icon btn-reset-builtin" data-id="${id}" title="重置为默认">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg>
+                </button>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function initBuiltinSourcesList() {
+    const listEl = document.getElementById('builtin-sources-list');
+    if (!listEl) return;
+    listEl.addEventListener('click', (e) => {
+        const editBtn = e.target.closest('.btn-edit-builtin');
+        if (editBtn) { editBuiltinSource(editBtn.dataset.id); return; }
+        const resetBtn = e.target.closest('.btn-reset-builtin');
+        if (resetBtn) resetBuiltinSource(resetBtn.dataset.id);
+    });
+}
+
+// === 自定义图源 ===
+
 function editCustomSource(id) {
     const source = appSettings?.custom_sources?.find(s => s.id === id);
     if (!source) return;
-    
-    document.getElementById('custom-source-name').value = source.name;
-    document.getElementById('custom-source-url').value = source.url;
-    document.getElementById('custom-source-subdomains').value = source.subdomains || '';
-    document.getElementById('custom-source-maxzoom').value = source.max_zoom || 18;
-    
     editingSourceId = id;
-    const btn = document.getElementById('add-custom-source-btn');
-    btn.innerHTML = '<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> 更新图源';
-}
-
-function clearSourceForm() {
-    document.getElementById('custom-source-name').value = '';
-    document.getElementById('custom-source-url').value = '';
-    document.getElementById('custom-source-subdomains').value = '';
-    document.getElementById('custom-source-maxzoom').value = '18';
-    editingSourceId = null;
-    const btn = document.getElementById('add-custom-source-btn');
-    btn.innerHTML = '<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> 添加图源';
+    editingBuiltin = false;
+    openSourceDialog(`编辑: ${source.name}`, source);
 }
 
 async function removeCustomSource(id) {
@@ -699,6 +935,32 @@ async function removeCustomSource(id) {
     }
 }
 
+function renderCustomSourcesList() {
+    const listEl = document.getElementById('custom-sources-list');
+    if (!listEl) return;
+    const sources = appSettings?.custom_sources || [];
+    if (sources.length === 0) {
+        listEl.innerHTML = '<p class="hint">暂无自定义图源</p>';
+        return;
+    }
+    listEl.innerHTML = sources.map(s => `
+        <div class="source-item">
+            <div class="source-item-info">
+                <span class="source-item-name">${s.name}</span>
+                <span class="badge badge-secondary" style="font-size:10px;padding:1px 5px">z${s.max_zoom}</span>
+            </div>
+            <div class="source-item-actions">
+                <button class="btn-icon btn-edit-source" data-id="${s.id}" title="编辑">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+                <button class="btn-icon btn-delete-source" data-id="${s.id}" title="删除">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                </button>
+            </div>
+        </div>
+    `).join('');
+}
+
 function initCustomSourcesList() {
     renderCustomSourcesList();
     const listEl = document.getElementById('custom-sources-list');
@@ -709,28 +971,6 @@ function initCustomSourcesList() {
         const editBtn = e.target.closest('.btn-edit-source');
         if (editBtn) editCustomSource(editBtn.dataset.id);
     });
-}
-
-function renderCustomSourcesList() {
-    const listEl = document.getElementById('custom-sources-list');
-    if (!listEl) return;
-    const sources = appSettings?.custom_sources || [];
-    if (sources.length === 0) {
-        listEl.innerHTML = '<p class="hint" style="margin-top:8px">暂无自定义图源</p>';
-        return;
-    }
-    listEl.innerHTML = sources.map(s => `
-        <div class="custom-source-item" style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border-color,#e2e8f0);font-size:0.8rem">
-            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">
-                <strong>${s.name}</strong>
-                <span style="color:#888;margin-left:4px">z${s.max_zoom}</span>
-            </div>
-            <div style="flex-shrink:0;margin-left:8px;display:flex;gap:4px">
-                <button class="btn btn-outline btn-sm btn-edit-source" data-id="${s.id}">编辑</button>
-                <button class="btn btn-outline btn-sm btn-delete-source" data-id="${s.id}">删除</button>
-            </div>
-        </div>
-    `).join('');
 }
 
 async function saveAllSettings() {
@@ -744,7 +984,8 @@ async function saveAllSettings() {
         default_zoom: parseInt(document.getElementById('default-zoom').value),
         default_format: 'geotiff',
         default_source: 'osm',
-        custom_sources: appSettings?.custom_sources || []
+        custom_sources: appSettings?.custom_sources || [],
+        source_overrides: appSettings?.source_overrides || []
     };
     
     try {
@@ -991,6 +1232,7 @@ async function loadProvinces() {
         
         const select = document.getElementById('province-select');
         select.innerHTML = '<option value="">请选择省份</option>';
+        select.innerHTML += '<option value="100000">全国</option>';
         provinces.forEach(p => {
             select.innerHTML += `<option value="${p.code}">${p.name}</option>`;
         });
@@ -1354,8 +1596,10 @@ async function downloadOSMData() {
             const proxy = useProxy && proxyUrl ? proxyUrl : null;
             
             const taskName = `OSM ${featureLabel}`;
+            // OSM Overpass 只需第一个多边形环作为边界过滤
+            const osmPolygon = currentPolygon ? currentPolygon[0] : null;
             const result = await TifApi.createOsmDownloadTask(
-                currentBounds, featureType, savePath, proxy, currentPolygon, taskName
+                currentBounds, featureType, savePath, proxy, osmPolygon, taskName
             );
             
             addTaskCardToUI(result.task_id, taskName, 'OSM Overpass', 0, 0);
@@ -1711,9 +1955,9 @@ function setBoundaryFromGeoJSON(geojson, filename) {
     };
     
     // 尝试提取多边形用于裁剪
-    const polygon = extractPolygonFromGeoJSON(geojson);
-    if (polygon && polygon.length >= 3) {
-        currentPolygon = polygon;
+    const polygons = extractPolygonFromGeoJSON(geojson);
+    if (polygons && polygons.length > 0 && polygons[0].length >= 3) {
+        currentPolygon = polygons;
     } else {
         currentPolygon = null;
     }
@@ -1958,6 +2202,7 @@ function addTaskCardToUI(taskId, name, sourceName, zoom, tileCount) {
     const emptyState = listEl.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
     
+    taskLogs[taskId] = [];
     const html = `
         <div class="task-card" data-task-id="${taskId}" data-status="pending">
             <div class="task-card-header">
@@ -1974,8 +2219,11 @@ function addTaskCardToUI(taskId, name, sourceName, zoom, tileCount) {
             </div>
             <div class="task-card-message">准备下载...</div>
             <div class="task-card-actions">
+                <button class="btn btn-outline btn-sm btn-toggle-log" title="查看日志">日志</button>
+                <button class="btn btn-outline btn-sm btn-pause-task">暂停</button>
                 <button class="btn btn-outline btn-sm btn-cancel-task">取消</button>
             </div>
+            <div class="task-log-panel" style="display:none"></div>
         </div>
     `;
     listEl.insertAdjacentHTML('afterbegin', html);
@@ -1988,6 +2236,12 @@ async function startTaskListener(taskId) {
         updateTaskCard(e.payload);
     });
     activeTaskListeners[taskId] = unlisten;
+    
+    // 同时监听日志事件
+    const unlistenLog = await window.__TAURI__.event.listen(`task-log-${taskId}`, (e) => {
+        appendTaskLog(taskId, e.payload);
+    });
+    activeTaskLogListeners[taskId] = unlistenLog;
 }
 
 function stopTaskListener(taskId) {
@@ -1995,11 +2249,70 @@ function stopTaskListener(taskId) {
         activeTaskListeners[taskId]();
         delete activeTaskListeners[taskId];
     }
+    if (activeTaskLogListeners[taskId]) {
+        activeTaskLogListeners[taskId]();
+        delete activeTaskLogListeners[taskId];
+    }
+}
+
+function appendTaskLog(taskId, log) {
+    if (!taskLogs[taskId]) taskLogs[taskId] = [];
+    taskLogs[taskId].push(log);
+    // 限制内存中最多500条
+    if (taskLogs[taskId].length > 500) {
+        taskLogs[taskId] = taskLogs[taskId].slice(-500);
+    }
+    // 如果日志面板已展开，实时更新
+    const card = document.querySelector(`.task-card[data-task-id="${taskId}"]`);
+    if (!card) return;
+    const panel = card.querySelector('.task-log-panel');
+    if (panel && panel.style.display !== 'none') {
+        renderTaskLogPanel(taskId, panel);
+    }
+}
+
+function renderTaskLogPanel(taskId, panel) {
+    const logs = taskLogs[taskId] || [];
+    panel.innerHTML = logs.map(l => {
+        const cls = l.level === 'ERROR' ? 'log-error' : l.level === 'WARN' ? 'log-warn' : '';
+        return `<div class="task-log-line ${cls}"><span class="log-time">${l.timestamp}</span> ${escapeHtml(l.message)}</div>`;
+    }).join('');
+    // 自动滚动到底部
+    panel.scrollTop = panel.scrollHeight;
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+async function toggleTaskLog(taskId) {
+    const card = document.querySelector(`.task-card[data-task-id="${taskId}"]`);
+    if (!card) return;
+    const panel = card.querySelector('.task-log-panel');
+    if (!panel) return;
+    
+    if (panel.style.display === 'none') {
+        // 展开：先加载已有日志
+        if (!taskLogs[taskId] || taskLogs[taskId].length === 0) {
+            try {
+                taskLogs[taskId] = await TifApi.getTaskLogs(taskId);
+            } catch (e) {
+                taskLogs[taskId] = [];
+            }
+        }
+        panel.style.display = 'block';
+        renderTaskLogPanel(taskId, panel);
+    } else {
+        panel.style.display = 'none';
+    }
 }
 
 const TASK_STATUS_TEXT = {
     'pending': '等待中',
     'downloading': '下载中',
+    'paused': '已暂停',
     'merging': '拼接中',
     'exporting': '导出中',
     'completed': '已完成',
@@ -2014,14 +2327,27 @@ function updateTaskCard(payload) {
     
     card.dataset.status = status;
     
+    // paused/resumed 事件的 progress=0 表示保留当前进度
     const fill = card.querySelector('.task-progress-fill');
-    if (fill) fill.style.width = `${progress}%`;
+    if (fill && progress > 0) fill.style.width = `${progress}%`;
     
     const msgEl = card.querySelector('.task-card-message');
     if (msgEl && message) msgEl.textContent = message;
     
     const statusEl = card.querySelector('.task-card-status');
     if (statusEl) statusEl.textContent = TASK_STATUS_TEXT[status] || status;
+    
+    // 更新暂停按钮
+    const pauseBtn = card.querySelector('.btn-pause-task');
+    if (pauseBtn) {
+        if (status === 'paused') {
+            pauseBtn.textContent = '继续';
+        } else if (status === 'downloading') {
+            pauseBtn.textContent = '暂停';
+        } else if (['merging', 'exporting', 'completed', 'failed', 'cancelled'].includes(status)) {
+            pauseBtn.style.display = 'none';
+        }
+    }
     
     // 完成/失败/取消时处理
     if (['completed', 'failed', 'cancelled'].includes(status)) {
@@ -2070,6 +2396,7 @@ async function refreshActiveTasks() {
 
 function renderTaskCardFromInfo(task) {
     const isActive = !['completed', 'failed', 'cancelled'].includes(task.status);
+    const isPaused = task.status === 'paused';
     return `
         <div class="task-card" data-task-id="${task.id}" data-status="${task.status}">
             <div class="task-card-header">
@@ -2086,13 +2413,94 @@ function renderTaskCardFromInfo(task) {
             </div>
             <div class="task-card-message">${task.message || ''}</div>
             <div class="task-card-actions">
+                <button class="btn btn-outline btn-sm btn-toggle-log" title="查看日志">日志</button>
                 ${isActive
-                    ? '<button class="btn btn-outline btn-sm btn-cancel-task">取消</button>'
+                    ? `<button class="btn btn-outline btn-sm btn-pause-task">${isPaused ? '继续' : '暂停'}</button>
+                       <button class="btn btn-outline btn-sm btn-cancel-task">取消</button>`
                     : '<button class="btn btn-outline btn-sm btn-remove-task">移除</button>'
                 }
             </div>
+            <div class="task-log-panel" style="display:none"></div>
         </div>
     `;
+}
+
+// ============ 断点续传 ============
+
+async function loadResumableTasks() {
+    try {
+        const tasks = await TifApi.getResumableTasks();
+        const section = document.getElementById('resumable-tasks-section');
+        const listEl = document.getElementById('resumable-tasks-list');
+        if (!section || !listEl) return;
+        
+        if (!tasks || tasks.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+        
+        section.style.display = 'block';
+        listEl.innerHTML = tasks.map(t => {
+            const req = t.request;
+            return `
+                <div class="task-card resumable" data-task-id="${t.task_id}">
+                    <div class="task-card-header">
+                        <span class="task-card-title">${t.task_name}</span>
+                        <span class="task-card-status" style="color:var(--warning)">已中断</span>
+                    </div>
+                    <div class="task-card-meta">
+                        <span>${t.source_name}</span>
+                        <span>z${req.zoom}</span>
+                        <span>${t.tile_count.toLocaleString()} 瓦片</span>
+                        <span>${t.created_at}</span>
+                    </div>
+                    <div class="task-card-actions">
+                        <button class="btn btn-primary btn-sm btn-resume-task">继续下载</button>
+                        <button class="btn btn-outline btn-sm btn-discard-task">丢弃</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (error) {
+        console.error('Failed to load resumable tasks:', error);
+    }
+}
+
+function initResumableTaskEvents() {
+    const listEl = document.getElementById('resumable-tasks-list');
+    if (!listEl) return;
+    
+    listEl.addEventListener('click', async (e) => {
+        const card = e.target.closest('.task-card');
+        if (!card) return;
+        const taskId = card.dataset.taskId;
+        
+        if (e.target.closest('.btn-resume-task')) {
+            try {
+                const result = await TifApi.resumeTask(taskId);
+                // 移除恢复卡片，添加活动任务卡片
+                card.remove();
+                const section = document.getElementById('resumable-tasks-section');
+                const list = document.getElementById('resumable-tasks-list');
+                if (section && list && !list.querySelector('.task-card')) {
+                    section.style.display = 'none';
+                }
+                addTaskCardToUI(result.task_id, '恢复: ' + card.querySelector('.task-card-title').textContent, '', 0, result.tile_count);
+                startTaskListener(result.task_id);
+            } catch (error) {
+                alert('恢复失败: ' + error);
+            }
+        } else if (e.target.closest('.btn-discard-task')) {
+            if (!confirm('确定丢弃此任务？已下载的瓦片缓存将被删除。')) return;
+            await TifApi.discardResumableTask(taskId);
+            card.remove();
+            const section = document.getElementById('resumable-tasks-section');
+            const list = document.getElementById('resumable-tasks-list');
+            if (section && list && !list.querySelector('.task-card')) {
+                section.style.display = 'none';
+            }
+        }
+    });
 }
 
 function removeTaskCardFromUI(taskId) {
@@ -2114,10 +2522,15 @@ function initTaskListEvents() {
         if (!card) return;
         const taskId = card.dataset.taskId;
         
-        if (e.target.closest('.btn-cancel-task')) {
+        if (e.target.closest('.btn-toggle-log')) {
+            toggleTaskLog(taskId);
+        } else if (e.target.closest('.btn-pause-task')) {
+            await TifApi.togglePauseTask(taskId);
+        } else if (e.target.closest('.btn-cancel-task')) {
             await TifApi.cancelTask(taskId);
         } else if (e.target.closest('.btn-remove-task')) {
             await TifApi.removeTask(taskId);
+            delete taskLogs[taskId];
             card.remove();
             if (!listEl.querySelector('.task-card')) {
                 listEl.innerHTML = '<div class="empty-state small"><p>暂无活动任务</p></div>';

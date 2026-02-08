@@ -132,6 +132,21 @@ pub fn meters_per_pixel(lat: f64, zoom: u8) -> f64 {
     EARTH_CIRCUMFERENCE * lat.to_radians().cos() / (256.0 * 2.0_f64.powi(zoom as i32))
 }
 
+/// WGS-84 经纬度 → Web Mercator (EPSG:3857) 米坐标
+pub fn latlng_to_mercator(lat: f64, lng: f64) -> (f64, f64) {
+    const R: f64 = 6_378_137.0; // WGS-84 赤道半径
+    let x = R * lng.to_radians();
+    let y = R * (PI / 4.0 + lat.to_radians() / 2.0).tan().ln();
+    (x, y)
+}
+
+/// TileBounds 转 Web Mercator 米坐标
+pub fn bounds_to_mercator(b: &TileBounds) -> (f64, f64, f64, f64) {
+    let (west_m, north_m) = latlng_to_mercator(b.north, b.west);
+    let (east_m, south_m) = latlng_to_mercator(b.south, b.east);
+    (west_m, south_m, east_m, north_m)
+}
+
 /// 获取最佳缩放级别 (不超过最大瓦片数)
 pub fn get_optimal_zoom(bounds: &Bounds, max_tiles: u32) -> u8 {
     for zoom in (1..=20).rev() {
@@ -149,7 +164,6 @@ mod tests {
 
     #[test]
     fn test_latlng_to_tile() {
-        // 测试北京天安门 (39.9042, 116.4074)
         let (x, y) = latlng_to_tile(39.9042, 116.4074, 15);
         assert!(x > 0);
         assert!(y > 0);
@@ -165,5 +179,61 @@ mod tests {
         };
         let count = estimate_tile_count(&bounds, 15);
         assert!(count > 0);
+    }
+
+    /// 验证 Mercator 坐标的圆整一致性：
+    /// 直接从瓦片网格计算 vs 经过 lat/lng 转换
+    #[test]
+    fn test_mercator_roundtrip_accuracy() {
+        const C: f64 = 2.0 * PI * 6_378_137.0; // Web Mercator 周长
+
+        for zoom in [1u8, 5, 10, 15] {
+            let n = 2.0_f64.powi(zoom as i32);
+            // 取中国区域的瓦片
+            let (x_min, y_min) = latlng_to_tile(40.0, 116.0, zoom);
+            let (x_max, y_max) = latlng_to_tile(39.0, 117.0, zoom);
+
+            // 方法 A: 直接从瓦片网格计算 Mercator 坐标
+            let west_direct = (x_min as f64 / n - 0.5) * C;
+            let east_direct = ((x_max + 1) as f64 / n - 0.5) * C;
+            let north_direct = (0.5 - y_min as f64 / n) * C;
+            let south_direct = (0.5 - (y_max + 1) as f64 / n) * C;
+
+            // 方法 B: 经过 tile_to_latlng -> bounds_to_mercator
+            let merged = get_merged_bounds(x_min, y_min, x_max, y_max, zoom);
+            let (west_rt, south_rt, east_rt, north_rt) = bounds_to_mercator(&merged);
+
+            let eps = 0.01; // 0.01 米精度
+            assert!((west_direct - west_rt).abs() < eps, "z{zoom} west: {west_direct} vs {west_rt}");
+            assert!((east_direct - east_rt).abs() < eps, "z{zoom} east: {east_direct} vs {east_rt}");
+            assert!((north_direct - north_rt).abs() < eps, "z{zoom} north: {north_direct} vs {north_rt}");
+            assert!((south_direct - south_rt).abs() < eps, "z{zoom} south: {south_direct} vs {south_rt}");
+        }
+    }
+
+    /// 验证 Web Mercator 像素尺寸在 X/Y 方向应该相等
+    #[test]
+    fn test_mercator_pixel_scale_uniform() {
+        for zoom in [1u8, 5, 10, 15, 18] {
+            let n = 2.0_f64.powi(zoom as i32);
+            let (x_min, y_min) = latlng_to_tile(55.0, 73.0, zoom);
+            let (x_max, y_max) = latlng_to_tile(3.0, 135.0, zoom);
+            let cols = x_max - x_min + 1;
+            let rows = y_max - y_min + 1;
+            let width = (cols * 256) as f64;
+            let height = (rows * 256) as f64;
+
+            let merged = get_merged_bounds(x_min, y_min, x_max, y_max, zoom);
+            let (west_m, south_m, east_m, north_m) = bounds_to_mercator(&merged);
+            let x_res = (east_m - west_m) / width;
+            let y_res = (north_m - south_m) / height;
+
+            // Web Mercator 的像素尺寸在 x 和 y 方向应该完全一致
+            assert!(
+                (x_res - y_res).abs() < 0.001,
+                "z{zoom}: x_res={x_res}, y_res={y_res}, diff={}",
+                (x_res - y_res).abs()
+            );
+        }
     }
 }

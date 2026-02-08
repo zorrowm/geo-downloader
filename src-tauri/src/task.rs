@@ -1,8 +1,13 @@
 //! 下载任务管理模块
 
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 /// 任务状态
@@ -11,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 pub enum TaskStatus {
     Pending,
     Downloading,
+    Paused,
     Merging,
     Exporting,
     Completed,
@@ -40,21 +46,66 @@ pub struct TaskInfo {
     pub error: Option<String>,
 }
 
+/// 日志条目
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskLog {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+/// 暂停控制句柄
+#[derive(Clone)]
+pub struct PauseControl {
+    pub flag: Arc<AtomicBool>,
+    pub notify: Arc<Notify>,
+}
+
+impl PauseControl {
+    fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.flag.load(Ordering::Relaxed)
+    }
+
+    /// 如果当前处于暂停状态，等待恢复
+    pub async fn wait_if_paused(&self) {
+        while self.flag.load(Ordering::Relaxed) {
+            self.notify.notified().await;
+        }
+    }
+}
+
 /// 内部任务条目（包含取消令牌）
 struct TaskEntry {
     info: TaskInfo,
     cancel_token: CancellationToken,
+    pause_control: PauseControl,
+    logs: Vec<TaskLog>,
+    log_file: Option<std::fs::File>,
 }
 
 /// 全局任务管理器
 pub struct TaskManager {
     tasks: Arc<Mutex<HashMap<String, TaskEntry>>>,
+    log_dir: PathBuf,
 }
 
 impl TaskManager {
     pub fn new() -> Self {
+        let log_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("tif-downloader")
+            .join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            log_dir,
         }
     }
 
@@ -69,8 +120,9 @@ impl TaskManager {
         format: String,
         save_path: String,
         total: u32,
-    ) -> CancellationToken {
+    ) -> (CancellationToken, PauseControl) {
         let cancel_token = CancellationToken::new();
+        let pause_control = PauseControl::new();
         let info = TaskInfo {
             id: id.clone(),
             name,
@@ -88,12 +140,19 @@ impl TaskManager {
             message: None,
             error: None,
         };
+        // 创建日志文件
+        let log_path = self.log_dir.join(format!("task_{}.log", &id[..8]));
+        let log_file = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&log_path).ok();
         let entry = TaskEntry {
             info,
             cancel_token: cancel_token.clone(),
+            pause_control: pause_control.clone(),
+            logs: Vec::new(),
+            log_file,
         };
         self.tasks.lock().unwrap().insert(id, entry);
-        cancel_token
+        (cancel_token, pause_control)
     }
 
     /// 更新任务进度
@@ -155,6 +214,32 @@ impl TaskManager {
         }
     }
 
+    /// 暂停/恢复任务，返回 (成功, 当前是否暂停)
+    pub fn toggle_pause(&self, id: &str) -> (bool, bool) {
+        if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
+            if !matches!(entry.info.status, TaskStatus::Downloading | TaskStatus::Paused) {
+                return (false, false);
+            }
+            let is_paused = entry.pause_control.is_paused();
+            if is_paused {
+                // 恢复
+                entry.pause_control.flag.store(false, Ordering::Relaxed);
+                entry.pause_control.notify.notify_waiters();
+                entry.info.status = TaskStatus::Downloading;
+                entry.info.message = Some("已恢复下载".to_string());
+                (true, false)
+            } else {
+                // 暂停
+                entry.pause_control.flag.store(true, Ordering::Relaxed);
+                entry.info.status = TaskStatus::Paused;
+                entry.info.message = Some("已暂停".to_string());
+                (true, true)
+            }
+        } else {
+            (false, false)
+        }
+    }
+
     /// 获取所有任务信息
     pub fn get_all_tasks(&self) -> Vec<TaskInfo> {
         self.tasks
@@ -178,6 +263,36 @@ impl TaskManager {
         }
     }
 
+    /// 追加任务日志
+    pub fn append_log(&self, id: &str, level: &str, message: &str) -> Option<TaskLog> {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(entry) = tasks.get_mut(id) {
+            let log = TaskLog {
+                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                level: level.to_string(),
+                message: message.to_string(),
+            };
+            // 写入文件
+            if let Some(ref mut file) = entry.log_file {
+                let _ = writeln!(file, "[{}] [{}] {}", log.timestamp, log.level, log.message);
+            }
+            entry.logs.push(log.clone());
+            Some(log)
+        } else {
+            None
+        }
+    }
+
+    /// 获取任务日志
+    pub fn get_logs(&self, id: &str) -> Vec<TaskLog> {
+        let tasks = self.tasks.lock().unwrap();
+        if let Some(entry) = tasks.get(id) {
+            entry.logs.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// 检查任务是否已取消
     pub fn is_cancelled(&self, id: &str) -> bool {
         if let Some(entry) = self.tasks.lock().unwrap().get(id) {
@@ -186,4 +301,75 @@ impl TaskManager {
             false
         }
     }
+}
+
+// ============ 任务持久化（断点续传） ============
+
+use crate::commands::DownloadRequest;
+
+/// 持久化的任务数据（用于崩溃后恢复）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedTask {
+    pub task_id: String,
+    pub task_name: String,
+    pub source_name: String,
+    pub request: DownloadRequest,
+    pub tile_count: u32,
+    pub created_at: String,
+}
+
+fn tasks_dir() -> PathBuf {
+    let dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("tif-downloader")
+        .join("tasks");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// 保存任务到磁盘
+pub fn save_task_file(task: &PersistedTask) -> Result<(), String> {
+    let path = tasks_dir().join(format!("{}.json", task.task_id));
+    let content = serde_json::to_string_pretty(task)
+        .map_err(|e| format!("序列化失败: {}", e))?;
+    std::fs::write(&path, content)
+        .map_err(|e| format!("保存任务文件失败: {}", e))
+}
+
+/// 删除持久化任务文件
+pub fn remove_task_file(task_id: &str) {
+    let path = tasks_dir().join(format!("{}.json", task_id));
+    let _ = std::fs::remove_file(path);
+}
+
+/// 加载所有可恢复的任务
+pub fn load_resumable_tasks() -> Vec<PersistedTask> {
+    let dir = tasks_dir();
+    let mut tasks = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(false, |e| e == "json") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(task) = serde_json::from_str::<PersistedTask>(&content) {
+                        // 确认临时目录存在
+                        let temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task.task_id));
+                        if temp_dir.exists() {
+                            tasks.push(task);
+                        } else {
+                            // 临时目录不存在，清理持久化文件
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tasks
+}
+
+/// 清理临时目录
+pub fn cleanup_temp_dir(task_id: &str) {
+    let temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task_id));
+    let _ = std::fs::remove_dir_all(temp_dir);
 }

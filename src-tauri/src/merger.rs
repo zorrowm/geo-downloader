@@ -1,12 +1,20 @@
 //! 瓦片拼接模块
 
 use crate::config::TILE_SIZE;
-use image::{DynamicImage, RgbaImage, RgbImage};
+use image::{RgbaImage, RgbImage};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-/// 拼接瓦片为一张大图
+/// 纬度 → Mercator Y（归一化值，用于像素映射）
+/// 公式: ln(tan(π/4 + lat_rad/2))，与 Web Mercator 瓦片一致
+fn mercator_y(lat_deg: f64) -> f64 {
+    let lat_rad = lat_deg.to_radians();
+    (std::f64::consts::PI / 4.0 + lat_rad / 2.0).tan().ln()
+}
+
+/// 拼接瓦片为一张大图（从磁盘逐个加载，省内存）
 pub fn merge_tiles(
-    tile_images: &HashMap<(u32, u32), DynamicImage>,
+    tile_files: &HashMap<(u32, u32), PathBuf>,
     x_min: u32,
     y_min: u32,
     x_max: u32,
@@ -26,25 +34,31 @@ pub fn merge_tiles(
             let px = (x - x_min) * TILE_SIZE;
             let py = (y - y_min) * TILE_SIZE;
 
-            if let Some(img) = tile_images.get(&(x, y)) {
+            if let Some(file_path) = tile_files.get(&(x, y)) {
+                // 从磁盘读取并解码单个瓦片
+                let img = match std::fs::read(file_path) {
+                    Ok(bytes) => match image::load_from_memory(&bytes) {
+                        Ok(img) => img,
+                        Err(_) => continue,
+                    },
+                    Err(_) => continue,
+                };
                 let rgb = img.to_rgb8();
                 
-                // 如果尺寸不对，调整大小 (罕见情况)
                 let rgb = if rgb.width() != TILE_SIZE || rgb.height() != TILE_SIZE {
                     image::imageops::resize(
                         &rgb,
                         TILE_SIZE,
                         TILE_SIZE,
-                        image::imageops::FilterType::Triangle, // 用更快的滤波器
+                        image::imageops::FilterType::Triangle,
                     )
                 } else {
                     rgb
                 };
 
-                // 使用 copy_from 直接复制内存，比逐像素快很多
                 image::imageops::replace(&mut merged, &rgb, px as i64, py as i64);
             }
-            // 空白瓦片不需要处理，已经是白色背景
+            // img 在这里 drop，内存只保持 1 个瓦片 + 画布
         }
     }
 
@@ -58,38 +72,46 @@ pub struct PolygonPoint {
     pub lng: f64,
 }
 
-/// 按多边形裁剪图片 (返回 RGBA，多边形外透明)
-pub fn mask_image_by_polygon(
+/// 按多个多边形裁剪图片 (返回 RGBA，多边形外透明)
+/// 支持 MultiPolygon：多个不连续的面都会保留
+pub fn mask_image_by_polygons(
     image: &RgbImage,
-    polygon: &[PolygonPoint],
+    polygons: &[Vec<PolygonPoint>],
     image_bounds: (f64, f64, f64, f64), // (north, south, east, west)
 ) -> RgbaImage {
     let (width, height) = image.dimensions();
     let (img_north, img_south, img_east, img_west) = image_bounds;
 
-    let lat_span = img_north - img_south;
     let lng_span = img_east - img_west;
+    // Web Mercator: Y 轴用 Mercator 投影映射（非线性），X 轴经度是线性的
+    let merc_north = mercator_y(img_north);
+    let merc_south = mercator_y(img_south);
+    let merc_span = merc_north - merc_south;
 
-    // 将多边形转换为像素坐标
-    let pixels: Vec<(i32, i32)> = polygon
+    // 将所有多边形转换为像素坐标
+    let all_pixel_rings: Vec<Vec<(i32, i32)>> = polygons
         .iter()
-        .map(|p| {
-            let x = ((p.lng - img_west) / lng_span * width as f64) as i32;
-            let y = ((img_north - p.lat) / lat_span * height as f64) as i32;
-            (x, y)
+        .map(|ring| {
+            ring.iter()
+                .map(|p| {
+                    let x = ((p.lng - img_west) / lng_span * width as f64) as i32;
+                    let y = ((merc_north - mercator_y(p.lat)) / merc_span * height as f64) as i32;
+                    (x, y)
+                })
+                .collect()
         })
+        .filter(|ring: &Vec<(i32, i32)>| ring.len() >= 3)
         .collect();
 
-    // 直接操作原始字节，比 put_pixel 快很多
     let src_raw = image.as_raw();
-    let mut dst_raw: Vec<u8> = vec![0; (width * height * 4) as usize];
+    let mut dst_raw: Vec<u8> = vec![0; (width as usize) * (height as usize) * 4];
 
-    if pixels.len() < 3 {
-        // 多边形点数不足，返回完整图像
+    if all_pixel_rings.is_empty() {
+        // 无有效多边形，返回完整图像
         for y in 0..height {
             for x in 0..width {
-                let src_idx = ((y * width + x) * 3) as usize;
-                let dst_idx = ((y * width + x) * 4) as usize;
+                let src_idx = (y as usize * width as usize + x as usize) * 3;
+                let dst_idx = (y as usize * width as usize + x as usize) * 4;
                 dst_raw[dst_idx] = src_raw[src_idx];
                 dst_raw[dst_idx + 1] = src_raw[src_idx + 1];
                 dst_raw[dst_idx + 2] = src_raw[src_idx + 2];
@@ -97,22 +119,26 @@ pub fn mask_image_by_polygon(
             }
         }
     } else {
-        // 使用扫描线算法优化，每行只计算一次多边形交点
+        // 扫描线算法：对每行，收集所有多边形的交点后合并填充
         for y in 0..height {
             let yi = y as i32;
-            // 找到该行与多边形的所有交点
             let mut intersections: Vec<i32> = Vec::new();
-            let n = pixels.len();
-            let mut j = n - 1;
-            for i in 0..n {
-                let (xi, yyi) = pixels[i];
-                let (xj, yyj) = pixels[j];
-                if (yyi > yi) != (yyj > yi) {
-                    let x_intersect = (xj - xi) * (yi - yyi) / (yyj - yyi) + xi;
-                    intersections.push(x_intersect);
+
+            // 遍历每个多边形环
+            for pixels in &all_pixel_rings {
+                let n = pixels.len();
+                let mut j = n - 1;
+                for i in 0..n {
+                    let (xi, yyi) = pixels[i];
+                    let (xj, yyj) = pixels[j];
+                    if (yyi > yi) != (yyj > yi) {
+                        let x_intersect = (xj - xi) * (yi - yyi) / (yyj - yyi) + xi;
+                        intersections.push(x_intersect);
+                    }
+                    j = i;
                 }
-                j = i;
             }
+
             intersections.sort_unstable();
             
             // 填充交点之间的像素
@@ -121,8 +147,8 @@ pub fn mask_image_by_polygon(
                     let x_start = (chunk[0].max(0) as u32).min(width);
                     let x_end = (chunk[1].max(0) as u32).min(width);
                     for x in x_start..x_end {
-                        let src_idx = ((y * width + x) * 3) as usize;
-                        let dst_idx = ((y * width + x) * 4) as usize;
+                        let src_idx = (y as usize * width as usize + x as usize) * 3;
+                        let dst_idx = (y as usize * width as usize + x as usize) * 4;
                         dst_raw[dst_idx] = src_raw[src_idx];
                         dst_raw[dst_idx + 1] = src_raw[src_idx + 1];
                         dst_raw[dst_idx + 2] = src_raw[src_idx + 2];
@@ -147,12 +173,15 @@ pub fn crop_to_bounds(
     let (tgt_north, tgt_south, tgt_east, tgt_west) = target_bounds;
 
     let lng_per_pixel = (img_east - img_west) / width as f64;
-    let lat_per_pixel = (img_north - img_south) / height as f64;
+    // Web Mercator: Y 方向用 Mercator 投影
+    let merc_north = mercator_y(img_north);
+    let merc_south = mercator_y(img_south);
+    let merc_per_pixel = (merc_north - merc_south) / height as f64;
 
     let left = ((tgt_west - img_west) / lng_per_pixel) as u32;
     let right = ((tgt_east - img_west) / lng_per_pixel) as u32;
-    let top = ((img_north - tgt_north) / lat_per_pixel) as u32;
-    let bottom = ((img_north - tgt_south) / lat_per_pixel) as u32;
+    let top = ((merc_north - mercator_y(tgt_north)) / merc_per_pixel) as u32;
+    let bottom = ((merc_north - mercator_y(tgt_south)) / merc_per_pixel) as u32;
 
     // 限制范围
     let left = left.min(width);

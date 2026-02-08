@@ -260,6 +260,18 @@
 
                 <!-- Tab 2: 下载中心 -->
                 <div class="tab-panel" id="tab-history" role="tabpanel">
+                    <!-- 可恢复任务 -->
+                    <section class="panel-section" id="resumable-tasks-section" style="display:none">
+                        <div class="section-header">
+                            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 4v6h6"/>
+                                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                            </svg>
+                            <h3>中断的任务</h3>
+                        </div>
+                        <div id="resumable-tasks-list" class="task-list"></div>
+                    </section>
+
                     <!-- 活动任务 -->
                     <section class="panel-section" id="active-tasks-section">
                         <div class="section-header">
@@ -327,7 +339,7 @@
                             <h3>代理设置</h3>
                         </div>
                         <label class="checkbox-label">
-                            <input type="checkbox" id="proxy-checkbox" checked>
+<input type="checkbox" id="proxy-checkbox">
                             <span class="checkbox-mark"></span>
                             <span>启用代理 (Google 图源需要)</span>
                         </label>
@@ -367,7 +379,7 @@
                         </div>
                     </section>
 
-                    <!-- 自定义图源 -->
+                    <!-- 图源管理 -->
                     <section class="panel-section">
                         <div class="section-header">
                             <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -375,30 +387,25 @@
                                 <polyline points="2 17 12 22 22 17"/>
                                 <polyline points="2 12 12 17 22 12"/>
                             </svg>
-                            <h3>自定义图源</h3>
+                            <h3>图源管理</h3>
                         </div>
                         <div class="form-group">
-                            <input type="text" id="custom-source-name" class="form-input" placeholder="图源名称">
+                            <label class="form-label">内置图源</label>
+                            <div id="builtin-sources-list" class="source-list"></div>
                         </div>
-                        <div class="form-group">
-                            <input type="text" id="custom-source-url" class="form-input" placeholder="URL 模板，例如 https://{s}.tile.xxx.org/{z}/{x}/{y}.png">
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <input type="text" id="custom-source-subdomains" class="form-input" placeholder="子域名 (a,b,c)">
+                        <div class="subsection">
+                            <div style="display:flex;align-items:center;justify-content:space-between">
+                                <label class="form-label" style="margin:0">自定义图源</label>
+                                <button id="add-source-btn" class="btn btn-outline btn-sm">
+                                    <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px">
+                                        <line x1="12" y1="5" x2="12" y2="19"/>
+                                        <line x1="5" y1="12" x2="19" y2="12"/>
+                                    </svg>
+                                    添加
+                                </button>
                             </div>
-                            <div class="form-group">
-                                <input type="number" id="custom-source-maxzoom" class="form-input" placeholder="最大缩放" value="18" min="1" max="22">
-                            </div>
+                            <div id="custom-sources-list" class="source-list"></div>
                         </div>
-                        <button id="add-custom-source-btn" class="btn btn-secondary btn-block">
-                            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="12" y1="5" x2="12" y2="19"/>
-                                <line x1="5" y1="12" x2="19" y2="12"/>
-                            </svg>
-                            添加图源
-                        </button>
-                        <div id="custom-sources-list"></div>
                     </section>
 
                     <section class="panel-section">
@@ -440,7 +447,97 @@
         <!-- 右侧地图面板 -->
         <main class="map-panel" role="main" aria-label="地图面板">
             <div id="map"></div>
+            <div id="map-status-bar" class="map-status-bar">
+                <span id="status-coords">经度: -- 纬度: --</span>
+                <span class="status-divider">|</span>
+                <span id="status-zoom">缩放: --</span>
+            </div>
         </main>
+    </div>
+
+    <!-- 图源编辑弹框 -->
+    <div id="source-dialog" class="modal-overlay" style="display:none">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-header">
+                <span class="modal-title" id="source-dialog-title">添加图源</span>
+                <button class="btn-icon modal-close" id="source-dialog-close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">图源名称</label>
+                    <input type="text" id="source-dlg-name" class="form-input" placeholder="例如 My Satellite">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">URL 模板</label>
+                    <input type="text" id="source-dlg-url" class="form-input" placeholder="https://{s}.tile.xxx.org/{z}/{x}/{y}.png">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">子域名</label>
+                        <input type="text" id="source-dlg-subdomains" class="form-input" placeholder="a,b,c">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">最大缩放</label>
+                        <input type="number" id="source-dlg-maxzoom" class="form-input" value="18" min="1" max="22">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="source-dialog-cancel">取消</button>
+                <button class="btn btn-primary" id="source-dialog-confirm">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 更新对话框 -->
+    <div id="update-dialog" class="update-overlay" style="display:none">
+        <div class="update-dialog">
+            <div class="update-dialog-header">
+                <div class="update-icon">🎉</div>
+                <div class="update-title">发现新版本</div>
+            </div>
+            <div class="update-dialog-content">
+                <div class="update-version-box">
+                    <div class="version-item current">
+                        <span class="version-label">当前版本</span>
+                        <span class="version-num" id="update-current-ver"></span>
+                    </div>
+                    <div class="version-arrow">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                    <div class="version-item new">
+                        <span class="version-label">最新版本</span>
+                        <span class="version-num" id="update-new-ver"></span>
+                    </div>
+                </div>
+                <div id="update-notes" class="update-notes" style="display:none">
+                    <div class="update-notes-header">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span>更新内容</span>
+                    </div>
+                    <ul id="update-notes-list" class="update-notes-list"></ul>
+                </div>
+                <div id="update-progress" class="update-progress" style="display:none">
+                    <div class="update-progress-header">
+                        <span>正在下载更新...</span>
+                        <span id="update-progress-percent">0%</span>
+                    </div>
+                    <div class="update-progress-bar">
+                        <div id="update-progress-fill" class="update-progress-fill" style="width:0%"></div>
+                    </div>
+                    <div class="update-progress-hint">下载完成后将自动启动安装程序</div>
+                </div>
+            </div>
+            <div class="update-dialog-footer" id="update-dialog-footer">
+                <button class="btn btn-outline" id="update-later-btn">稍后再说</button>
+                <button class="btn btn-primary" id="update-now-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    立即更新
+                </button>
+            </div>
+        </div>
     </div>
 
     <!-- Scripts (本地) -->
