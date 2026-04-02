@@ -97,3 +97,7 @@ tif-downloader/
 ## 📄 许可证
 
 MIT License
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=gaopengbin/tif-downloader&type=Date)](https://star-history.com/#gaopengbin/tif-downloader&Date)
