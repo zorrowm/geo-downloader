@@ -60,6 +60,13 @@ jobs:
             - GCJ-02 坐标自动校正
             - 行政区划边界裁剪
             - 软件内自动检查更新
+
+            ## v3.0.0 新增
+            - 🌐 Google 3D Tiles 下载（通过 Cesium Ion）
+            - 📦 框选区域空间过滤，仅下载选区内瓦片
+            - 🔄 子瓦片集递归解析与 session 参数自动传播
+            - 👁️ 下载后本地离线预览（URI 自动本地化）
+            - 🏷️ 产品重命名为 GeoDownloader
           files: |
             ${{ steps.rename.outputs.SETUP_PATH }}
         env:
