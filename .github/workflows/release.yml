@@ -51,7 +51,7 @@ jobs:
           generate_release_notes: false
           body: |
             ## v3.0.0 更新
-            - 🌐 新增 3D Tiles 下载功能，支持 Cesium Ion、Google 3D Tiles 等数据源
+            - 🌐 新增 3D Tiles 下载功能，支持任意 3D Tiles 数据源
             - 📦 框选区域空间过滤，仅下载选区内瓦片
             - 👁️ 下载后支持本地离线预览
             - 🏷️ 产品重命名为 GeoDownloader
