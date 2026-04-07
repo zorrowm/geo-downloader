@@ -1,10 +1,24 @@
-# TIF 地图下载工具
+# GeoDownloader
 
-一个基于 Tauri + Rust 的高性能地图瓦片下载与拼接桌面工具。
+一个基于 Tauri + Rust 的高性能地理空间数据下载与导出桌面工具。支持 2D 地图瓦片、3D Tiles 裁剪下载，导出 GeoTIFF。
 
-![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
+![Rust](https://img.shields.io/badge/rust-1.77+-orange.svg)
 ![Tauri](https://img.shields.io/badge/tauri-2.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
+
+## 🎉 v3.0.0 — 大版本更新
+
+> 产品更名：TIF地图下载工具 → **GeoDownloader**，覆盖 2D 瓦片 + 3D Tiles 全场景。
+
+### 📦 新增功能
+- **3D Tiles 下载**：支持 Cesium Ion / Google 3D Tiles / 自定义 URL，空间过滤裁剪
+- **3D Tiles 本地预览**：下载完即可离线浏览三维模型
+- **CesiumJS 3D 视图**：在线预览 3D Tiles 数据集，框选下载区域
+
+### 🔧 改进
+- 修复 Google 3D Tiles session 参数传播问题
+- 子 tileset URI 自动重写为本地相对路径
+- 自动更新支持新安装包名
 
 ## ✨ 功能特性
 
@@ -29,6 +43,12 @@
 - OSM 数据下载（道路、建筑、水系等）
 - 行政区划边界下载
 - 本地矢量文件加载预览
+
+### 🏙️ 3D Tiles
+- **多源支持**：Cesium Ion 资产、Google 3D Tiles（全球倾斜摄影）、自定义 URL
+- **空间裁剪**：在 3D 地图上框选区域，只下载选区内的瓦片
+- **递归下载**：自动递归解析子 tileset，完整下载多层级 LOD
+- **离线预览**：下载后 URI 自动本地化，支持离线 3D 浏览
 
 ## 🚀 快速开始
 
@@ -55,7 +75,7 @@ cargo tauri build
 ## 🏗️ 项目结构
 
 ```
-tif-downloader/
+geo-downloader/
 ├── src-tauri/          # Rust 后端 (Tauri)
 │   ├── src/
 │   │   ├── lib.rs        # 应用入口
@@ -68,7 +88,12 @@ tif-downloader/
 │   │   ├── admin.rs      # 行政区划数据
 │   │   ├── task.rs       # 多任务管理
 │   │   ├── history.rs    # 下载历史记录
-│   │   └── settings.rs   # 用户设置持久化
+│   │   ├── settings.rs   # 用户设置持久化
+│   │   └── tiles3d/      # 3D Tiles 下载模块
+│   │       ├── mod.rs
+│   │       ├── tileset.rs  # tileset.json 解析
+│   │       ├── filter.rs   # 空间过滤 (OBB/ECEF)
+│   │       └── fetcher.rs  # 递归下载 + 管线化
 │   └── Cargo.toml
 ├── static/             # 前端静态文件
 │   ├── index.html
@@ -100,4 +125,4 @@ MIT License
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=gaopengbin/tif-downloader&type=Date)](https://star-history.com/#gaopengbin/tif-downloader&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=gaopengbin/geo-downloader&type=Date)](https://star-history.com/#gaopengbin/geo-downloader&Date)

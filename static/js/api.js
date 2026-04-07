@@ -260,6 +260,35 @@
         throw new Error('边界下载仅支持桌面版');
     }
 
+    // ============ 3D Tiles API ============
+    async function analyze3dTiles(source, proxy) {
+        if (checkTauri()) {
+            return await invoke('analyze_3dtiles', { source, proxy: proxy || null });
+        }
+        throw new Error('3D Tiles 仅支持桌面版');
+    }
+
+    async function estimate3dTiles(source, polygon, proxy) {
+        if (checkTauri()) {
+            return await invoke('estimate_3dtiles', { source, polygon, proxy: proxy || null });
+        }
+        throw new Error('3D Tiles 仅支持桌面版');
+    }
+
+    async function create3dTilesTask(request, taskName) {
+        if (checkTauri()) {
+            return await invoke('create_3dtiles_task', { request, taskName });
+        }
+        throw new Error('3D Tiles 仅支持桌面版');
+    }
+
+    async function startTileProxy(baseUrl, headers) {
+        if (checkTauri()) {
+            return await invoke('start_tile_proxy', { baseUrl, headers: headers || {} });
+        }
+        throw new Error('3D Tiles 仅支持桌面版');
+    }
+
     window.TifApi = {
         _checkIsTauri: checkTauri,
         isDesktopApp: checkTauri,
@@ -297,7 +326,12 @@
         discardResumableTask,
         cancelTask,
         togglePauseTask,
-        removeTask
+        removeTask,
+        // 3D Tiles
+        analyze3dTiles,
+        estimate3dTiles,
+        create3dTilesTask,
+        startTileProxy
     };
 
     console.log('[TifApi] Initialized, Tauri available:', checkTauri());

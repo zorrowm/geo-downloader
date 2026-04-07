@@ -127,6 +127,6 @@ impl HistoryManager {
 /// 获取数据目录
 fn get_data_dir() -> Result<PathBuf, String> {
     dirs::data_local_dir()
-        .map(|p| p.join("tif-downloader"))
+        .map(|p| p.join("geo-downloader"))
         .ok_or_else(|| "无法获取数据目录".to_string())
 }

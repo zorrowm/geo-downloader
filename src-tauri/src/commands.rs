@@ -10,6 +10,7 @@ use crate::admin::{self, AdminRegion, GeocodeResult};
 use crate::history::{DownloadRecord, DownloadStatus, HistoryManager};
 use crate::settings::{AppSettings, SettingsManager};
 use crate::task::{TaskManager, TaskInfo, TaskLog, TaskStatus, PersistedTask, PauseControl};
+use crate::tiles3d;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -942,13 +943,13 @@ pub async fn download_and_install_update(
     version: String,
 ) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
-    let setup_filename = format!("tif-downloader_{}_setup.exe", version);
+    let setup_filename = format!("GeoDownloader_{}_setup.exe", version);
     let setup_path = temp_dir.join(&setup_filename);
     
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
-        .header("User-Agent", "tif-downloader")
+        .header("User-Agent", "GeoDownloader")
         .send()
         .await
         .map_err(|e| format!("下载失败: {}", e))?;
@@ -991,4 +992,499 @@ pub async fn download_and_install_update(
     
     app.exit(0);
     Ok(())
+}
+
+// ============================================================
+// 3D Tiles 下载命令
+// ============================================================
+
+/// 解析 3D Tiles 数据源，返回 tileset 概要信息
+#[tauri::command]
+pub async fn analyze_3dtiles(
+    source: tiles3d::tileset::Tiles3dSource,
+    proxy: Option<String>,
+) -> Result<tiles3d::tileset::TilesetSummary, String> {
+    let mut fetcher = tiles3d::fetcher::Tiles3dFetcher::new(proxy.as_deref())?;
+    let (_endpoint, summary) = fetcher.analyze(&source).await?;
+    Ok(summary)
+}
+
+/// 预估 3D Tiles 过滤后的下载量
+#[tauri::command]
+pub async fn estimate_3dtiles(
+    source: tiles3d::tileset::Tiles3dSource,
+    polygon: Vec<Vec<f64>>,
+    proxy: Option<String>,
+) -> Result<Tiles3dEstimate, String> {
+    let mut fetcher = tiles3d::fetcher::Tiles3dFetcher::new(proxy.as_deref())?;
+    let endpoint = fetcher.resolve_source(&source).await?;
+    let tileset = fetcher.fetch_tileset(&endpoint.tileset_url).await?;
+
+    let region = tiles3d::filter::SelectionRegion::new(&polygon);
+    let result = tiles3d::filter::filter_tileset(&tileset, &region);
+
+    Ok(Tiles3dEstimate {
+        total_tiles: result.original_count as u32,
+        filtered_tiles: result.filtered_count as u32,
+        content_tiles: result.content_count as u32,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Tiles3dEstimate {
+    pub total_tiles: u32,
+    pub filtered_tiles: u32,
+    pub content_tiles: u32,
+}
+
+/// 创建 3D Tiles 下载任务
+#[tauri::command]
+pub async fn create_3dtiles_task(
+    app: AppHandle,
+    task_manager: State<'_, Arc<TaskManager>>,
+    request: tiles3d::tileset::Tiles3dRequest,
+    task_name: String,
+) -> Result<CreateTaskResult, String> {
+    let save_path = request.save_path.clone();
+    let task_id = uuid::Uuid::new_v4().to_string();
+
+    // 先解析数据源获取估算信息
+    let mut fetcher = tiles3d::fetcher::Tiles3dFetcher::new(request.proxy.as_deref())?;
+    let endpoint = fetcher.resolve_source(&request.source).await?;
+    let tileset = fetcher.fetch_tileset(&endpoint.tileset_url).await?;
+
+    let tile_count;
+    if let Some(ref polygon) = request.polygon {
+        let region = tiles3d::filter::SelectionRegion::new(polygon);
+        let filter_result = tiles3d::filter::filter_tileset(&tileset, &region);
+        tile_count = filter_result.content_count as u32;
+        if tile_count == 0 {
+            return Err("选区内无可下载的 3D Tiles 数据".to_string());
+        }
+    } else {
+        let summary = tileset.summary();
+        tile_count = summary.content_tiles as u32;
+    }
+
+    // 注册任务
+    let source_name = match &request.source {
+        tiles3d::tileset::Tiles3dSource::CesiumIon { asset_id, .. } => {
+            format!("Cesium Ion #{}", asset_id)
+        }
+        tiles3d::tileset::Tiles3dSource::DirectUrl { tileset_url, .. } => {
+            tileset_url.clone()
+        }
+    };
+
+    let (cancel_token, pause_control) = task_manager.create_task(
+        task_id.clone(),
+        task_name.clone(),
+        "3dtiles".to_string(),
+        source_name.clone(),
+        0, // zoom 对 3D Tiles 无意义
+        "tileset".to_string(),
+        save_path.clone(),
+        tile_count,
+    );
+
+    // spawn 后台下载任务
+    let tm = Arc::clone(&task_manager);
+    let tid = task_id.clone();
+    let sn = source_name.clone();
+    let tn = task_name.clone();
+
+    tokio::spawn(async move {
+        let result = execute_3dtiles_task(
+            &app, &tm, &tid, cancel_token.clone(), pause_control,
+            &endpoint.tileset_url, &request, tile_count, &sn, &tn,
+        )
+        .await;
+
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                if tm.is_cancelled(&tid) {
+                    task_log(&app, &tm, &tid, "WARN", "任务已取消");
+                    tm.mark_cancelled(&tid);
+                    let _ = app.emit(
+                        &format!("task-progress-{}", tid),
+                        TaskProgressPayload {
+                            task_id: tid,
+                            status: "cancelled".to_string(),
+                            progress: 0.0,
+                            completed: 0,
+                            total: tile_count,
+                            message: Some("已取消".to_string()),
+                        },
+                    );
+                } else {
+                    task_log(&app, &tm, &tid, "ERROR", &format!("任务失败: {}", e));
+                    tm.fail_task(&tid, e.clone());
+                    let _ = app.emit(
+                        &format!("task-progress-{}", tid),
+                        TaskProgressPayload {
+                            task_id: tid,
+                            status: "failed".to_string(),
+                            progress: 0.0,
+                            completed: 0,
+                            total: tile_count,
+                            message: Some(format!("失败: {}", e)),
+                        },
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(CreateTaskResult { task_id, tile_count })
+}
+
+/// 执行 3D Tiles 下载任务
+async fn execute_3dtiles_task(
+    app: &AppHandle,
+    tm: &Arc<TaskManager>,
+    task_id: &str,
+    cancel_token: tokio_util::sync::CancellationToken,
+    pause_control: PauseControl,
+    tileset_url: &str,
+    request: &tiles3d::tileset::Tiles3dRequest,
+    tile_count: u32,
+    source_name: &str,
+    task_name: &str,
+) -> Result<(), String> {
+    task_log(app, tm, task_id, "INFO", "开始 3D Tiles 下载任务");
+    task_log(app, tm, task_id, "INFO", &format!("数据源: {}", tileset_url));
+
+    tm.update_progress(
+        task_id,
+        TaskStatus::Processing,
+        5.0,
+        0,
+        0,
+        Some("正在解析 tileset...".to_string()),
+    );
+
+    let mut fetcher = tiles3d::fetcher::Tiles3dFetcher::new(request.proxy.as_deref())?;
+    // 解析数据源以设置 auth_headers（含 Referer 等）
+    let _ = fetcher.resolve_source(&request.source).await?;
+    let output_dir = std::path::Path::new(&request.save_path);
+
+    let tid = task_id.to_string();
+    let app_clone = app.clone();
+    let tm_clone = Arc::clone(tm);
+
+    let output_path = fetcher
+        .download(
+            tileset_url,
+            request.polygon.as_deref(),
+            output_dir,
+            request.concurrency,
+            cancel_token,
+            pause_control,
+            move |progress| {
+                let p = if progress.total > 0 {
+                    (progress.completed as f64 / progress.total as f64) * 95.0 + 5.0
+                } else {
+                    5.0
+                };
+                tm_clone.update_progress(
+                    &tid,
+                    TaskStatus::Downloading,
+                    p,
+                    progress.completed,
+                    progress.failed,
+                    Some(progress.status.clone()),
+                );
+                let _ = app_clone.emit(
+                    &format!("task-progress-{}", tid),
+                    TaskProgressPayload {
+                        task_id: tid.clone(),
+                        status: "downloading".to_string(),
+                        progress: p,
+                        completed: progress.completed,
+                        total: progress.total,
+                        message: Some(progress.status),
+                    },
+                );
+            },
+        )
+        .await?;
+
+    // 计算输出目录大小
+    let dir_size = dir_size_bytes(output_dir);
+
+    task_log(
+        app,
+        tm,
+        task_id,
+        "INFO",
+        &format!("下载完成，输出: {}", output_path.display()),
+    );
+
+    tm.complete_task(task_id, dir_size);
+
+    // 写入下载历史记录
+    let record = DownloadRecord::new(
+        task_name.to_string(),
+        "3dtiles".to_string(),
+        source_name.to_string(),
+        0,
+        "tileset".to_string(),
+        request.save_path.clone(),
+        dir_size,
+        tile_count,
+        0,
+        DownloadStatus::Completed,
+    );
+    if let Ok(manager) = HistoryManager::new() {
+        let _ = manager.add(record);
+    }
+
+    let _ = app.emit(
+        &format!("task-progress-{}", task_id),
+        TaskProgressPayload {
+            task_id: task_id.to_string(),
+            status: "completed".to_string(),
+            progress: 100.0,
+            completed: tile_count,
+            total: tile_count,
+            message: Some("下载完成".to_string()),
+        },
+    );
+
+    Ok(())
+}
+
+/// 递归计算目录大小
+fn dir_size_bytes(path: &std::path::Path) -> u64 {
+    let mut size = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let meta = entry.metadata();
+            if let Ok(m) = meta {
+                if m.is_file() {
+                    size += m.len();
+                } else if m.is_dir() {
+                    size += dir_size_bytes(&entry.path());
+                }
+            }
+        }
+    }
+    size
+}
+
+// ============================================================
+// 本地 3D Tiles 预览文件服务器
+// ============================================================
+
+use std::sync::atomic::{AtomicU16, Ordering};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// 当前活跃的预览服务器端口（0 表示无）
+static PREVIEW_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
+
+/// 启动本地文件服务器以预览 3D Tiles
+#[tauri::command]
+pub async fn serve_local_tiles(dir_path: String) -> Result<String, String> {
+    let path = std::path::PathBuf::from(&dir_path);
+    if !path.exists() || !path.is_dir() {
+        return Err(format!("目录不存在: {}", dir_path));
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("绑定端口失败: {}", e))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("获取端口失败: {}", e))?
+        .port();
+
+    PREVIEW_SERVER_PORT.store(port, Ordering::Relaxed);
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let dir = path.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = match stream.read(&mut buf).await {
+                    Ok(n) if n > 0 => n,
+                    _ => return,
+                };
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let req_path = match request.lines().next() {
+                    Some(line) => {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 { parts[1].to_string() } else { return }
+                    }
+                    None => return,
+                };
+
+                // URL 解码
+                let decoded = urlencoding::decode(&req_path).unwrap_or_default();
+                let rel = decoded.trim_start_matches('/');
+                let file_path = dir.join(rel);
+
+                // 安全检查：防止路径穿越
+                let canonical = match file_path.canonicalize() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n").await;
+                        return;
+                    }
+                };
+                let dir_canonical = dir.canonicalize().unwrap_or_default();
+                if !canonical.starts_with(&dir_canonical) {
+                    let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n").await;
+                    return;
+                }
+
+                match tokio::fs::read(&canonical).await {
+                    Ok(data) => {
+                        let mime = match canonical.extension().and_then(|e| e.to_str()) {
+                            Some("json") => "application/json",
+                            Some("glb") => "model/gltf-binary",
+                            Some("gltf") => "model/gltf+json",
+                            Some("b3dm") => "application/octet-stream",
+                            Some("i3dm") => "application/octet-stream",
+                            Some("pnts") => "application/octet-stream",
+                            Some("cmpt") => "application/octet-stream",
+                            Some("png") => "image/png",
+                            Some("jpg" | "jpeg") => "image/jpeg",
+                            Some("ktx2") => "image/ktx2",
+                            _ => "application/octet-stream",
+                        };
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+                            mime,
+                            data.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&data).await;
+                    }
+                    Err(_) => {
+                        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n").await;
+                    }
+                }
+            });
+        }
+    });
+
+    log::info!("本地预览服务器启动: http://127.0.0.1:{} -> {}", port, dir_path);
+    Ok(format!("http://127.0.0.1:{}", port))
+}
+
+/// 启动反向代理服务器，为 CesiumJS 预览带 Referer 保护的远端 3D Tiles
+#[tauri::command]
+pub async fn start_tile_proxy(
+    base_url: String,
+    headers: HashMap<String, String>,
+) -> Result<String, String> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("绑定端口失败: {}", e))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("获取端口失败: {}", e))?
+        .port();
+
+    // 分离 base_url 中的 query 参数（如 ?token=mars3d），代理时附加到每个请求
+    let (base_clean, query_suffix) = if let Some(pos) = base_url.find('?') {
+        (base_url[..pos].trim_end_matches('/').to_string(), base_url[pos..].to_string())
+    } else {
+        (base_url.trim_end_matches('/').to_string(), String::new())
+    };
+    let base_url_log = base_clean.clone();
+
+    // 构建一个带自定义 header 的 reqwest client
+    let mut default_headers = reqwest::header::HeaderMap::new();
+    for (k, v) in &headers {
+        if let (Ok(name), Ok(val)) = (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v),
+        ) {
+            default_headers.insert(name, val);
+        }
+    }
+    let client = reqwest::Client::builder()
+        .default_headers(default_headers)
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let client = client.clone();
+            let base = base_clean.clone();
+            let qs = query_suffix.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = match stream.read(&mut buf).await {
+                    Ok(n) if n > 0 => n,
+                    _ => return,
+                };
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let req_path = match request.lines().next() {
+                    Some(line) => {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 { parts[1].to_string() } else { return }
+                    }
+                    None => return,
+                };
+
+                // 构造远端 URL：base + 请求路径 + 原始 query 参数
+                let decoded = urlencoding::decode(&req_path).unwrap_or_default();
+                let rel = decoded.trim_start_matches('/');
+                let path_part = if rel.is_empty() {
+                    format!("{}/", base)
+                } else {
+                    format!("{}/{}", base, rel)
+                };
+                // 合并 query：代理固有 query + 请求自带 query
+                let remote_url = if qs.is_empty() {
+                    path_part
+                } else if path_part.contains('?') {
+                    format!("{}&{}", path_part, qs.trim_start_matches('?'))
+                } else {
+                    format!("{}{}", path_part, qs)
+                };
+
+                match client.get(&remote_url).send().await {
+                    Ok(resp) => {
+                        let status = resp.status().as_u16();
+                        let content_type = resp
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("application/octet-stream")
+                            .to_string();
+                        match resp.bytes().await {
+                            Ok(body) => {
+                                let header = format!(
+                                    "HTTP/1.1 {} OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+                                    status, content_type, body.len()
+                                );
+                                let _ = stream.write_all(header.as_bytes()).await;
+                                let _ = stream.write_all(&body).await;
+                            }
+                            Err(_) => {
+                                let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n").await;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n").await;
+                    }
+                }
+            });
+        }
+    });
+
+    log::info!("反向代理服务器启动: http://127.0.0.1:{} -> {}", port, base_url_log);
+    Ok(format!("http://127.0.0.1:{}", port))
 }

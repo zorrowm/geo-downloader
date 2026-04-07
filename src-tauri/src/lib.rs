@@ -9,6 +9,7 @@ pub mod history;
 pub mod settings;
 pub mod task;
 pub mod streaming_tiff;
+pub mod tiles3d;
 
 // Tauri commands
 mod commands;
@@ -33,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_tile_sources,
             commands::get_builtin_sources,
@@ -67,6 +69,12 @@ pub fn run() {
             commands::create_osm_download_task,
             commands::download_osm_data,
             commands::download_admin_boundary_file,
+            // 3D Tiles
+            commands::analyze_3dtiles,
+            commands::estimate_3dtiles,
+            commands::create_3dtiles_task,
+            commands::serve_local_tiles,
+            commands::start_tile_proxy,
             // 更新
             commands::download_and_install_update,
         ])

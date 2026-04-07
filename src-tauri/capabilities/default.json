@@ -19,6 +19,7 @@
     "fs:default",
     "http:default",
     "process:allow-exit",
-    "process:allow-restart"
+    "process:allow-restart",
+    "opener:default"
   ]
 }

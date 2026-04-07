@@ -18,6 +18,7 @@ pub enum TaskStatus {
     Downloading,
     Paused,
     Merging,
+    Processing,
     Exporting,
     Completed,
     Failed,
@@ -100,7 +101,7 @@ impl TaskManager {
     pub fn new() -> Self {
         let log_dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("tif-downloader")
+            .join("geo-downloader")
             .join("logs");
         let _ = std::fs::create_dir_all(&log_dir);
         Self {
@@ -321,7 +322,7 @@ pub struct PersistedTask {
 fn tasks_dir() -> PathBuf {
     let dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("tif-downloader")
+        .join("geo-downloader")
         .join("tasks");
     let _ = std::fs::create_dir_all(&dir);
     dir

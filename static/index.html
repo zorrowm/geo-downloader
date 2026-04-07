@@ -9,6 +9,8 @@
     <link rel="stylesheet" href="./lib/leaflet.css" />
     <!-- Leaflet Draw CSS (本地) -->
     <link rel="stylesheet" href="./lib/leaflet.draw.css" />
+    <!-- CesiumJS CSS (CDN) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.140.0/Build/Cesium/Widgets/widgets.css" />
     <!-- Custom CSS -->
     <link rel="stylesheet" href="./css/style.css" />
 </head>
@@ -21,7 +23,11 @@
                 <polyline points="7 10 12 15 17 10"/>
                 <line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
-            <span>TIF 地图下载工具</span>
+            <span id="app-title">TIF 地图下载工具</span>
+        </div>
+        <div class="mode-toggle" id="mode-toggle">
+            <button class="mode-toggle-btn active" data-mode="tif">TIF 瓦片</button>
+            <button class="mode-toggle-btn" data-mode="3dtiles">3D Tiles</button>
         </div>
         <div class="titlebar-controls">
             <button class="titlebar-btn" id="titlebar-minimize" title="最小化">
@@ -138,12 +144,30 @@
                         </div>
                         <input type="file" id="boundary-file-input" accept=".geojson,.json,.shp,.shx,.dbf,.prj" style="display: none;" multiple>
                         
+                        <!-- 3D Tiles 模式：Cesium 绘图工具 -->
+                        <div id="cesium-draw-tools" class="btn-group" style="display: none;">
+                            <button id="cesium-draw-rect" class="btn btn-outline" title="在地球上绘制矩形选区">
+                                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="3" y="3" width="18" height="18" rx="1"/>
+                                </svg>
+                                画矩形
+                            </button>
+                            <button id="cesium-draw-polygon" class="btn btn-outline" title="在地球上绘制多边形选区">
+                                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polygon points="12,2 22,8.5 18,21 6,21 2,8.5"/>
+                                </svg>
+                                画多边形
+                            </button>
+                        </div>
+                        
                         <!-- 选区信息 -->
                         <div id="selection-info" class="info-card">
                             <p class="hint">使用地图工具绘制区域，或从上方加载边界</p>
                         </div>
                     </section>
 
+                    <!-- ===== TIF 模式内容 ===== -->
+                    <div id="tif-mode-content">
                     <!-- 下载设置 -->
                     <section class="panel-section">
                         <div class="section-header">
@@ -256,6 +280,112 @@
                         <p id="vector-status" class="status-text"></p>
                         <input type="file" id="vector-file-input" accept=".geojson,.json,.shp,.zip" style="display: none;" multiple>
                     </section>
+                    </div><!-- /tif-mode-content -->
+
+                    <!-- ===== 3D Tiles 模式内容 ===== -->
+                    <div id="tiles3d-mode-content" style="display: none;">
+                    <section class="panel-section">
+                        <div class="section-header">
+                            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                                <path d="M2 17l10 5 10-5"/>
+                                <path d="M2 12l10 5 10-5"/>
+                            </svg>
+                            <h3>3D Tiles 数据源</h3>
+                        </div>
+
+                        <!-- 数据源类型切换 -->
+                        <div class="form-group">
+                            <div class="mode-toggle mode-toggle-inline">
+                                <button class="mode-toggle-btn active" data-source="url" id="source-type-url">自定义 URL</button>
+                                <button class="mode-toggle-btn" data-source="ion" id="source-type-ion">Cesium Ion</button>
+                            </div>
+                        </div>
+
+                        <!-- URL 模式 -->
+                        <div id="source-url-panel">
+                            <div class="form-group">
+                                <label class="form-label" for="tileset-url-input">Tileset URL</label>
+                                <input type="text" id="tileset-url-input" class="form-input" placeholder="https://example.com/tileset.json">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="tiles3d-referer-input">Referer <span style="color:var(--text-muted);font-weight:normal">(可选，OSS/CDN 防盗链需要)</span></label>
+                                <input type="text" id="tiles3d-referer-input" class="form-input" placeholder="https://mars3d.cn/">
+                            </div>
+                        </div>
+
+                        <!-- Ion 模式 -->
+                        <div id="source-ion-panel" style="display: none;">
+                            <div class="form-group">
+                                <label class="form-label" for="ion-asset-id">Asset ID</label>
+                                <input type="number" id="ion-asset-id" class="form-input" placeholder="资产 ID">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="ion-token">Access Token</label>
+                                <input type="text" id="ion-token" class="form-input" placeholder="Cesium Ion Token">
+                            </div>
+                        </div>
+
+                        <!-- 解析按钮 -->
+                        <button id="analyze-3dtiles-btn" class="btn btn-secondary btn-block">
+                            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="8"/>
+                                <path d="m21 21-4.35-4.35"/>
+                            </svg>
+                            解析数据源
+                        </button>
+
+                        <!-- 分隔线 -->
+                        <div style="display: flex; align-items: center; gap: 8px; margin: 10px 0; color: var(--text-secondary); font-size: 12px;">
+                            <div style="flex: 1; height: 1px; background: var(--border);"></div>
+                            <span>或</span>
+                            <div style="flex: 1; height: 1px; background: var(--border);"></div>
+                        </div>
+
+                        <!-- 预览本地 3D Tiles -->
+                        <button id="preview-local-3dtiles-btn" class="btn btn-secondary btn-block">
+                            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                            </svg>
+                            预览本地模型
+                        </button>
+
+                        <!-- 解析结果 -->
+                        <div id="tiles3d-info" class="info-card" style="display: none;"></div>
+                    </section>
+
+                    <section class="panel-section">
+                        <div class="section-header">
+                            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            <h3>下载设置</h3>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="tiles3d-concurrency-slider">
+                                并发数 <span class="text-primary" id="tiles3d-concurrency-value">20</span>
+                            </label>
+                            <input type="range" id="tiles3d-concurrency-slider" class="form-range" min="5" max="50" value="20" step="5">
+                        </div>
+
+                        <!-- 过滤估算 -->
+                        <div id="tiles3d-estimate" class="estimate-card"></div>
+
+                        <!-- 下载按钮 -->
+                        <button id="download-3dtiles-btn" class="btn btn-cta btn-lg btn-block" disabled>
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            下载模型
+                        </button>
+                    </section>
+                    </div><!-- /tiles3d-mode-content -->
+
                 </div>
 
                 <!-- Tab 2: 下载中心 -->
@@ -431,11 +561,11 @@
                             <h3>关于</h3>
                         </div>
                         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-                            <span style="font-size:0.8rem;color:var(--text-secondary)">TIF地图下载工具 v<span id="app-version">1.0.0</span></span>
+                            <span style="font-size:0.8rem;color:var(--text-secondary)">GeoDownloader v<span id="app-version">1.0.0</span></span>
                             <button id="check-update-btn" class="btn btn-outline btn-sm">检查更新</button>
                         </div>
                         <p id="update-status" class="status-text" style="font-size:0.75rem"></p>
-                        <a href="https://github.com/gaopengbin/tif-downloader" target="_blank" style="font-size:0.75rem;color:var(--primary);text-decoration:none;display:inline-flex;align-items:center;gap:4px">
+                        <a href="javascript:void(0)" onclick="if(window.__TAURI__&&window.__TAURI__.opener){window.__TAURI__.opener.openUrl('https://github.com/gaopengbin/geo-downloader')}" style="font-size:0.75rem;color:var(--primary);text-decoration:none;display:inline-flex;align-items:center;gap:4px;cursor:pointer">
                             <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
                             GitHub
                         </a>
@@ -447,6 +577,45 @@
         <!-- 右侧地图面板 -->
         <main class="map-panel" role="main" aria-label="地图面板">
             <div id="map"></div>
+            <div id="cesium-container" style="display: none;"></div>
+            <!-- Cesium 模型调控面板 -->
+            <div id="cesium-controls" class="cesium-controls" style="display: none;">
+                <div class="cesium-controls-header">
+                    <span>模型调控</span>
+                    <button id="cesium-controls-toggle" class="cesium-controls-collapse" title="折叠">▾</button>
+                </div>
+                <div id="cesium-controls-body" class="cesium-controls-body">
+                    <div class="ctrl-group">
+                        <label>显示精度 <span class="text-primary" id="sse-value">8</span></label>
+                        <input type="range" id="sse-slider" min="1" max="64" value="8" step="1" class="form-range">
+                        <div class="ctrl-hint">值越小越精细，性能开销越大</div>
+                    </div>
+                    <div class="ctrl-group">
+                        <label>经度偏移 (°)</label>
+                        <input type="number" id="offset-lng" class="form-input ctrl-input" value="0" step="0.0001">
+                    </div>
+                    <div class="ctrl-group">
+                        <label>纬度偏移 (°)</label>
+                        <input type="number" id="offset-lat" class="form-input ctrl-input" value="0" step="0.0001">
+                    </div>
+                    <div class="ctrl-group">
+                        <label>高度偏移 (m)</label>
+                        <input type="number" id="offset-height" class="form-input ctrl-input" value="0" step="1">
+                    </div>
+                    <div class="ctrl-group">
+                        <label>透明度 <span class="text-primary" id="opacity-value">100</span>%</label>
+                        <input type="range" id="opacity-slider" min="0" max="100" value="100" step="5" class="form-range">
+                    </div>
+                    <button id="apply-offset-btn" class="btn btn-secondary btn-sm btn-block">应用位置偏移</button>
+                    <button id="reset-controls-btn" class="btn btn-outline btn-sm btn-block" style="margin-top:4px;">重置</button>
+                    <div class="ctrl-group" style="margin-top:8px; border-top:1px solid var(--border); padding-top:8px;">
+                        <label class="ctrl-checkbox">
+                            <input type="checkbox" id="show-bounding-volumes">
+                            <span>显示矩形包围盒</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
             <div id="map-status-bar" class="map-status-bar">
                 <span id="status-coords">经度: -- 纬度: --</span>
                 <span class="status-divider">|</span>
@@ -544,6 +713,8 @@
     <script src="./lib/leaflet.js"></script>
     <script src="./lib/leaflet.draw.js"></script>
     <script src="./lib/shp.js"></script>
+    <!-- CesiumJS (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/cesium@1.140.0/Build/Cesium/Cesium.js"></script>
     <script src="./js/api.js"></script>
     <script src="./js/app.js"></script>
 </body>

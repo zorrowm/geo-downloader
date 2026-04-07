@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TIF地图下载工具",
-  "version": "2.0.0",
-  "identifier": "dev.tif-downloader",
+  "productName": "GeoDownloader",
+  "version": "3.0.0",
+  "identifier": "dev.geo-downloader",
   "build": {
     "frontendDist": "../static"
   },
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "TIF地图下载工具",
+        "title": "GeoDownloader",
         "width": 1400,
         "height": 900,
         "minWidth": 1000,
@@ -22,7 +22,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http:"
+      "csp": "default-src 'self'; img-src 'self' https: http: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https: http:; worker-src 'self' blob: https:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**/*"]
+      }
     }
   },
   "bundle": {

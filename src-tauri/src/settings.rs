@@ -53,6 +53,9 @@ pub struct AppSettings {
     /// 内置图源覆盖配置（用户修改后的内置图源）
     #[serde(default)]
     pub source_overrides: Vec<CustomTileSource>,
+    /// Cesium Ion Access Token
+    #[serde(default)]
+    pub cesium_ion_token: Option<String>,
 }
 
 fn default_proxy_enabled() -> bool { false }
@@ -74,6 +77,7 @@ impl Default for AppSettings {
             default_source: default_source(),
             custom_sources: vec![],
             source_overrides: vec![],
+            cesium_ion_token: None,
         }
     }
 }
@@ -124,6 +128,6 @@ impl SettingsManager {
 /// 获取数据目录
 fn get_data_dir() -> Result<PathBuf, String> {
     dirs::data_local_dir()
-        .map(|p| p.join("tif-downloader"))
+        .map(|p| p.join("geo-downloader"))
         .ok_or_else(|| "无法获取数据目录".to_string())
 }

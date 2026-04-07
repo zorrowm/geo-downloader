@@ -43,11 +43,11 @@
 ### 6. 任务日志系统
 - 每个任务独立日志，实时记录下载/重试/拼接/导出全流程
 - 任务卡片“日志”按钮展开终端风格日志面板（深色背景、等宽字体、颜色分级）
-- 日志同步持久化到文件 (`{AppData}/tif-downloader/logs/task_*.log`)
+- 日志同步持久化到文件 (`{AppData}/geo-downloader/logs/task_*.log`)
 - 内存中最多保留 500 条，自动滚动到底部
 
 ### 7. 断点续传
-- 任务开始前持久化任务参数到 `{AppData}/tif-downloader/tasks/`
+- 任务开始前持久化任务参数到 `{AppData}/geo-downloader/tasks/`
 - 崩溃/异常退出后重启可看到“中断的任务”，支持“继续下载”或“丢弃”
 - 下载时自动跳过已存在的瓦片文件（按文件名 + 非空检查）
 - 活动任务自动排除在可恢复列表之外
@@ -150,4 +150,119 @@ src-tauri/src/
 - [x] 支持断点续传
 - [x] 任务暂停/继续
 - [x] GeoTIFF 地理参考与多边形裁剪偏移修复
+- [x] 3D Tiles 下载功能
+- [x] CesiumJS 3D 预览
+- [x] 本地 3D Tiles 模型预览
 - [ ] 国际化支持
+
+---
+
+## 3D Tiles 功能模块
+
+> 日期: 2026-04-05
+
+### 11. 3D Tiles 按区域下载
+
+**后端 (`src-tauri/src/tiles3d/`)**
+- `tileset.rs` — 数据结构：Tileset、Tile、BoundingVolume、TileContent、Tiles3dSource（`#[serde(tag = "type")]` 枚举，支持 Cesium Ion / 自定义 URL）
+- `filter.rs` — 空间过滤：SelectionRegion、包围体（box/region/sphere）与多边形相交判断、filter_tileset/filter_tileset_all
+- `fetcher.rs` — 下载编排：resolve_source（含 Cesium Ion token 交换）、fetch_tileset、download（Arc 回调进度、并发控制、URI 重写）
+- `mod.rs` — 模块导出
+- `commands.rs` — 3 个 Tauri 命令：analyze_3dtiles、estimate_3dtiles、create_3dtiles_task
+
+**前端**
+- 模式切换：TIF 瓦片 / 3D Tiles 双标签页
+- 数据源面板：自定义 URL / Cesium Ion Asset ID + Access Token
+- 解析 → 估算 → 下载全流程 UI
+- 下载设置：并发数滑块
+
+### 12. CesiumJS 3D 地球集成
+
+- CesiumJS 1.140.0 CDN 集成
+- `initCesiumViewer()`：OpenStreetMap 底图 + EllipsoidTerrainProvider（无 Ion 依赖）
+- `switchMode()` 使用 `requestAnimationFrame` 延迟初始化解决容器 `display:none` → 零尺寸问题
+- `loadTilesetInCesium()` 支持 Ion Asset / 直接 URL 两种加载方式
+
+**CSP 调整 (`tauri.conf.json`)**
+- `style-src` 加 `https:` 允许 CesiumJS CDN 样式表
+- `worker-src 'self' blob: https:` 允许 CesiumJS Web Workers
+- `img-src` 加 `http:` 覆盖 asset 协议纹理加载
+- `connect-src 'self' https: http:` 覆盖异步数据请求
+
+### 13. 本地 3D Tiles 模型预览
+
+**方案演进**
+- ~~方案 A: Tauri asset 协议 (`convertFileSrc`)~~ — Windows 路径编码问题：`encodeURIComponent` 将 `\` 编码为 `%5C`，整个路径变为单一 URL 段，CesiumJS 相对路径解析失败（tile 文件 404）
+- **方案 B: 本地 HTTP 文件服务器** ✅ — 零新依赖，复用已有 tokio
+
+**实现**
+- `serve_local_tiles` 命令 (`commands.rs`)：
+  - `tokio::net::TcpListener::bind("127.0.0.1:0")` 绑定随机端口
+  - 极简 HTTP/1.1 响应：解析 GET 请求路径 → URL 解码 → 读文件 → 带 CORS 头返回
+  - MIME 类型映射：json/glb/gltf/b3dm/i3dm/pnts/cmpt/png/jpg/ktx2
+  - 路径穿越防护：`canonicalize()` + `starts_with()` 校验
+  - `PREVIEW_SERVER_PORT` 原子变量跟踪活跃端口
+- 前端 `previewLocal3dTiles()`：
+  - Tauri 文件对话框选择 `tileset.json`
+  - 提取目录路径 → `invoke('serve_local_tiles', { dirPath })`
+  - 返回 `http://127.0.0.1:<port>` → 拼接 tileset 文件名 → CesiumJS 加载
+  - 加载状态反馈（loading spinner / 错误提示）
+- UI: "预览本地模型"按钮（文件夹图标），"或"分隔符
+
+**状态**: 代码完成，待验证（需本地 3D Tiles 测试数据）
+
+---
+
+## 3D Tiles 下载质量与兼容性修复
+
+> 日期: 2025-07-16
+
+### 14. 下载缺块三大 Bug 修复
+
+参考 GitHub 开源仓库：Sogrey/3dtiles-downloader (Rust)、pxret/3dtiles_download (Node.js)、lukaslaobeyer/3dtiles-dl (Python) 等实现，诊断并修复以下问题：
+
+1. **URL 解析重写** — `resolve_url()` 从简单字符串拼接改为 `reqwest::Url::parse(base)?.join(relative)?`，正确处理 OSGB 数据中的 `../` 相对路径
+2. **重试退避策略** — MAX_RETRIES 3→5，增加指数退避（500ms × 2^(n-1)），防止服务器限流时快速耗尽重试
+3. **通道发送错误处理** — `let _ = tx.send(...)` 改为日志记录，不再静默丢弃失败的瓦片
+4. **解析并发降低** — `buffer_unordered` 50→20，减少对服务器的并发压力
+
+### 15. Query 参数传递
+
+- 支持 `?token=mars3d` 等 CDN 认证参数
+- `download()` 从 tileset_url 提取 query 参数，传入 `resolve_and_stream()`
+- 新增 `append_query(url, query)` 工具函数
+- HTTP 请求 URL 附加 query，本地存储路径保持干净
+
+### 16. Referer 防盗链支持
+
+**问题**：OSS/CDN 通过 Referer 白名单控制访问，直接请求返回 403
+
+**后端**
+- `download()` 改为 `&mut self`，自动从 tileset_url origin 推断 Referer
+- `execute_3dtiles_task` 中先调用 `resolve_source()` 再 `download()` 以继承 auth_headers
+
+**前端**
+- 新增 Referer 输入框 (`tiles3d-referer-input`)
+- `buildTiles3dSource()` 将 Referer 放入 `source.headers`
+
+### 17. CesiumJS 预览反向代理
+
+**问题**：浏览器安全策略禁止 JavaScript 设置 `Referer` header，CesiumJS 无法直接加载 Referer 保护的远端数据
+
+**方案**：本地反向代理（`start_tile_proxy` 命令）
+- `tokio::net::TcpListener::bind("127.0.0.1:0")` 绑定随机端口
+- 接收 CesiumJS 请求，转发到远端并带上自定义 headers（Referer 等）
+- 自动从 base_url 提取 query 参数并附加到所有转发请求（如 `?token=mars3d`）
+- 响应带 `Access-Control-Allow-Origin: *` 供 WebView 跨域访问
+- `reqwest::Client` 带 `default_headers` 注入 Referer
+
+**前端**
+- `loadTilesetInCesium()` 改为 `async`
+- 检测到 Referer → 调用 `startTileProxy(baseUrl, headers)` → CesiumJS 从 `http://127.0.0.1:PORT/tileset.json` 加载
+- 子瓦片请求同样走代理，query 参数由代理层自动附加
+
+### 18. UI 亮色主题修复
+
+- `.cesium-controls` 背景从深色 `rgba(15,23,42,0.92)` 改为亮色 `rgba(255,255,255,0.95)`
+- `.map-status-bar` 背景从 `rgba(30,41,59,0.8)` 改为 `rgba(255,255,255,0.9)`
+- 文字颜色统一使用 `var(--text)` CSS 变量

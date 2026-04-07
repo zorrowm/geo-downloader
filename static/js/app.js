@@ -60,6 +60,8 @@ function extractPolygonFromGeoJSON(geojson) {
 // ============ 初始化 ============
 document.addEventListener('DOMContentLoaded', async function() {
     initTitlebar(); // 初始化标题栏控制
+    initModeToggle(); // 模式切换 (TIF / 3D Tiles)
+    initCesiumControls(); // Cesium 调控面板
     await initSettings(); // 加载设置
     initMap();
     initDrawControls();
@@ -68,6 +70,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     initZoomSlider();
     initConcurrencySlider();
     initCompressOption();
+    initTiles3dPanel(); // 3D Tiles 面板事件
+    initCesiumDrawTools(); // CesiumJS 绘图工具
     initSettingsPanel();
     initHistoryListEvents();
     initTaskListEvents();
@@ -110,14 +114,14 @@ function initTitlebar() {
     const titlebar = document.querySelector('.titlebar');
     if (titlebar) {
         titlebar.addEventListener('mousedown', (e) => {
-            // 排除按钮点击
-            if (e.target.closest('.titlebar-btn')) return;
+            // 排除按钮和模式切换器的点击
+            if (e.target.closest('.titlebar-btn') || e.target.closest('.mode-toggle')) return;
             appWindow.startDragging();
         });
         
         // 双击标题栏最大化/还原
         titlebar.addEventListener('dblclick', async (e) => {
-            if (e.target.closest('.titlebar-btn')) return;
+            if (e.target.closest('.titlebar-btn') || e.target.closest('.mode-toggle')) return;
             const isMaximized = await appWindow.isMaximized();
             if (isMaximized) {
                 appWindow.unmaximize();
@@ -126,6 +130,98 @@ function initTitlebar() {
             }
         });
     }
+}
+
+// ============ 模式切换 (TIF / 3D Tiles) ============
+let currentMode = 'tif'; // 'tif' | '3dtiles'
+let cesiumViewer = null;
+let cesiumTileset = null;
+
+function initModeToggle() {
+    const toggleContainer = document.getElementById('mode-toggle');
+    if (!toggleContainer) return;
+
+    toggleContainer.querySelectorAll('.mode-toggle-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const mode = btn.dataset.mode;
+            if (mode === currentMode) return;
+            switchMode(mode);
+        });
+    });
+}
+
+function switchMode(mode) {
+    currentMode = mode;
+
+    // 更新标题栏按钮状态
+    document.querySelectorAll('#mode-toggle .mode-toggle-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === mode);
+    });
+
+    // 更新标题文字
+    const title = document.getElementById('app-title');
+    if (title) title.textContent = mode === 'tif' ? 'TIF 地图下载工具' : '3D Tiles 下载工具';
+
+    // 切换面板内容
+    const tifContent = document.getElementById('tif-mode-content');
+    const tiles3dContent = document.getElementById('tiles3d-mode-content');
+    if (tifContent) tifContent.style.display = mode === 'tif' ? '' : 'none';
+    if (tiles3dContent) tiles3dContent.style.display = mode === '3dtiles' ? '' : 'none';
+
+    // 切换地图引擎
+    const mapEl = document.getElementById('map');
+    const cesiumEl = document.getElementById('cesium-container');
+    const cesiumDrawTools = document.getElementById('cesium-draw-tools');
+    if (mode === '3dtiles') {
+        mapEl.style.display = 'none';
+        cesiumEl.style.display = '';
+        if (cesiumDrawTools) cesiumDrawTools.style.display = '';
+        // 延迟一帧等 DOM reflow，确保容器有实际尺寸
+        requestAnimationFrame(() => {
+            initCesiumViewer();
+            // 如果已有选区，在 Cesium 上显示
+            syncSelectionToCesium();
+        });
+    } else {
+        cesiumEl.style.display = 'none';
+        mapEl.style.display = '';
+        if (cesiumDrawTools) cesiumDrawTools.style.display = 'none';
+        map.invalidateSize(); // Leaflet 可能需要重新计算尺寸
+        // 清理 Cesium 绘图状态
+        cleanCesiumDrawing();
+    }
+}
+
+function initCesiumViewer() {
+    if (cesiumViewer) return;
+    if (typeof Cesium === 'undefined') {
+        console.warn('CesiumJS 尚未加载');
+        return;
+    }
+
+    cesiumViewer = new Cesium.Viewer('cesium-container', {
+        baseLayer: new Cesium.ImageryLayer(
+            new Cesium.OpenStreetMapImageryProvider({
+                url: 'https://tile.openstreetmap.org/'
+            })
+        ),
+        terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+        baseLayerPicker: false,
+        geocoder: false,
+        homeButton: false,
+        sceneModePicker: false,
+        navigationHelpButton: false,
+        animation: false,
+        timeline: false,
+        fullscreenButton: false,
+        vrButton: false,
+        infoBox: false,
+        selectionIndicator: false,
+    });
+
+    // 隐藏 Cesium 水印
+    const credit = cesiumViewer.cesiumWidget.creditContainer;
+    if (credit) credit.style.display = 'none';
 }
 
 // ============ 设置管理 ============
@@ -174,6 +270,12 @@ function applySettings(settings) {
     const zoomSlider = document.getElementById('zoom-slider');
     if (zoomSlider && settings.default_zoom) {
         zoomSlider.value = settings.default_zoom;
+    }
+
+    // Cesium Ion Token
+    const ionTokenInput = document.getElementById('ion-token');
+    if (ionTokenInput && settings.cesium_ion_token) {
+        ionTokenInput.value = settings.cesium_ion_token;
     }
 }
 
@@ -492,6 +594,7 @@ function initDrawControls() {
         updateSelectionInfo();
         estimateDownload();
         updateVectorButtons();
+        syncSelectionToCesium();
     });
     
     // 删除事件
@@ -501,6 +604,7 @@ function initDrawControls() {
         updateSelectionInfo();
         document.getElementById('download-btn').disabled = true;
         updateVectorButtons();
+        syncSelectionToCesium();
     });
 }
 
@@ -610,8 +714,8 @@ function initSettingsPanel() {
 
 // ============ 自动更新 ============
 
-let APP_VERSION = '2.0.0';
-const GITHUB_REPO = 'gaopengbin/tif-downloader';
+let APP_VERSION = '3.0.0';
+const GITHUB_REPO = 'gaopengbin/geo-downloader';
 
 // 从 Tauri 配置动态读取版本号，保持单一数据源 (tauri.conf.json)
 async function initAppVersion() {
@@ -1360,6 +1464,7 @@ async function loadSelectedBoundary() {
         updateSelectionInfo();
         estimateDownload();
         updateVectorButtons();
+        syncSelectionToCesium();
     } catch (error) {
         console.error('Failed to load boundary:', error);
         alert('加载边界失败');
@@ -1985,6 +2090,7 @@ function setBoundaryFromGeoJSON(geojson, filename) {
     updateSelectionInfo();
     estimateDownload();
     updateVectorButtons();
+    syncSelectionToCesium();
     
     // 如果有多边形，自动勾选"按边界裁剪"
     if (currentPolygon) {
@@ -2019,6 +2125,13 @@ function clearBoundary(showStatus = true) {
     document.getElementById('download-btn').disabled = true;
     document.getElementById('estimate-info').innerHTML = '';
     updateVectorButtons();
+
+    // 清除 Cesium 上的选区显示
+    if (cesiumDrawEntity && cesiumViewer) {
+        cesiumViewer.entities.remove(cesiumDrawEntity);
+        cesiumDrawEntity = null;
+    }
+    cleanCesiumDrawing();
     
 }
 
@@ -2103,8 +2216,8 @@ function renderHistoryCard(record) {
             </div>
             <div class="history-card-meta">
                 <span>${record.source_name}</span>
-                <span>z${record.zoom}</span>
-                <span>${record.tile_count} 瓦片</span>
+                ${record.zoom > 0 ? `<span>z${record.zoom}</span>` : ''}
+                <span>${record.tile_count} ${record.zoom > 0 ? '瓦片' : '节点'}</span>
                 <span>${fileSize}</span>
             </div>
             <div class="history-card-path">${record.file_path}</div>
@@ -2211,8 +2324,8 @@ function addTaskCardToUI(taskId, name, sourceName, zoom, tileCount) {
             </div>
             <div class="task-card-meta">
                 <span>${sourceName}</span>
-                <span>z${zoom}</span>
-                <span>${tileCount.toLocaleString()} 瓦片</span>
+                ${zoom > 0 ? `<span>z${zoom}</span>` : ''}
+                <span>${tileCount.toLocaleString()} ${zoom > 0 ? '瓦片' : '节点'}</span>
             </div>
             <div class="task-progress-bar">
                 <div class="task-progress-fill" style="width: 0%"></div>
@@ -2313,6 +2426,7 @@ const TASK_STATUS_TEXT = {
     'pending': '等待中',
     'downloading': '下载中',
     'paused': '已暂停',
+    'processing': '处理中',
     'merging': '拼接中',
     'exporting': '导出中',
     'completed': '已完成',
@@ -2538,3 +2652,796 @@ function initTaskListEvents() {
         }
     });
 }
+
+// ============ 3D Tiles 面板 ============
+let tiles3dAnalyzed = null; // 缓存解析结果
+
+function initTiles3dPanel() {
+    // 数据源类型切换 (URL / Ion)
+    const urlBtn = document.getElementById('source-type-url');
+    const ionBtn = document.getElementById('source-type-ion');
+    if (urlBtn && ionBtn) {
+        urlBtn.addEventListener('click', () => switchTiles3dSource('url'));
+        ionBtn.addEventListener('click', () => switchTiles3dSource('ion'));
+    }
+
+    // 并发数滑块
+    const slider = document.getElementById('tiles3d-concurrency-slider');
+    const value = document.getElementById('tiles3d-concurrency-value');
+    if (slider && value) {
+        slider.addEventListener('input', () => { value.textContent = slider.value; });
+    }
+
+    // 解析按钮
+    const analyzeBtn = document.getElementById('analyze-3dtiles-btn');
+    if (analyzeBtn) {
+        analyzeBtn.addEventListener('click', analyzeTiles3d);
+    }
+
+    // 下载按钮
+    const downloadBtn = document.getElementById('download-3dtiles-btn');
+    if (downloadBtn) {
+        downloadBtn.addEventListener('click', startTiles3dDownload);
+    }
+
+    // 预览本地模型按钮
+    const previewLocalBtn = document.getElementById('preview-local-3dtiles-btn');
+    if (previewLocalBtn) {
+        previewLocalBtn.addEventListener('click', previewLocal3dTiles);
+    }
+
+    // Ion token 自动持久化
+    const ionTokenInput = document.getElementById('ion-token');
+    if (ionTokenInput) {
+        ionTokenInput.addEventListener('blur', async () => {
+            const val = ionTokenInput.value.trim();
+            if (appSettings && appSettings.cesium_ion_token !== val) {
+                appSettings.cesium_ion_token = val || null;
+                try { await TifApi.saveSettings(appSettings); } catch (e) { /* silent */ }
+            }
+        });
+    }
+}
+
+function switchTiles3dSource(type) {
+    document.getElementById('source-type-url').classList.toggle('active', type === 'url');
+    document.getElementById('source-type-ion').classList.toggle('active', type === 'ion');
+    document.getElementById('source-url-panel').style.display = type === 'url' ? '' : 'none';
+    document.getElementById('source-ion-panel').style.display = type === 'ion' ? '' : 'none';
+}
+
+function buildTiles3dSource() {
+    const isIon = document.getElementById('source-type-ion').classList.contains('active');
+    if (isIon) {
+        const assetId = parseInt(document.getElementById('ion-asset-id').value);
+        const token = document.getElementById('ion-token').value.trim();
+        if (!assetId || !token) { alert('请填写 Asset ID 和 Token'); return null; }
+        return { type: 'cesium_ion', asset_id: assetId, access_token: token };
+    } else {
+        const url = document.getElementById('tileset-url-input').value.trim();
+        if (!url) { alert('请输入 tileset.json URL'); return null; }
+        const referer = document.getElementById('tiles3d-referer-input')?.value?.trim();
+        const headers = {};
+        if (referer) headers['Referer'] = referer;
+        return { type: 'url', tileset_url: url, headers };
+    }
+}
+
+function getProxyConfig() {
+    const enabled = document.getElementById('proxy-checkbox')?.checked;
+    const url = document.getElementById('proxy-input')?.value?.trim();
+    return enabled && url ? url : null;
+}
+
+function showTiles3dExtent(extent) {
+    // 在 Cesium 中飞到 extent
+    if (!cesiumViewer || !extent || extent.length < 4) return;
+    cesiumViewer.camera.flyTo({
+        destination: Cesium.Rectangle.fromDegrees(extent[0], extent[1], extent[2], extent[3]),
+        duration: 1.5
+    });
+}
+
+async function previewLocal3dTiles() {
+    if (!window.__TAURI__?.dialog) return;
+
+    const btn = document.getElementById('preview-local-3dtiles-btn');
+    try {
+        const filePath = await window.__TAURI__.dialog.open({
+            filters: [{ name: 'Tileset JSON', extensions: ['json'] }],
+            multiple: false,
+            title: '选择 tileset.json'
+        });
+        if (!filePath) return;
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loading-spinner"></span> 加载中...';
+
+        // 确保在 3D Tiles 模式
+        if (currentMode !== '3dtiles') switchMode('3dtiles');
+
+        // 等待 Cesium 初始化完成
+        await new Promise(resolve => {
+            const check = () => cesiumViewer ? resolve() : requestAnimationFrame(check);
+            check();
+        });
+
+        // 提取目录路径，启动本地文件服务器
+        const dirPath = filePath.substring(0, Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/')));
+        const fileName = filePath.substring(dirPath.length + 1);
+        const baseUrl = await window.__TAURI__.core.invoke('serve_local_tiles', { dirPath });
+        const tilesetUrl = baseUrl + '/' + encodeURIComponent(fileName);
+
+        // 清除旧 tileset
+        if (cesiumTileset) {
+            cesiumViewer.scene.primitives.remove(cesiumTileset);
+            cesiumTileset = null;
+        }
+        hideCesiumControls();
+
+        const tileset = await Cesium.Cesium3DTileset.fromUrl(tilesetUrl);
+        cesiumTileset = cesiumViewer.scene.primitives.add(tileset);
+        cesiumViewer.zoomTo(tileset);
+        showCesiumControls();
+    } catch (e) {
+        console.error('本地 3D Tiles 加载失败:', e);
+        alert('加载失败: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg> 预览本地模型`;
+    }
+}
+
+async function loadTilesetInCesium(source) {
+    if (!cesiumViewer) return;
+
+    // 清除旧 tileset
+    if (cesiumTileset) {
+        cesiumViewer.scene.primitives.remove(cesiumTileset);
+        cesiumTileset = null;
+    }
+    hideCesiumControls();
+
+    const onTilesetLoaded = (tileset) => {
+        cesiumTileset = cesiumViewer.scene.primitives.add(tileset);
+        cesiumViewer.zoomTo(tileset);
+        showCesiumControls();
+    };
+
+    try {
+        if (source.type === 'cesium_ion') {
+            // 设置 Ion token 后通过 IonResource 加载
+            Cesium.Ion.defaultAccessToken = source.access_token;
+            const resource = await Cesium.IonResource.fromAssetId(source.asset_id);
+            Cesium.Cesium3DTileset.fromUrl(resource)
+                .then(onTilesetLoaded)
+                .catch(e => console.error('Cesium Ion tileset 加载失败:', e));
+        } else {
+            let url = source.tileset_url;
+
+            // Referer 保护源：启动反向代理，CesiumJS 通过 localhost 加载
+            const hasReferer = source.headers && source.headers['Referer'];
+            if (hasReferer) {
+                try {
+                    // 从 tileset_url 提取 base（去掉最后的文件名），保留 query 给代理层
+                    const urlObj = new URL(source.tileset_url);
+                    const pathParts = urlObj.pathname.split('/');
+                    const tilesetFile = pathParts.pop(); // e.g. "tileset.json"
+                    urlObj.pathname = pathParts.join('/');
+                    // base 含 query（如 ?token=mars3d），代理会附加到所有转发请求
+                    const baseUrl = urlObj.origin + urlObj.pathname + urlObj.search;
+
+                    const proxyBase = await TifApi.startTileProxy(baseUrl, source.headers);
+                    // CesiumJS 使用干净的代理 URL，query 由代理层自动附加
+                    url = proxyBase + '/' + tilesetFile;
+                    console.info('预览通过反向代理:', url);
+                } catch (e) {
+                    console.warn('启动反向代理失败，尝试直连:', e);
+                }
+            }
+
+            Cesium.Cesium3DTileset.fromUrl(url)
+                .then(onTilesetLoaded)
+                .catch(e => console.error('Tileset 加载失败:', e));
+        }
+    } catch (e) {
+        console.error('Cesium tileset 加载异常:', e);
+    }
+}
+
+async function analyzeTiles3d() {
+    const source = buildTiles3dSource();
+    if (!source) return;
+
+    const btn = document.getElementById('analyze-3dtiles-btn');
+    const infoCard = document.getElementById('tiles3d-info');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-spinner"></span> 解析中...';
+    infoCard.style.display = 'none';
+
+    try {
+        const summary = await TifApi.analyze3dTiles(source, getProxyConfig());
+        tiles3dAnalyzed = { source, summary };
+
+        const hasReferer = source.type === 'url' && source.headers && source.headers['Referer'];
+        infoCard.style.display = '';
+        infoCard.innerHTML = `
+            <div class="info-row"><span>瓦片总数</span><strong>${summary.total_tiles}</strong></div>
+            <div class="info-row"><span>含内容瓦片</span><strong>${summary.content_tiles}</strong></div>
+            <div class="info-row"><span>最大深度</span><strong>${summary.max_depth}</strong></div>
+            <div class="info-row"><span>层级数</span><strong>${summary.levels}</strong></div>
+            ${summary.has_external_tilesets ? '<div class="info-row text-muted" style="font-size:12px"><span>⚠ 含外部 tileset 引用，以上为根级统计</span></div>' : ''}
+            ${hasReferer ? '<div class="info-row text-muted" style="font-size:12px"><span>ℹ Referer 保护源：通过本地代理预览</span></div>' : ''}
+        `;
+
+        // 在地图上渲染 extent
+        showTiles3dExtent(summary.extent);
+
+        // 在 Cesium 中预览 tileset
+        await loadTilesetInCesium(source);
+
+        // 有选区时自动估算
+        if (currentBounds || currentPolygon) {
+            await estimateTiles3d();
+        }
+
+        document.getElementById('download-3dtiles-btn').disabled = false;
+    } catch (error) {
+        infoCard.style.display = '';
+        infoCard.innerHTML = `<p class="text-error">解析失败: ${error.message || error}</p>`;
+        document.getElementById('download-3dtiles-btn').disabled = true;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = `
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="m21 21-4.35-4.35"/>
+            </svg>
+            解析数据源`;
+    }
+}
+
+async function estimateTiles3d() {
+    if (!tiles3dAnalyzed) return;
+
+    const polygon = currentPolygon || (currentBounds ? [
+        { lat: currentBounds.south, lng: currentBounds.west },
+        { lat: currentBounds.north, lng: currentBounds.west },
+        { lat: currentBounds.north, lng: currentBounds.east },
+        { lat: currentBounds.south, lng: currentBounds.east },
+        { lat: currentBounds.south, lng: currentBounds.west }
+    ] : null);
+    if (!polygon) return;
+
+    // 转为 [lng, lat] 数组
+    const coords = (Array.isArray(polygon[0]) ? polygon[0] : polygon)
+        .map(p => [p.lng, p.lat]);
+
+    const estimateCard = document.getElementById('tiles3d-estimate');
+    estimateCard.innerHTML = '<span class="loading-spinner"></span> 估算中...';
+
+    try {
+        const est = await TifApi.estimate3dTiles(tiles3dAnalyzed.source, coords, getProxyConfig());
+        estimateCard.innerHTML = `
+            <div class="info-row"><span>选区内瓦片</span><strong>${est.filtered_tiles}</strong></div>
+            <div class="info-row"><span>需下载内容</span><strong>${est.content_tiles}</strong></div>
+        `;
+    } catch (error) {
+        estimateCard.innerHTML = `<p class="text-error">估算失败: ${error.message || error}</p>`;
+    }
+}
+
+async function startTiles3dDownload() {
+    const source = buildTiles3dSource();
+    if (!source) return;
+
+    // 选择保存目录
+    let savePath = null;
+    if (TifApi._checkIsTauri && TifApi._checkIsTauri()) {
+        try {
+            savePath = await window.__TAURI__.dialog.open({
+                directory: true,
+                title: '选择 3D Tiles 保存目录'
+            });
+            if (!savePath) return;
+        } catch (e) {
+            console.error('目录选择失败:', e);
+            return;
+        }
+    }
+
+    const polygon = currentPolygon || (currentBounds ? [
+        { lat: currentBounds.south, lng: currentBounds.west },
+        { lat: currentBounds.north, lng: currentBounds.west },
+        { lat: currentBounds.north, lng: currentBounds.east },
+        { lat: currentBounds.south, lng: currentBounds.east },
+        { lat: currentBounds.south, lng: currentBounds.west }
+    ] : null);
+
+    // 转为 [lng, lat] 数组
+    const coords = polygon
+        ? (Array.isArray(polygon[0]) ? polygon[0] : polygon).map(p => [p.lng, p.lat])
+        : null;
+
+    const concurrency = parseInt(document.getElementById('tiles3d-concurrency-slider').value);
+
+    const request = {
+        source,
+        polygon: coords && coords.length >= 3 ? coords : null,
+        save_path: savePath,
+        proxy: getProxyConfig(),
+        concurrency
+    };
+
+    const downloadBtn = document.getElementById('download-3dtiles-btn');
+    const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const taskName = `3dtiles_${timestamp}`;
+
+    try {
+        downloadBtn.disabled = true;
+        downloadBtn.innerHTML = '<span class="loading-spinner"></span> 创建任务...';
+
+        const result = await TifApi.create3dTilesTask(request, taskName);
+
+        addTaskCardToUI(result.task_id, taskName, '3D Tiles', 0, result.tile_count);
+        startTaskListener(result.task_id);
+        switchToDownloadCenter();
+    } catch (error) {
+        alert('创建任务失败: ' + (error.message || error));
+    } finally {
+        downloadBtn.disabled = false;
+        downloadBtn.innerHTML = `
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            下载模型`;
+    }
+}
+
+// ============ Cesium 模型调控面板 ============
+
+function initCesiumControls() {
+    // 折叠/展开
+    const header = document.querySelector('.cesium-controls-header');
+    const body = document.getElementById('cesium-controls-body');
+    const toggleBtn = document.getElementById('cesium-controls-toggle');
+    if (header) {
+        header.addEventListener('click', () => {
+            body.classList.toggle('collapsed');
+            toggleBtn.classList.toggle('collapsed');
+        });
+    }
+
+    // 显示精度（maximumScreenSpaceError）
+    const sseSlider = document.getElementById('sse-slider');
+    const sseValue = document.getElementById('sse-value');
+    if (sseSlider) {
+        sseSlider.addEventListener('input', () => {
+            sseValue.textContent = sseSlider.value;
+            if (cesiumTileset) {
+                cesiumTileset.maximumScreenSpaceError = Number(sseSlider.value);
+            }
+        });
+    }
+
+    // 透明度
+    const opacitySlider = document.getElementById('opacity-slider');
+    const opacityValue = document.getElementById('opacity-value');
+    if (opacitySlider) {
+        opacitySlider.addEventListener('input', () => {
+            opacityValue.textContent = opacitySlider.value;
+            if (cesiumTileset) {
+                const alpha = Number(opacitySlider.value) / 100;
+                cesiumTileset.style = new Cesium.Cesium3DTileStyle({
+                    color: `color("white", ${alpha})`
+                });
+            }
+        });
+    }
+
+    // 应用位置偏移
+    document.getElementById('apply-offset-btn')?.addEventListener('click', applyPositionOffset);
+
+    // 重置
+    document.getElementById('reset-controls-btn')?.addEventListener('click', resetCesiumControls);
+
+    // 显示瓦片包围盒
+    const bvCheckbox = document.getElementById('show-bounding-volumes');
+    if (bvCheckbox) {
+        bvCheckbox.addEventListener('change', () => {
+            if (cesiumTileset) {
+                cesiumTileset.debugShowBoundingVolume = bvCheckbox.checked;
+            }
+        });
+    }
+}
+
+function showCesiumControls() {
+    const panel = document.getElementById('cesium-controls');
+    if (panel) panel.style.display = '';
+    if (cesiumTileset) {
+        // 同步 SSE 精度
+        const sseSlider = document.getElementById('sse-slider');
+        if (sseSlider) cesiumTileset.maximumScreenSpaceError = Number(sseSlider.value);
+        // 同步包围盒开关
+        const bv = document.getElementById('show-bounding-volumes');
+        if (bv) cesiumTileset.debugShowBoundingVolume = bv.checked;
+    }
+}
+
+function hideCesiumControls() {
+    const panel = document.getElementById('cesium-controls');
+    if (panel) panel.style.display = 'none';
+}
+
+function applyPositionOffset() {
+    if (!cesiumTileset || !cesiumViewer) return;
+
+    const lng = Number(document.getElementById('offset-lng').value) || 0;
+    const lat = Number(document.getElementById('offset-lat').value) || 0;
+    const height = Number(document.getElementById('offset-height').value) || 0;
+
+    if (lng === 0 && lat === 0 && height === 0) {
+        // 重置 modelMatrix
+        cesiumTileset.modelMatrix = Cesium.Matrix4.IDENTITY.clone();
+        return;
+    }
+
+    // 获取 tileset 原始包围球中心
+    const center = cesiumTileset.boundingSphere.center;
+    const cart = Cesium.Cartographic.fromCartesian(center);
+
+    // 计算偏移后的新位置
+    const newCart = new Cesium.Cartographic(
+        cart.longitude + Cesium.Math.toRadians(lng),
+        cart.latitude + Cesium.Math.toRadians(lat),
+        cart.height + height
+    );
+
+    // 计算从原位置到新位置的变换矩阵
+    const oldTransform = Cesium.Transforms.eastNorthUpToFixedFrame(
+        Cesium.Cartographic.toCartesian(cart)
+    );
+    const newTransform = Cesium.Transforms.eastNorthUpToFixedFrame(
+        Cesium.Cartographic.toCartesian(newCart)
+    );
+
+    const inverseOld = Cesium.Matrix4.inverse(oldTransform, new Cesium.Matrix4());
+    const offsetMatrix = Cesium.Matrix4.multiply(newTransform, inverseOld, new Cesium.Matrix4());
+
+    cesiumTileset.modelMatrix = offsetMatrix;
+}
+
+function resetCesiumControls() {
+    // 重置所有控件值
+    const sseSlider = document.getElementById('sse-slider');
+    const sseValue = document.getElementById('sse-value');
+    const opacitySlider = document.getElementById('opacity-slider');
+    const opacityValue = document.getElementById('opacity-value');
+
+    if (sseSlider) { sseSlider.value = 8; sseValue.textContent = '8'; }
+    if (opacitySlider) { opacitySlider.value = 100; opacityValue.textContent = '100'; }
+    document.getElementById('offset-lng').value = 0;
+    document.getElementById('offset-lat').value = 0;
+    document.getElementById('offset-height').value = 0;
+
+    if (cesiumTileset) {
+        cesiumTileset.maximumScreenSpaceError = 8;
+        cesiumTileset.style = undefined;
+        cesiumTileset.modelMatrix = Cesium.Matrix4.IDENTITY.clone();
+        cesiumTileset.debugShowBoundingVolume = false;
+    }
+    const bvCheckbox = document.getElementById('show-bounding-volumes');
+    if (bvCheckbox) bvCheckbox.checked = false;
+}
+
+// ============ CesiumJS 绘图工具 ============
+
+let cesiumDrawHandler = null;   // ScreenSpaceEventHandler
+let cesiumDrawMode = null;      // 'rect' | 'polygon' | null
+let cesiumDrawPoints = [];      // 绘制中的点 [{lng, lat}, ...]
+let cesiumDrawEntity = null;    // 选区显示 Entity
+let cesiumDrawTempEntities = []; // 临时绘制辅助 Entities
+
+function initCesiumDrawTools() {
+    const rectBtn = document.getElementById('cesium-draw-rect');
+    const polyBtn = document.getElementById('cesium-draw-polygon');
+    if (!rectBtn || !polyBtn) return;
+
+    rectBtn.addEventListener('click', () => startCesiumDraw('rect'));
+    polyBtn.addEventListener('click', () => startCesiumDraw('polygon'));
+}
+
+function startCesiumDraw(mode) {
+    if (!cesiumViewer) return;
+
+    // 如果正在绘制，先取消
+    cleanCesiumDrawing();
+
+    cesiumDrawMode = mode;
+    cesiumDrawPoints = [];
+
+    // 高亮当前按钮
+    const rectBtn = document.getElementById('cesium-draw-rect');
+    const polyBtn = document.getElementById('cesium-draw-polygon');
+    rectBtn.classList.toggle('active', mode === 'rect');
+    polyBtn.classList.toggle('active', mode === 'polygon');
+
+    // 提示
+    const hint = mode === 'rect'
+        ? '在地球上点击两个角点绘制矩形（右键取消）'
+        : '在地球上点击绘制多边形顶点，双击或右键结束（右键取消）';
+    showSelectionHint(hint);
+
+    // 更改鼠标光标
+    cesiumViewer.canvas.style.cursor = 'crosshair';
+
+    // 创建事件处理器
+    cesiumDrawHandler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.canvas);
+
+    // 左键点击：添加点
+    cesiumDrawHandler.setInputAction((click) => {
+        const cartesian = cesiumViewer.camera.pickEllipsoid(
+            click.position, cesiumViewer.scene.globe.ellipsoid
+        );
+        if (!cartesian) return;
+
+        const carto = Cesium.Cartographic.fromCartesian(cartesian);
+        const lng = Cesium.Math.toDegrees(carto.longitude);
+        const lat = Cesium.Math.toDegrees(carto.latitude);
+
+        cesiumDrawPoints.push({ lng, lat });
+
+        // 画点标记
+        const pointEntity = cesiumViewer.entities.add({
+            position: cartesian,
+            point: { pixelSize: 8, color: Cesium.Color.fromCssColorString('#3B82F6') }
+        });
+        cesiumDrawTempEntities.push(pointEntity);
+
+        if (mode === 'rect' && cesiumDrawPoints.length === 2) {
+            finishCesiumDraw();
+        }
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    // 左键双击：结束多边形
+    if (mode === 'polygon') {
+        cesiumDrawHandler.setInputAction(() => {
+            if (cesiumDrawPoints.length >= 3) {
+                finishCesiumDraw();
+            }
+        }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+    }
+
+    // 鼠标移动：实时预览
+    cesiumDrawHandler.setInputAction((movement) => {
+        if (cesiumDrawPoints.length === 0) return;
+        const cartesian = cesiumViewer.camera.pickEllipsoid(
+            movement.endPosition, cesiumViewer.scene.globe.ellipsoid
+        );
+        if (!cartesian) return;
+
+        const carto = Cesium.Cartographic.fromCartesian(cartesian);
+        const lng = Cesium.Math.toDegrees(carto.longitude);
+        const lat = Cesium.Math.toDegrees(carto.latitude);
+
+        // 更新预览
+        updateCesiumDrawPreview(lng, lat);
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+    // 右键：取消
+    cesiumDrawHandler.setInputAction(() => {
+        cleanCesiumDrawing();
+        showSelectionHint('绘制已取消');
+    }, Cesium.ScreenSpaceEventType.RIGHT_CLICK);
+}
+
+function updateCesiumDrawPreview(curLng, curLat) {
+    // 移除旧预览线
+    cesiumDrawTempEntities = cesiumDrawTempEntities.filter(e => {
+        if (e._isPreview) {
+            cesiumViewer.entities.remove(e);
+            return false;
+        }
+        return true;
+    });
+
+    if (cesiumDrawMode === 'rect' && cesiumDrawPoints.length === 1) {
+        const p = cesiumDrawPoints[0];
+        const positions = Cesium.Cartesian3.fromDegreesArray([
+            p.lng, p.lat,
+            curLng, p.lat,
+            curLng, curLat,
+            p.lng, curLat,
+        ]);
+        const previewEntity = cesiumViewer.entities.add({
+            polygon: {
+                hierarchy: positions,
+                material: Cesium.Color.fromCssColorString('#3B82F6').withAlpha(0.2),
+                outline: true,
+                outlineColor: Cesium.Color.fromCssColorString('#3B82F6'),
+                outlineWidth: 2,
+            }
+        });
+        previewEntity._isPreview = true;
+        cesiumDrawTempEntities.push(previewEntity);
+    } else if (cesiumDrawMode === 'polygon' && cesiumDrawPoints.length >= 1) {
+        const coords = [];
+        cesiumDrawPoints.forEach(p => { coords.push(p.lng, p.lat); });
+        coords.push(curLng, curLat);
+        if (coords.length >= 6) {
+            const positions = Cesium.Cartesian3.fromDegreesArray(coords);
+            const previewEntity = cesiumViewer.entities.add({
+                polygon: {
+                    hierarchy: positions,
+                    material: Cesium.Color.fromCssColorString('#3B82F6').withAlpha(0.15),
+                    outline: true,
+                    outlineColor: Cesium.Color.fromCssColorString('#3B82F6'),
+                    outlineWidth: 2,
+                }
+            });
+            previewEntity._isPreview = true;
+            cesiumDrawTempEntities.push(previewEntity);
+        }
+    }
+}
+
+function finishCesiumDraw() {
+    if (cesiumDrawMode === 'rect' && cesiumDrawPoints.length === 2) {
+        const p1 = cesiumDrawPoints[0];
+        const p2 = cesiumDrawPoints[1];
+        currentBounds = {
+            west: Math.min(p1.lng, p2.lng),
+            south: Math.min(p1.lat, p2.lat),
+            east: Math.max(p1.lng, p2.lng),
+            north: Math.max(p1.lat, p2.lat),
+        };
+        currentPolygon = null;
+    } else if (cesiumDrawMode === 'polygon' && cesiumDrawPoints.length >= 3) {
+        currentPolygon = [cesiumDrawPoints.map(p => ({ lat: p.lat, lng: p.lng }))];
+        const lngs = cesiumDrawPoints.map(p => p.lng);
+        const lats = cesiumDrawPoints.map(p => p.lat);
+        currentBounds = {
+            west: Math.min(...lngs),
+            south: Math.min(...lats),
+            east: Math.max(...lngs),
+            north: Math.max(...lats),
+        };
+    }
+
+    // 清理临时图形，显示最终选区
+    cleanCesiumTempEntities();
+    showCesiumSelection();
+
+    // 清理绘制状态
+    if (cesiumDrawHandler) {
+        cesiumDrawHandler.destroy();
+        cesiumDrawHandler = null;
+    }
+    cesiumDrawMode = null;
+    cesiumDrawPoints = [];
+    if (cesiumViewer) {
+        cesiumViewer.canvas.style.cursor = '';
+    }
+
+    // 取消按钮高亮
+    document.getElementById('cesium-draw-rect')?.classList.remove('active');
+    document.getElementById('cesium-draw-polygon')?.classList.remove('active');
+
+    // 更新选区信息和按钮状态
+    updateSelectionInfo();
+
+    // 同步到 Leaflet（如果用户切回 TIF 模式需要看到选区）
+    syncSelectionToLeaflet();
+}
+
+function cleanCesiumDrawing() {
+    cesiumDrawMode = null;
+    cesiumDrawPoints = [];
+    if (cesiumDrawHandler) {
+        cesiumDrawHandler.destroy();
+        cesiumDrawHandler = null;
+    }
+    cleanCesiumTempEntities();
+    if (cesiumViewer) {
+        cesiumViewer.canvas.style.cursor = '';
+    }
+    document.getElementById('cesium-draw-rect')?.classList.remove('active');
+    document.getElementById('cesium-draw-polygon')?.classList.remove('active');
+}
+
+function cleanCesiumTempEntities() {
+    if (!cesiumViewer) return;
+    cesiumDrawTempEntities.forEach(e => cesiumViewer.entities.remove(e));
+    cesiumDrawTempEntities = [];
+}
+
+/// 在 Cesium 上显示当前选区（矩形或多边形）
+function showCesiumSelection() {
+    if (!cesiumViewer) return;
+
+    // 移除旧选区
+    if (cesiumDrawEntity) {
+        cesiumViewer.entities.remove(cesiumDrawEntity);
+        cesiumDrawEntity = null;
+    }
+
+    if (currentPolygon && currentPolygon.length > 0) {
+        const coords = [];
+        const ring = currentPolygon[0];
+        ring.forEach(p => { coords.push(p.lng, p.lat); });
+        if (coords.length >= 6) {
+            cesiumDrawEntity = cesiumViewer.entities.add({
+                polygon: {
+                    hierarchy: Cesium.Cartesian3.fromDegreesArray(coords),
+                    material: Cesium.Color.fromCssColorString('#3B82F6').withAlpha(0.25),
+                    outline: true,
+                    outlineColor: Cesium.Color.fromCssColorString('#3B82F6'),
+                    outlineWidth: 2,
+                }
+            });
+        }
+    } else if (currentBounds) {
+        const { west, south, east, north } = currentBounds;
+        cesiumDrawEntity = cesiumViewer.entities.add({
+            rectangle: {
+                coordinates: Cesium.Rectangle.fromDegrees(west, south, east, north),
+                material: Cesium.Color.fromCssColorString('#3B82F6').withAlpha(0.25),
+                outline: true,
+                outlineColor: Cesium.Color.fromCssColorString('#3B82F6'),
+                outlineWidth: 2,
+            }
+        });
+    }
+}
+
+/// 行政区/上传边界后，同步选区到 Cesium 地球显示
+function syncSelectionToCesium() {
+    if (!cesiumViewer || currentMode !== '3dtiles') return;
+    showCesiumSelection();
+
+    // 飞到选区位置
+    if (currentBounds) {
+        cesiumViewer.camera.flyTo({
+            destination: Cesium.Rectangle.fromDegrees(
+                currentBounds.west, currentBounds.south,
+                currentBounds.east, currentBounds.north
+            ),
+            duration: 1.5,
+        });
+    }
+}
+
+/// Cesium 上绘制的选区同步到 Leaflet
+function syncSelectionToLeaflet() {
+    if (!map || !drawnItems) return;
+    drawnItems.clearLayers();
+    if (boundaryLayer) {
+        map.removeLayer(boundaryLayer);
+        boundaryLayer = null;
+    }
+
+    if (currentPolygon && currentPolygon.length > 0) {
+        const latlngs = currentPolygon[0].map(p => [p.lat, p.lng]);
+        const layer = L.polygon(latlngs, { color: '#3B82F6', weight: 2, fillOpacity: 0.1 });
+        drawnItems.addLayer(layer);
+        map.fitBounds(layer.getBounds());
+    } else if (currentBounds) {
+        const { west, south, east, north } = currentBounds;
+        const layer = L.rectangle([[south, west], [north, east]], { color: '#3B82F6', weight: 2, fillOpacity: 0.1 });
+        drawnItems.addLayer(layer);
+        map.fitBounds(layer.getBounds());
+    }
+}
+
+function showSelectionHint(msg) {
+    const info = document.getElementById('selection-info');
+    if (info) info.innerHTML = `<p class="hint">${msg}</p>`;
+}
+
+// ============ 瓦片矩形包围盒可视化 ============
+// 使用 CesiumJS 原生 debugShowBoundingVolume 显示（在 initCesiumControls 中绑定）

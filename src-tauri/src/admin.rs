@@ -441,7 +441,7 @@ pub async fn download_osm_features(
 
     let response = client
         .post(overpass_url)
-        .header("User-Agent", "TIF-Downloader/1.0")
+        .header("User-Agent", "GeoDownloader/1.0")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(format!("data={}", urlencoding::encode(&query)))
         .send()
@@ -580,7 +580,7 @@ pub async fn geocode_search(query: &str) -> Result<Vec<GeocodeResult>, String> {
 
     let response = client
         .get(&url)
-        .header("User-Agent", "TIF-Downloader/1.0")
+        .header("User-Agent", "GeoDownloader/1.0")
         .send()
         .await
         .map_err(|e| format!("请求失败: {}", e))?;

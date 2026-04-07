@@ -6,7 +6,7 @@
 
 ---
 
-**Project:** TIF Downloader
+**Project:** GeoDownloader
 **Generated:** 2026-02-05 00:14:52
 **Category:** Fitness/Gym App
 

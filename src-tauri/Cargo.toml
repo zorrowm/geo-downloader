@@ -1,7 +1,7 @@
 [package]
-name = "tif-downloader"
-version = "2.0.0"
-description = "TIF地图下载工具 - 地图瓦片下载与拼接"
+name = "geo-downloader"
+version = "3.0.0"
+description = "GeoDownloader - 地理空间数据下载与导出工具"
 authors = ["you"]
 license = "MIT"
 edition = "2021"
@@ -16,12 +16,13 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # Tauri
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-http = "2"
 tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
 futures-util = "0.3"
 
 # Serialization
@@ -34,7 +35,7 @@ tokio-util = "0.7"
 futures = "0.3"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "http2", "gzip", "deflate"] }
 
 # Image processing
 image = "0.25"

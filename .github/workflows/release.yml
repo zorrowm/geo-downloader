@@ -39,7 +39,7 @@ jobs:
       - name: Rename installer
         run: |
           $exeFile = Get-ChildItem -Path src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
-          $newName = "tif_downloader_${{ steps.version.outputs.VERSION }}_x64-setup.exe"
+          $newName = "GeoDownloader_${{ steps.version.outputs.VERSION }}_x64-setup.exe"
           Rename-Item -Path $exeFile.FullName -NewName $newName
           echo "SETUP_PATH=src-tauri/target/release/bundle/nsis/$newName" >> $env:GITHUB_OUTPUT
         id: rename
@@ -47,7 +47,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          name: 'TIF地图下载工具 v${{ steps.version.outputs.VERSION }}'
+          name: 'GeoDownloader v${{ steps.version.outputs.VERSION }}'
           generate_release_notes: false
           body: |
             ## 主要更新
