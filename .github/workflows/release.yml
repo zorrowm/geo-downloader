@@ -50,22 +50,10 @@ jobs:
           name: 'GeoDownloader v${{ steps.version.outputs.VERSION }}'
           generate_release_notes: false
           body: |
-            ## 主要更新
-            - Tauri + Rust 重构，安装包仅 ~6MB
-            - 内置 10+ 图源（OSM、ArcGIS、天地图、高德、Google Maps 等）
-            - 支持自定义瓦片图源（添加/编辑/删除）
-            - 多任务并行下载，独立进度显示
-            - 下载历史记录管理
-            - GeoTIFF 导出（EPSG:4326 + LZW 压缩）
-            - GCJ-02 坐标自动校正
-            - 行政区划边界裁剪
-            - 软件内自动检查更新
-
-            ## v3.0.0 新增
-            - 🌐 Google 3D Tiles 下载（通过 Cesium Ion）
+            ## v3.0.0 更新
+            - 🌐 新增 3D Tiles 下载功能，支持 Cesium Ion、Google 3D Tiles 等数据源
             - 📦 框选区域空间过滤，仅下载选区内瓦片
-            - 🔄 子瓦片集递归解析与 session 参数自动传播
-            - 👁️ 下载后本地离线预览（URI 自动本地化）
+            - 👁️ 下载后支持本地离线预览
             - 🏷️ 产品重命名为 GeoDownloader
           files: |
             ${{ steps.rename.outputs.SETUP_PATH }}
