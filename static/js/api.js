@@ -289,6 +289,28 @@
         throw new Error('3D Tiles 仅支持桌面版');
     }
 
+    // ============ 历史影像 API ============
+    async function getWaybackVersions(proxy) {
+        if (checkTauri()) {
+            return await invoke('get_wayback_versions', { proxy: proxy || null });
+        }
+        throw new Error('历史影像仅支持桌面版');
+    }
+
+    async function createWaybackTask(request, versionId, versionDate, taskName) {
+        if (checkTauri()) {
+            return await invoke('create_wayback_task', { request, versionId, versionDate, taskName });
+        }
+        throw new Error('历史影像仅支持桌面版');
+    }
+
+    async function probeWaybackMaxZoom(versionId, lat, lng, proxy) {
+        if (checkTauri()) {
+            return await invoke('probe_wayback_max_zoom', { versionId, lat, lng, proxy });
+        }
+        throw new Error('历史影像仅支持桌面版');
+    }
+
     window.TifApi = {
         _checkIsTauri: checkTauri,
         isDesktopApp: checkTauri,
@@ -331,7 +353,11 @@
         analyze3dTiles,
         estimate3dTiles,
         create3dTilesTask,
-        startTileProxy
+        startTileProxy,
+        // 历史影像
+        getWaybackVersions,
+        createWaybackTask,
+        probeWaybackMaxZoom
     };
 
     console.log('[TifApi] Initialized, Tauri available:', checkTauri());

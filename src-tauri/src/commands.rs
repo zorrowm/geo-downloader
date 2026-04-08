@@ -1488,3 +1488,118 @@ pub async fn start_tile_proxy(
     log::info!("反向代理服务器启动: http://127.0.0.1:{} -> {}", port, base_url_log);
     Ok(format!("http://127.0.0.1:{}", port))
 }
+
+// ============================================================
+// 历史影像（Esri Wayback）
+// ============================================================
+
+/// 获取 Esri Wayback 所有可用版本
+#[tauri::command]
+pub async fn get_wayback_versions(
+    proxy: Option<String>,
+) -> Result<Vec<crate::wayback::WaybackVersion>, String> {
+    crate::wayback::fetch_versions(proxy.as_deref()).await
+}
+
+/// 探测某个 Wayback 版本在指定位置的最大可用缩放级别
+#[tauri::command]
+pub async fn probe_wayback_max_zoom(
+    version_id: String,
+    lat: f64,
+    lng: f64,
+    proxy: Option<String>,
+) -> Result<u32, String> {
+    crate::wayback::probe_max_zoom(&version_id, lat, lng, proxy.as_deref()).await
+}
+
+/// 创建历史影像下载任务
+///
+/// 复用现有 TIF 瓦片下载流水线，仅图源来自 Wayback。
+#[tauri::command]
+pub async fn create_wayback_task(
+    app: AppHandle,
+    task_manager: State<'_, Arc<TaskManager>>,
+    request: DownloadRequest,
+    version_id: String,
+    version_date: String,
+    task_name: String,
+) -> Result<CreateTaskResult, String> {
+    let source = crate::wayback::make_tile_source(&version_id, &version_date);
+    let source_name = source.name.clone();
+
+    // 将 DownloadRequest 中的 source 字段重写为 wayback source id
+    let mut request = request;
+    request.source = source.id.clone();
+
+    let save_path = request.save_path.clone()
+        .ok_or_else(|| "未指定保存路径".to_string())?;
+
+    let tile_count = tile::estimate_tile_count(&request.bounds, request.zoom);
+    let task_id = uuid::Uuid::new_v4().to_string();
+
+    // 持久化任务
+    let persisted = PersistedTask {
+        task_id: task_id.clone(),
+        task_name: task_name.clone(),
+        source_name: source_name.clone(),
+        request: request.clone(),
+        tile_count,
+        created_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    };
+    crate::task::save_task_file(&persisted)?;
+
+    let (cancel_token, pause_control) = task_manager.create_task(
+        task_id.clone(),
+        task_name.clone(),
+        request.source.clone(),
+        source_name.clone(),
+        request.zoom,
+        request.format.clone(),
+        save_path.clone(),
+        tile_count,
+    );
+
+    let tm = Arc::clone(&task_manager);
+    let tid = task_id.clone();
+
+    tokio::spawn(async move {
+        let result = execute_download_task(
+            &app, &tm, &tid, &cancel_token, &pause_control,
+            request, source, save_path,
+            tile_count, &task_name, &source_name,
+        ).await;
+
+        match result {
+            Ok(_) => {},
+            Err(e) => {
+                if tm.is_cancelled(&tid) {
+                    task_log(&app, &tm, &tid, "WARN", "任务已取消");
+                    crate::task::remove_task_file(&tid);
+                    crate::task::cleanup_temp_dir(&tid);
+                    tm.mark_cancelled(&tid);
+                    let _ = app.emit(&format!("task-progress-{}", tid), TaskProgressPayload {
+                        task_id: tid,
+                        status: "cancelled".to_string(),
+                        progress: 0.0,
+                        completed: 0,
+                        total: tile_count,
+                        message: Some("已取消".to_string()),
+                    });
+                } else {
+                    task_log(&app, &tm, &tid, "ERROR", &format!("任务失败: {}", e));
+                    tm.fail_task(&tid, e.clone());
+                    let _ = app.emit(&format!("task-progress-{}", tid), TaskProgressPayload {
+                        task_id: tid,
+                        status: "failed".to_string(),
+                        progress: 0.0,
+                        completed: 0,
+                        total: tile_count,
+                        message: Some(format!("失败: {}", e)),
+                    });
+                }
+            }
+        }
+    });
+
+    Ok(CreateTaskResult { task_id, tile_count })
+}

@@ -230,13 +230,27 @@ body {
 /* ========== 左侧控制面板 ========== */
 .control-panel {
     width: 380px;
-    min-width: 380px;
+    min-width: 280px;
+    max-width: 600px;
     height: 100%;
     background: var(--bg-card);
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     overflow: hidden;
+}
+
+/* 拖拽调整宽度 */
+.sidebar-resizer {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s;
+    flex-shrink: 0;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+    background: var(--primary);
 }
 
 /* ========== 右侧地图面板 ========== */
@@ -1764,4 +1778,206 @@ body {
 
 .update-dialog-footer .btn {
     min-width: 110px;
+}
+
+/* ===== 历史影像时间轴 ===== */
+
+.wayback-timeline {
+    position: absolute;
+    bottom: 36px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: calc(100% - 80px);
+    max-width: 900px;
+    background: rgba(24, 28, 36, 0.92);
+    backdrop-filter: blur(12px);
+    border-radius: 14px;
+    padding: 10px 24px 8px;
+    z-index: 1200;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.08);
+    user-select: none;
+}
+
+.timeline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.timeline-date {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.5px;
+    font-variant-numeric: tabular-nums;
+}
+
+.timeline-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+.timeline-btn:hover {
+    background: rgba(255,255,255,0.22);
+}
+.timeline-btn.playing {
+    background: var(--primary-color, #4a90d9);
+}
+
+/* 自定义滑块 */
+.timeline-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.15);
+    outline: none;
+    cursor: pointer;
+}
+.timeline-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--primary-color, #4a90d9);
+    border: 2px solid #fff;
+    box-shadow: 0 0 8px rgba(74,144,217,0.5);
+    cursor: grab;
+    transition: transform 0.15s;
+}
+.timeline-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+.timeline-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--primary-color, #4a90d9);
+    border: 2px solid #fff;
+    box-shadow: 0 0 8px rgba(74,144,217,0.5);
+    cursor: grab;
+}
+
+/* 年份刻度标签 */
+.timeline-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 2px;
+    pointer-events: none;
+}
+.timeline-label {
+    font-size: 11px;
+    color: rgba(255,255,255,0.45);
+    position: relative;
+}
+.timeline-label::before {
+    content: '';
+    display: block;
+    width: 1px;
+    height: 6px;
+    background: rgba(255,255,255,0.25);
+    margin: 0 auto 3px;
+}
+
+/* 日期点 */
+.timeline-dots {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 14px;
+    pointer-events: none;
+    z-index: 1;
+}
+.timeline-dot {
+    position: absolute;
+    top: 0;
+    width: 1.5px;
+    height: 12px;
+    margin-left: -0.75px;
+    background: rgba(255,255,255,0.3);
+    pointer-events: auto;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.timeline-dot:hover {
+    background: rgba(255,255,255,0.7);
+}
+.timeline-dot.active {
+    width: 2.5px;
+    margin-left: -1.25px;
+    background: #4a9eff;
+    box-shadow: 0 0 4px rgba(74,158,255,0.5);
+}
+.timeline-dot.active:hover {
+    background: #6cb3ff;
+}
+
+/* 时间轴轨道需为 relative 以承载 dots */
+.timeline-track-wrapper {
+    position: relative;
+    padding-bottom: 0;
+    padding-top: 16px;
+}
+
+/* ===== 批量下载 ===== */
+.batch-summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: rgba(255,255,255,0.7);
+    user-select: none;
+}
+.batch-summary:hover {
+    color: #fff;
+}
+.batch-version-list label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text, #333);
+    border-radius: 4px;
+    cursor: pointer;
+}
+.batch-version-list label:hover {
+    background: rgba(0,0,0,0.04);
+}
+.batch-version-list input[type="checkbox"] {
+    accent-color: var(--primary-color, #4a90d9);
+}
+
+/* 下载模式切换按钮 */
+.wayback-dl-mode {
+    border: 1px solid var(--border, rgba(0,0,0,0.15));
+    background: transparent;
+    color: var(--text-secondary, #666);
+    border-radius: 6px;
+    padding: 6px 0;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.wayback-dl-mode:hover {
+    color: var(--text, #333);
+    border-color: var(--primary-color, #4a90d9);
+}
+.wayback-dl-mode.active {
+    background: var(--primary-color, #4a90d9);
+    border-color: var(--primary-color, #4a90d9);
+    color: #fff;
+}
 }

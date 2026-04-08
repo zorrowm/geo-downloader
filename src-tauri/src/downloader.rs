@@ -110,6 +110,8 @@ impl TileDownloader {
         // 设置 Referer
         let referer = if self.source.url.contains("tianditu") {
             "https://map.tianditu.gov.cn/"
+        } else if self.source.url.contains("arcgis") || self.source.url.contains("maptiles.arcgis.com") {
+            "https://livingatlas.arcgis.com/"
         } else {
             "https://www.google.com/maps"
         };
@@ -142,6 +144,9 @@ impl TileDownloader {
                                 },
                                 Err(e) => Err((format!("读取失败: {}", e), false)),
                             }
+                        } else if status.as_u16() == 404 {
+                            // 瓦片不存在（该区域/缩放级别无数据），跳过不重试
+                            Ok(())
                         } else if status.as_u16() == 429 || status.as_u16() == 503 {
                             Err((format!("HTTP {}", status), true))
                         } else {

@@ -320,3 +320,57 @@ src-tauri/src/
 - GitHub 仓库重命名 `gaopengbin/tif-downloader` → `gaopengbin/geo-downloader`（自动 301 重定向）
 - 本地 git remote 更新
 - 创建 v3.0.0 tag 并触发 Release CI
+
+---
+
+## 历史影像下载模块 (Esri Wayback)
+
+> 日期: 2025-07-16
+> 版本: 3.1.0
+
+### 23. Esri Wayback 历史影像下载
+
+**数据源**：Esri World Imagery Wayback，100+ 版本覆盖 2014–2026 年，通过 S3 配置获取版本列表。
+
+**后端 (`src-tauri/src/wayback.rs`)**
+- `WaybackEntry` / `WaybackVersion` 数据结构，`#[serde(rename = "itemURL")]` 处理大写字段
+- `fetch_versions(proxy)` — 获取并解析版本配置，按日期降序排列
+- `make_tile_source(version_id, date)` — 构造 TileSource 复用现有下载管线
+- `probe_max_zoom(version_id, lat, lng, proxy)` — HEAD 请求从 z19 向下探测最高可用级别
+- `lat_lng_to_tile(lat, lng, z)` — 经纬度转瓦片坐标辅助函数
+
+**Tauri 命令 (`commands.rs`)**
+- `get_wayback_versions` — 获取版本列表
+- `probe_wayback_max_zoom` — 探测最大缩放级别
+- `create_wayback_task` — 创建下载任务（复用 `execute_download_task`）
+
+**下载器修复 (`downloader.rs`)**
+- Esri 瓦片请求 Referer 设为 `https://livingatlas.arcgis.com/`
+- 404 瓦片跳过而非重试（旧版本高缩放级别无数据属正常情况）
+
+### 24. 历史影像时间轴组件
+
+- 半透明暗色玻璃态面板，悬浮于地图底部
+- 滑块 + 竖线标记各版本位置，蓝色高亮当前选中
+- 前进/后退按钮切换版本
+- 年份刻度标签，自动稀疏采样
+- 侧栏下拉框与时间轴双向同步
+- 切入 wayback 模式隐藏基础底图，切出恢复
+
+### 25. 批量下载与按边界裁剪
+
+- 单个下载 / 批量下载切换
+- 批量模式：版本勾选列表，全选/全不选，计数显示
+- 批量下载弹出文件夹选择对话框，文件名自动生成
+- 按边界裁剪复选框（透明背景），适用于单个和批量下载
+
+### 26. 最大缩放级别探测
+
+- "探测最大级别" 按钮，自动检测当前地图中心点在选中版本下的最高可用缩放
+- HEAD 请求从 z19 逐级向下，找到首个返回 200 的级别
+
+### 27. 界面增强
+
+- **侧边栏可拖拽调整宽度**：280–600px 范围，拖拽条 hover/dragging 高亮
+- **Cesium 3D 球状态栏**：鼠标移动显示经纬度，相机变化显示高度（m/km 自动切换）
+- 模式切换新增 "历史影像" 标签页

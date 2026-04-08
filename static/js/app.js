@@ -72,6 +72,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     initCompressOption();
     initTiles3dPanel(); // 3D Tiles 面板事件
     initCesiumDrawTools(); // CesiumJS 绘图工具
+    initWaybackPanel(); // 历史影像面板事件
     initSettingsPanel();
     initHistoryListEvents();
     initTaskListEvents();
@@ -160,15 +161,20 @@ function switchMode(mode) {
 
     // 更新标题文字
     const title = document.getElementById('app-title');
-    if (title) title.textContent = mode === 'tif' ? 'TIF 地图下载工具' : '3D Tiles 下载工具';
+    if (title) {
+        const titles = { tif: 'TIF 地图下载工具', '3dtiles': '3D Tiles 下载工具', wayback: '历史影像下载工具' };
+        title.textContent = titles[mode] || 'GeoDownloader';
+    }
 
     // 切换面板内容
     const tifContent = document.getElementById('tif-mode-content');
     const tiles3dContent = document.getElementById('tiles3d-mode-content');
+    const waybackContent = document.getElementById('wayback-mode-content');
     if (tifContent) tifContent.style.display = mode === 'tif' ? '' : 'none';
     if (tiles3dContent) tiles3dContent.style.display = mode === '3dtiles' ? '' : 'none';
+    if (waybackContent) waybackContent.style.display = mode === 'wayback' ? '' : 'none';
 
-    // 切换地图引擎
+    // 切换地图引擎（wayback 使用 Leaflet，同 tif）
     const mapEl = document.getElementById('map');
     const cesiumEl = document.getElementById('cesium-container');
     const cesiumDrawTools = document.getElementById('cesium-draw-tools');
@@ -189,6 +195,32 @@ function switchMode(mode) {
         map.invalidateSize(); // Leaflet 可能需要重新计算尺寸
         // 清理 Cesium 绘图状态
         cleanCesiumDrawing();
+    }
+
+    // wayback 模式切入时，自动加载版本列表（仅首次）并显示预览
+    const timelineEl = document.getElementById('wayback-timeline');
+    if (mode === 'wayback') {
+        // 隐藏基础底图，避免覆盖 Wayback 影像
+        Object.values(mapLayers).forEach(layer => {
+            if (map.hasLayer(layer)) map.removeLayer(layer);
+        });
+        if (!waybackVersionsLoaded) {
+            loadWaybackVersions();
+        } else if (waybackPreviewLayer && map) {
+            waybackPreviewLayer.addTo(map);
+        }
+        if (timelineEl && waybackVersionsLoaded) timelineEl.style.display = '';
+    } else {
+        // 切出 wayback 时移除预览图层，恢复基础底图
+        if (waybackPreviewLayer && map && map.hasLayer(waybackPreviewLayer)) {
+            map.removeLayer(waybackPreviewLayer);
+        }
+        if (timelineEl) timelineEl.style.display = 'none';
+        // 恢复当前选中的基础底图
+        const sourceSelect = document.getElementById('source-select');
+        if (sourceSelect && mapLayers[sourceSelect.value] && !map.hasLayer(mapLayers[sourceSelect.value])) {
+            mapLayers[sourceSelect.value].addTo(map);
+        }
     }
 }
 
@@ -222,6 +254,31 @@ function initCesiumViewer() {
     // 隐藏 Cesium 水印
     const credit = cesiumViewer.cesiumWidget.creditContainer;
     if (credit) credit.style.display = 'none';
+
+    // Cesium 状态栏：经纬度 + 相机高度
+    const statusCoords = document.getElementById('status-coords');
+    const statusZoom = document.getElementById('status-zoom');
+    const handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+    handler.setInputAction((movement) => {
+        const cartesian = cesiumViewer.camera.pickEllipsoid(movement.endPosition, cesiumViewer.scene.globe.ellipsoid);
+        if (cartesian) {
+            const carto = Cesium.Cartographic.fromCartesian(cartesian);
+            const lng = Cesium.Math.toDegrees(carto.longitude);
+            const lat = Cesium.Math.toDegrees(carto.latitude);
+            statusCoords.textContent = `经度: ${lng.toFixed(6)}  纬度: ${lat.toFixed(6)}`;
+        } else {
+            statusCoords.textContent = '经度: --  纬度: --';
+        }
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+    cesiumViewer.camera.changed.addEventListener(() => {
+        const height = cesiumViewer.camera.positionCartographic.height;
+        if (height !== undefined) {
+            const km = height > 1000 ? `${(height / 1000).toFixed(1)} km` : `${height.toFixed(0)} m`;
+            statusZoom.textContent = `高度: ${km}`;
+        }
+    });
+    cesiumViewer.camera.percentageChanged = 0.01;
 }
 
 // ============ 设置管理 ============
@@ -382,6 +439,45 @@ async function initMap() {
                 if (layer.redraw) layer.redraw();
             });
         }, 100);
+    });
+
+    // 侧边栏拖拽调整宽度
+    initSidebarResizer();
+}
+
+function initSidebarResizer() {
+    const resizer = document.getElementById('sidebar-resizer');
+    const sidebar = document.getElementById('sidebar');
+    if (!resizer || !sidebar) return;
+
+    let startX, startWidth;
+
+    resizer.addEventListener('mousedown', (e) => {
+        startX = e.clientX;
+        startWidth = sidebar.offsetWidth;
+        resizer.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        const onMouseMove = (e) => {
+            const newWidth = startWidth + (e.clientX - startX);
+            const min = parseInt(getComputedStyle(sidebar).minWidth) || 280;
+            const max = parseInt(getComputedStyle(sidebar).maxWidth) || 600;
+            sidebar.style.width = Math.max(min, Math.min(max, newWidth)) + 'px';
+        };
+
+        const onMouseUp = () => {
+            resizer.classList.remove('dragging');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            if (map) map.invalidateSize();
+            if (cesiumViewer) cesiumViewer.resize();
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
     });
 }
 
@@ -714,7 +810,7 @@ function initSettingsPanel() {
 
 // ============ 自动更新 ============
 
-let APP_VERSION = '3.0.0';
+let APP_VERSION = '3.1.0';
 const GITHUB_REPO = 'gaopengbin/geo-downloader';
 
 // 从 Tauri 配置动态读取版本号，保持单一数据源 (tauri.conf.json)
@@ -1495,6 +1591,11 @@ function updateSelectionInfo() {
 async function estimateDownload() {
     if (!currentBounds) return;
     
+    // 同时更新 wayback 估算（如果在 wayback 模式）
+    if (currentMode === 'wayback') {
+        estimateWaybackDownload();
+    }
+
     const zoom = parseInt(document.getElementById('zoom-slider').value);
     const estimateDiv = document.getElementById('estimate-info');
     const downloadBtn = document.getElementById('download-btn');
@@ -3445,3 +3546,558 @@ function showSelectionHint(msg) {
 
 // ============ 瓦片矩形包围盒可视化 ============
 // 使用 CesiumJS 原生 debugShowBoundingVolume 显示（在 initCesiumControls 中绑定）
+
+// ============ 历史影像模块 (Esri Wayback) ============
+let waybackVersionsLoaded = false;
+let waybackVersions = [];       // { id, date, title, layer_id }
+let waybackPreviewLayer = null; // Leaflet tile layer for preview
+let timelineVersions = [];
+
+async function loadWaybackVersions() {
+    const select = document.getElementById('wayback-version-select');
+    const loadBtn = document.getElementById('wayback-load-versions-btn');
+    if (!select) return;
+
+    select.disabled = true;
+    select.innerHTML = '<option value="">加载中...</option>';
+    if (loadBtn) loadBtn.disabled = true;
+
+    try {
+        const useProxy = document.getElementById('proxy-checkbox')?.checked;
+        const proxyUrl = document.getElementById('proxy-input')?.value?.trim();
+        const proxy = useProxy && proxyUrl ? proxyUrl : null;
+
+        waybackVersions = await TifApi.getWaybackVersions(proxy);
+        waybackVersionsLoaded = true;
+
+        select.innerHTML = '';
+        waybackVersions.forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v.id;
+            opt.textContent = v.date + '  (' + v.title + ')';
+            opt.dataset.date = v.date;
+            opt.dataset.layerId = v.layer_id;
+            select.appendChild(opt);
+        });
+        select.disabled = false;
+
+        // 选中第一个版本时预览，并初始化时间轴
+        if (waybackVersions.length > 0) {
+            updateWaybackPreview();
+            initTimeline();
+            populateBatchList();
+        }
+    } catch (e) {
+        select.innerHTML = '<option value="">加载失败: ' + e.message + '</option>';
+        console.error('加载 Wayback 版本失败:', e);
+    } finally {
+        if (loadBtn) loadBtn.disabled = false;
+    }
+}
+
+function updateWaybackPreview() {
+    const select = document.getElementById('wayback-version-select');
+    if (!select || !select.value) return;
+
+    // select.value 就是 version id（数字 key，如 "22869"）
+    const versionId = select.value;
+
+    // 移除旧预览
+    if (waybackPreviewLayer && map) {
+        map.removeLayer(waybackPreviewLayer);
+    }
+
+    // 添加 Wayback 瓦片图层作为预览
+    const url = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/${versionId}/{z}/{y}/{x}`;
+    waybackPreviewLayer = L.tileLayer(url, {
+        maxZoom: 19,
+        attribution: 'Esri Wayback'
+    });
+    if (map) {
+        waybackPreviewLayer.addTo(map);
+    }
+}
+
+function initWaybackPanel() {
+    // 加载按钮
+    const loadBtn = document.getElementById('wayback-load-versions-btn');
+    if (loadBtn) loadBtn.addEventListener('click', loadWaybackVersions);
+
+    // 版本切换 → 更新预览 + 同步时间轴
+    const versionSelect = document.getElementById('wayback-version-select');
+    if (versionSelect) versionSelect.addEventListener('change', () => {
+        updateWaybackPreview();
+        syncTimelineFromSelect();
+    });
+
+    // 缩放滑块
+    const zoomSlider = document.getElementById('wayback-zoom-slider');
+    const zoomBadge = document.getElementById('wayback-zoom-badge');
+    if (zoomSlider && zoomBadge) {
+        function updateWaybackZoomBadge(val) {
+            const z = parseInt(val);
+            let level = '';
+            if (z <= 3) level = '全球';
+            else if (z <= 5) level = '大洲';
+            else if (z <= 7) level = '国家';
+            else if (z <= 9) level = '省域';
+            else if (z <= 11) level = '城市';
+            else if (z <= 13) level = '区县';
+            else if (z <= 15) level = '街道';
+            else if (z <= 17) level = '建筑';
+            else level = '细节';
+            zoomBadge.textContent = `z${z} · ${level}级`;
+        }
+        updateWaybackZoomBadge(zoomSlider.value);
+        zoomSlider.addEventListener('input', e => {
+            updateWaybackZoomBadge(e.target.value);
+            estimateWaybackDownload();
+        });
+    }
+
+    // 并发数滑块
+    const concSlider = document.getElementById('wayback-concurrency-slider');
+    const concValue = document.getElementById('wayback-concurrency-value');
+    if (concSlider && concValue) {
+        concSlider.addEventListener('input', e => { concValue.textContent = e.target.value; });
+    }
+
+    // 压缩选项与格式联动
+    const formatSelect = document.getElementById('wayback-format-select');
+    const compressOpt = document.getElementById('wayback-compress-option');
+    if (formatSelect && compressOpt) {
+        function updateWaybackCompress() {
+            compressOpt.style.display = formatSelect.value === 'geotiff' ? '' : 'none';
+        }
+        updateWaybackCompress();
+        formatSelect.addEventListener('change', updateWaybackCompress);
+    }
+
+    // 下载按钮
+    const dlBtn = document.getElementById('download-wayback-btn');
+    if (dlBtn) dlBtn.addEventListener('click', startWaybackDownload);
+
+    // 探测最大缩放级别
+    const probeBtn = document.getElementById('wayback-probe-zoom-btn');
+    if (probeBtn) probeBtn.addEventListener('click', probeWaybackMaxZoom);
+
+    // 批量下载
+    initWaybackBatch();
+}
+
+async function probeWaybackMaxZoom() {
+    const versionSelect = document.getElementById('wayback-version-select');
+    const probeBtn = document.getElementById('wayback-probe-zoom-btn');
+    if (!versionSelect || !versionSelect.value || !map) return;
+
+    const center = map.getCenter();
+    const versionId = versionSelect.value;
+    const useProxy = document.getElementById('proxy-checkbox')?.checked;
+    const proxyUrl = document.getElementById('proxy-input')?.value?.trim();
+    const proxy = useProxy && proxyUrl ? proxyUrl : null;
+
+    probeBtn.disabled = true;
+    probeBtn.textContent = '探测中...';
+
+    try {
+        const maxZoom = await TifApi.probeWaybackMaxZoom(versionId, center.lat, center.lng, proxy);
+        const zoomSlider = document.getElementById('wayback-zoom-slider');
+        if (zoomSlider) {
+            zoomSlider.value = maxZoom;
+            zoomSlider.dispatchEvent(new Event('input'));
+        }
+        probeBtn.textContent = `最大 z${maxZoom}`;
+        setTimeout(() => { probeBtn.textContent = '探测最大级别'; }, 3000);
+    } catch (e) {
+        probeBtn.textContent = '探测失败';
+        setTimeout(() => { probeBtn.textContent = '探测最大级别'; }, 3000);
+        console.error('探测最大缩放失败:', e);
+    } finally {
+        probeBtn.disabled = false;
+    }
+}
+
+async function estimateWaybackDownload() {
+    if (!currentBounds || currentMode !== 'wayback') return;
+
+    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    const estimateDiv = document.getElementById('wayback-estimate-info');
+    const dlBtn = document.getElementById('download-wayback-btn');
+
+    try {
+        const result = await TifApi.estimateDownload(currentBounds, zoom);
+        if (result.allowed) {
+            estimateDiv.className = 'estimate-card';
+            estimateDiv.innerHTML = `<strong>${result.tile_count.toLocaleString()}</strong> 个瓦片 · 约 <strong>${result.estimated_size_mb.toFixed(1)} MB</strong>`;
+            dlBtn.disabled = false;
+        } else {
+            estimateDiv.className = 'estimate-card error';
+            estimateDiv.innerHTML = result.warning;
+            dlBtn.disabled = true;
+        }
+    } catch (e) {
+        estimateDiv.className = 'estimate-card error';
+        estimateDiv.innerHTML = '估算失败';
+        dlBtn.disabled = true;
+    }
+}
+
+async function startWaybackDownload() {
+    const versionSelect = document.getElementById('wayback-version-select');
+    if (!versionSelect || !versionSelect.value) {
+        alert('请先选择影像日期');
+        return;
+    }
+    if (!currentBounds) {
+        alert('请先选择下载区域');
+        return;
+    }
+
+    const dlBtn = document.getElementById('download-wayback-btn');
+    const selectedOpt = versionSelect.selectedOptions[0];
+    const versionId = versionSelect.value;
+    const versionDate = selectedOpt.dataset.date;
+
+    const format = document.getElementById('wayback-format-select').value;
+    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    const concurrency = parseInt(document.getElementById('wayback-concurrency-slider').value);
+    const compress = format === 'geotiff' && document.getElementById('wayback-compress-checkbox').checked;
+
+    const ext = format === 'geotiff' ? '.tif' : format === 'png' ? '.png' : '.jpg';
+    const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const defaultFilename = `wayback_${versionDate}_z${zoom}_${timestamp}${ext}`;
+
+    // 选择保存路径
+    let savePath = null;
+    if (TifApi._checkIsTauri()) {
+        try {
+            savePath = await TifApi.showSaveDialog(defaultFilename, [
+                { name: 'Image Files', extensions: [ext.slice(1)] }
+            ]);
+            if (!savePath) return;
+        } catch (e) {
+            console.error('保存对话框错误:', e);
+        }
+    }
+
+    const useProxy = document.getElementById('proxy-checkbox')?.checked;
+    const proxyUrl = document.getElementById('proxy-input')?.value?.trim();
+
+    const request = {
+        bounds: currentBounds,
+        polygon: currentPolygon,
+        zoom: zoom,
+        source: 'esri_wayback',
+        format: format,
+        crop_to_shape: document.getElementById('wayback-crop-checkbox').checked,
+        proxy: useProxy && proxyUrl ? proxyUrl : null,
+        tianditu_token: null,
+        save_path: savePath,
+        concurrency: concurrency,
+        compress: compress
+    };
+
+    const taskName = `Wayback ${versionDate} z${zoom}`;
+
+    try {
+        dlBtn.disabled = true;
+        dlBtn.innerHTML = '<span class="loading-spinner"></span> 创建任务...';
+
+        const result = await TifApi.createWaybackTask(request, versionId, versionDate, taskName);
+
+        addTaskCardToUI(result.task_id, defaultFilename, `Esri Wayback ${versionDate}`, zoom, result.tile_count);
+        startTaskListener(result.task_id);
+        switchToDownloadCenter();
+    } catch (e) {
+        alert('创建任务失败: ' + e.message);
+    } finally {
+        dlBtn.disabled = false;
+        dlBtn.innerHTML = `
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            下载历史影像`;
+    }
+}
+
+// ===== 时间轴组件 =====
+
+// 时间轴内部的升序版本数组（initTimeline 初始化后可用）
+
+function initTimeline() {
+    const slider = document.getElementById('timeline-slider');
+    const dateEl = document.getElementById('timeline-current-date');
+    const prevBtn = document.getElementById('timeline-prev-btn');
+    const nextBtn = document.getElementById('timeline-next-btn');
+    const labelsEl = document.getElementById('timeline-labels');
+    const timelineEl = document.getElementById('wayback-timeline');
+    if (!slider || !waybackVersions.length) return;
+
+    // 版本按日期升序排列用于时间轴（waybackVersions 是降序的）
+    timelineVersions = [...waybackVersions].reverse();
+
+    // 清除旧事件（防止重复绑定）
+    const newSlider = slider.cloneNode(true);
+    slider.parentNode.replaceChild(newSlider, slider);
+    newSlider.min = 0;
+    newSlider.max = timelineVersions.length - 1;
+    newSlider.value = timelineVersions.length - 1;
+
+    // 生成年份刻度 + 日期点
+    labelsEl.innerHTML = '';
+    const years = new Set();
+    timelineVersions.forEach(v => years.add(v.date.slice(0, 4)));
+    const yearArr = [...years].sort();
+    const step = Math.max(1, Math.ceil(yearArr.length / 12));
+    for (let i = 0; i < yearArr.length; i += step) {
+        const label = document.createElement('span');
+        label.className = 'timeline-label';
+        label.textContent = yearArr[i];
+        labelsEl.appendChild(label);
+    }
+    const lastYear = yearArr[yearArr.length - 1];
+    if (labelsEl.lastChild && labelsEl.lastChild.textContent !== lastYear) {
+        const label = document.createElement('span');
+        label.className = 'timeline-label';
+        label.textContent = lastYear;
+        labelsEl.appendChild(label);
+    }
+
+    // 生成日期点（dots）
+    const dotsContainer = document.getElementById('timeline-dots');
+    if (dotsContainer) {
+        dotsContainer.innerHTML = '';
+        timelineVersions.forEach((v, i) => {
+            const dot = document.createElement('span');
+            dot.className = 'timeline-dot';
+            dot.style.left = (i / (timelineVersions.length - 1) * 100) + '%';
+            dot.title = v.date;
+            dot.dataset.index = i;
+            dot.addEventListener('click', () => {
+                const s = document.getElementById('timeline-slider');
+                if (s) { s.value = i; s.dispatchEvent(new Event('input')); }
+            });
+            dotsContainer.appendChild(dot);
+        });
+    }
+
+    // 应用某个索引
+    function applyTimelineIndex(idx) {
+        const v = timelineVersions[idx];
+        if (!v) return;
+        dateEl.textContent = v.date;
+
+        // 同步侧栏 select
+        const select = document.getElementById('wayback-version-select');
+        if (select) select.value = v.id;
+
+        // 高亮当前点
+        if (dotsContainer) {
+            dotsContainer.querySelectorAll('.timeline-dot').forEach((d, i) => {
+                d.classList.toggle('active', i === idx);
+            });
+        }
+
+        // 更新地图预览
+        updateWaybackPreviewByVersion(v);
+    }
+
+    applyTimelineIndex(parseInt(newSlider.value));
+
+    newSlider.addEventListener('input', () => {
+        applyTimelineIndex(parseInt(newSlider.value));
+    });
+
+    // 显示时间轴
+    if (timelineEl) timelineEl.style.display = '';
+
+    // 前进/后退按钮
+    if (prevBtn) {
+        const newPrev = prevBtn.cloneNode(true);
+        prevBtn.parentNode.replaceChild(newPrev, prevBtn);
+        newPrev.addEventListener('click', () => {
+            const s = document.getElementById('timeline-slider');
+            const idx = parseInt(s.value);
+            if (idx > 0) { s.value = idx - 1; s.dispatchEvent(new Event('input')); }
+        });
+    }
+    if (nextBtn) {
+        const newNext = nextBtn.cloneNode(true);
+        nextBtn.parentNode.replaceChild(newNext, nextBtn);
+        newNext.addEventListener('click', () => {
+            const s = document.getElementById('timeline-slider');
+            const idx = parseInt(s.value);
+            if (idx < timelineVersions.length - 1) { s.value = idx + 1; s.dispatchEvent(new Event('input')); }
+        });
+    }
+}
+
+/** 下拉框切换后同步时间轴位置 */
+function syncTimelineFromSelect() {
+    const select = document.getElementById('wayback-version-select');
+    const slider = document.getElementById('timeline-slider');
+    const dateEl = document.getElementById('timeline-current-date');
+    const dotsContainer = document.getElementById('timeline-dots');
+    if (!select || !slider || !timelineVersions.length) return;
+
+    const idx = timelineVersions.findIndex(v => v.id === select.value);
+    if (idx >= 0) {
+        slider.value = idx;
+        if (dateEl) dateEl.textContent = timelineVersions[idx].date;
+        if (dotsContainer) {
+            dotsContainer.querySelectorAll('.timeline-dot').forEach((d, i) => {
+                d.classList.toggle('active', i === idx);
+            });
+        }
+    }
+}
+
+function updateWaybackPreviewByVersion(v) {
+    if (!v) return;
+    // 移除旧预览
+    if (waybackPreviewLayer && map) {
+        map.removeLayer(waybackPreviewLayer);
+    }
+    // v.id 是数字 key（如 "22869"），用于瓦片 URL
+    const url = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/${v.id}/{z}/{y}/{x}`;
+    waybackPreviewLayer = L.tileLayer(url, {
+        maxZoom: 19,
+        attribution: 'Esri Wayback'
+    });
+    if (map) {
+        waybackPreviewLayer.addTo(map);
+    }
+}
+
+// ===== 批量下载 =====
+
+function populateBatchList() {
+    const listEl = document.getElementById('wayback-batch-list');
+    if (!listEl || !waybackVersions.length) return;
+
+    listEl.innerHTML = '';
+    waybackVersions.forEach(v => {
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = v.id;
+        cb.dataset.date = v.date;
+        cb.addEventListener('change', updateBatchCount);
+        const text = document.createTextNode(` ${v.date}  (${v.title})`);
+        label.appendChild(cb);
+        label.appendChild(text);
+        listEl.appendChild(label);
+    });
+    updateBatchCount();
+}
+
+function updateBatchCount() {
+    const count = document.querySelectorAll('#wayback-batch-list input:checked').length;
+    const countEl = document.getElementById('wayback-batch-count');
+    const batchBtn = document.getElementById('wayback-batch-download-btn');
+    if (countEl) countEl.textContent = count;
+    if (batchBtn) batchBtn.disabled = count === 0 || !currentBounds;
+}
+
+function initWaybackBatch() {
+    const selectAll = document.getElementById('wayback-batch-select-all');
+    const selectNone = document.getElementById('wayback-batch-select-none');
+    const batchBtn = document.getElementById('wayback-batch-download-btn');
+
+    if (selectAll) selectAll.addEventListener('click', () => {
+        document.querySelectorAll('#wayback-batch-list input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+        updateBatchCount();
+    });
+    if (selectNone) selectNone.addEventListener('click', () => {
+        document.querySelectorAll('#wayback-batch-list input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+        updateBatchCount();
+    });
+    if (batchBtn) batchBtn.addEventListener('click', startBatchWaybackDownload);
+
+    // 单个/批量切换
+    document.querySelectorAll('.wayback-dl-mode').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.wayback-dl-mode').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const mode = btn.dataset.dlmode;
+            document.getElementById('wayback-single-download').style.display = mode === 'single' ? '' : 'none';
+            document.getElementById('wayback-batch-download').style.display = mode === 'batch' ? '' : 'none';
+        });
+    });
+}
+
+async function startBatchWaybackDownload() {
+    if (!currentBounds) {
+        alert('请先选择下载区域');
+        return;
+    }
+
+    const checked = document.querySelectorAll('#wayback-batch-list input:checked');
+    if (checked.length === 0) return;
+
+    const batchBtn = document.getElementById('wayback-batch-download-btn');
+    batchBtn.disabled = true;
+    batchBtn.textContent = '创建任务中...';
+
+    const format = document.getElementById('wayback-format-select').value;
+    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    const concurrency = parseInt(document.getElementById('wayback-concurrency-slider').value);
+    const compress = format === 'geotiff' && document.getElementById('wayback-compress-checkbox').checked;
+    const useProxy = document.getElementById('proxy-checkbox')?.checked;
+    const proxyUrl = document.getElementById('proxy-input')?.value?.trim();
+    const ext = format === 'geotiff' ? '.tif' : format === 'png' ? '.png' : '.jpg';
+
+    // 选择保存目录
+    let saveDir = null;
+    if (TifApi._checkIsTauri()) {
+        try {
+            saveDir = await window.__TAURI__.dialog.open({
+                directory: true,
+                title: '选择批量下载保存目录'
+            });
+            if (!saveDir) { batchBtn.disabled = false; batchBtn.textContent = '批量下载选中版本'; return; }
+        } catch (e) {
+            console.error('保存对话框错误:', e);
+        }
+    }
+
+    let created = 0;
+    for (const cb of checked) {
+        const versionId = cb.value;
+        const versionDate = cb.dataset.date;
+        const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        const filename = `wayback_${versionDate}_z${zoom}_${timestamp}${ext}`;
+        const savePath = saveDir ? `${saveDir}\\${filename}` : null;
+
+        const request = {
+            bounds: currentBounds,
+            polygon: currentPolygon,
+            zoom,
+            source: 'esri_wayback',
+            format,
+            crop_to_shape: document.getElementById('wayback-crop-checkbox').checked,
+            proxy: useProxy && proxyUrl ? proxyUrl : null,
+            tianditu_token: null,
+            save_path: savePath,
+            concurrency,
+            compress
+        };
+
+        const taskName = `Wayback ${versionDate} z${zoom}`;
+
+        try {
+            batchBtn.textContent = `创建中 (${++created}/${checked.length})...`;
+            const result = await TifApi.createWaybackTask(request, versionId, versionDate, taskName);
+            addTaskCardToUI(result.task_id, filename, `Esri Wayback ${versionDate}`, zoom, result.tile_count);
+            startTaskListener(result.task_id);
+        } catch (e) {
+            console.error(`批量任务 ${versionDate} 创建失败:`, e);
+        }
+    }
+
+    batchBtn.disabled = false;
+    batchBtn.textContent = '批量下载选中版本';
+    if (created > 0) switchToDownloadCenter();
+}

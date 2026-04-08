@@ -10,6 +10,7 @@ pub mod settings;
 pub mod task;
 pub mod streaming_tiff;
 pub mod tiles3d;
+pub mod wayback;
 
 // Tauri commands
 mod commands;
@@ -75,6 +76,10 @@ pub fn run() {
             commands::create_3dtiles_task,
             commands::serve_local_tiles,
             commands::start_tile_proxy,
+            // 历史影像
+            commands::get_wayback_versions,
+            commands::create_wayback_task,
+            commands::probe_wayback_max_zoom,
             // 更新
             commands::download_and_install_update,
         ])

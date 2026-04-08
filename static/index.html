@@ -28,6 +28,7 @@
         <div class="mode-toggle" id="mode-toggle">
             <button class="mode-toggle-btn active" data-mode="tif">TIF 瓦片</button>
             <button class="mode-toggle-btn" data-mode="3dtiles">3D Tiles</button>
+            <button class="mode-toggle-btn" data-mode="wayback">历史影像</button>
         </div>
         <div class="titlebar-controls">
             <button class="titlebar-btn" id="titlebar-minimize" title="最小化">
@@ -386,6 +387,127 @@
                     </section>
                     </div><!-- /tiles3d-mode-content -->
 
+                    <!-- ===== 历史影像模式内容 ===== -->
+                    <div id="wayback-mode-content" style="display: none;">
+                    <section class="panel-section">
+                        <div class="section-header">
+                            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <polyline points="12 6 12 12 16 14"/>
+                            </svg>
+                            <h3>历史影像下载</h3>
+                        </div>
+
+                        <!-- 数据源选择 -->
+                        <div class="form-group">
+                            <label class="form-label" for="wayback-source-select">数据源</label>
+                            <select id="wayback-source-select" class="form-select">
+                                <option value="esri" selected>Esri World Imagery Wayback</option>
+                            </select>
+                        </div>
+
+                        <!-- 版本选择 -->
+                        <div class="form-group">
+                            <label class="form-label" for="wayback-version-select">
+                                影像日期
+                                <button id="wayback-load-versions-btn" class="btn-icon btn-primary" style="margin-left: 4px; padding: 2px 6px; font-size: 11px;" title="加载版本列表">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px">
+                                        <polyline points="23 4 23 10 17 10"/>
+                                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                                    </svg>
+                                </button>
+                            </label>
+                            <select id="wayback-version-select" class="form-select" disabled>
+                                <option value="">点击“加载”获取版本列表</option>
+                            </select>
+                        </div>
+
+                        <!-- 缩放级别 -->
+                        <div class="form-group">
+                            <div class="form-label-row">
+                                <label class="form-label" for="wayback-zoom-slider">缩放级别</label>
+                                <span class="badge badge-primary" id="wayback-zoom-badge">z15 · 街道级</span>
+                                <button type="button" id="wayback-probe-zoom-btn" class="btn btn-sm" title="探测当前地图中心位置的最大可用缩放级别" style="margin-left:auto;padding:2px 8px;font-size:12px;">探测最大级别</button>
+                            </div>
+                            <input type="range" id="wayback-zoom-slider" class="form-range" min="1" max="19" value="15">
+                            <div class="range-labels">
+                                <span>1</span>
+                                <span>10</span>
+                                <span>19</span>
+                            </div>
+                        </div>
+
+                        <!-- 输出格式和并发 -->
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label" for="wayback-format-select">输出格式</label>
+                                <select id="wayback-format-select" class="form-select">
+                                    <option value="geotiff">GeoTIFF (.tif)</option>
+                                    <option value="png">PNG (.png)</option>
+                                    <option value="jpeg">JPEG (.jpg)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="wayback-concurrency-slider">
+                                    并发数 <span class="text-primary" id="wayback-concurrency-value">30</span>
+                                </label>
+                                <input type="range" id="wayback-concurrency-slider" class="form-range" min="10" max="100" value="30" step="5">
+                            </div>
+                        </div>
+
+                        <!-- 估算 -->
+                        <div id="wayback-estimate-info" class="estimate-card"></div>
+
+                        <!-- 压缩选项 -->
+                        <label class="checkbox-label" id="wayback-compress-option">
+                            <input type="checkbox" id="wayback-compress-checkbox" checked>
+                            <span class="checkbox-mark"></span>
+                            <span>LZW 压缩 <span class="text-muted">(减小约70%，耗时增加)</span></span>
+                        </label>
+
+                        <!-- 裁剪选项 -->
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="wayback-crop-checkbox">
+                            <span class="checkbox-mark"></span>
+                            <span>按边界裁剪 <span class="text-muted">(透明背景)</span></span>
+                        </label>
+
+                        <!-- 下载模式切换 -->
+                        <div class="download-mode-toggle" style="display:flex;gap:4px;margin-bottom:10px;">
+                            <button type="button" class="btn btn-sm wayback-dl-mode active" data-dlmode="single" style="flex:1;">单个下载</button>
+                            <button type="button" class="btn btn-sm wayback-dl-mode" data-dlmode="batch" style="flex:1;">📦 批量下载</button>
+                        </div>
+
+                        <!-- 单个下载 -->
+                        <div id="wayback-single-download">
+                            <button id="download-wayback-btn" class="btn btn-cta btn-lg btn-block" disabled>
+                                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7 10 12 15 17 10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                下载历史影像
+                            </button>
+                        </div>
+
+                        <!-- 批量下载 -->
+                        <div id="wayback-batch-download" style="display:none;">
+                            <div class="form-label-row" style="margin-bottom:6px;">
+                                <label class="form-label" style="margin-bottom:0">选择版本</label>
+                                <button type="button" id="wayback-batch-select-all" class="btn btn-sm" style="padding:2px 8px;font-size:12px;">全选</button>
+                                <button type="button" id="wayback-batch-select-none" class="btn btn-sm" style="padding:2px 8px;font-size:12px;">全不选</button>
+                            </div>
+                            <div id="wayback-batch-list" class="batch-version-list" style="max-height:200px;overflow-y:auto;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:4px;"></div>
+                            <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.5);">
+                                已选 <span id="wayback-batch-count">0</span> 个版本
+                            </div>
+                            <button id="wayback-batch-download-btn" class="btn btn-cta btn-block" disabled style="margin-top:8px;">
+                                📦 批量下载选中版本
+                            </button>
+                        </div>
+                    </section>
+                    </div><!-- /wayback-mode-content -->
+
                 </div>
 
                 <!-- Tab 2: 下载中心 -->
@@ -574,10 +696,31 @@
             </div>
         </aside>
         
+        <!-- 拖拽调整宽度 -->
+        <div id="sidebar-resizer" class="sidebar-resizer"></div>
+
         <!-- 右侧地图面板 -->
         <main class="map-panel" role="main" aria-label="地图面板">
             <div id="map"></div>
             <div id="cesium-container" style="display: none;"></div>
+
+            <!-- 历史影像时间轴 -->
+            <div id="wayback-timeline" class="wayback-timeline" style="display: none;">
+                <div class="timeline-header">
+                    <button id="timeline-prev-btn" class="timeline-btn" title="上一版本">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><polygon points="15,3 5,12 15,21"/></svg>
+                    </button>
+                    <span class="timeline-date" id="timeline-current-date">--</span>
+                    <button id="timeline-next-btn" class="timeline-btn" title="下一版本">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><polygon points="9,3 19,12 9,21"/></svg>
+                    </button>
+                </div>
+                <div class="timeline-track-wrapper">
+                    <div class="timeline-dots" id="timeline-dots"></div>
+                    <input type="range" id="timeline-slider" class="timeline-slider" min="0" max="0" value="0" step="1">
+                    <div class="timeline-labels" id="timeline-labels"></div>
+                </div>
+            </div>
             <!-- Cesium 模型调控面板 -->
             <div id="cesium-controls" class="cesium-controls" style="display: none;">
                 <div class="cesium-controls-header">
