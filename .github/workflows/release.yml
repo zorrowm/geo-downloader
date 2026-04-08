@@ -50,11 +50,15 @@ jobs:
           name: 'GeoDownloader v${{ steps.version.outputs.VERSION }}'
           generate_release_notes: false
           body: |
-            ## v3.0.0 更新
-            - 🌐 新增 3D Tiles 下载功能，支持任意 3D Tiles 数据源
-            - 📦 框选区域空间过滤，仅下载选区内瓦片
-            - 👁️ 下载后支持本地离线预览
-            - 🏷️ 产品重命名为 GeoDownloader
+            ## v${{ steps.version.outputs.VERSION }} 更新
+            - 🗺️ 新增 Esri Wayback 历史影像下载（100+ 版本, 2014–2026）
+            - 📅 时间轴组件：竖线标记、前进/后退按钮、年份刻度
+            - 📦 批量下载：多版本勾选、文件夹保存
+            - ✂️ 历史影像按边界裁剪（透明背景）
+            - 🔍 最大缩放级别自动探测
+            - ↔️ 侧边栏可拖拽调整宽度
+            - 🌐 Cesium 3D 球底部经纬度/高度显示
+            - 🔧 下载器修复：Esri Referer、404 瓦片跳过
           files: |
             ${{ steps.rename.outputs.SETUP_PATH }}
         env:
