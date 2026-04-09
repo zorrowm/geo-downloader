@@ -9,6 +9,8 @@
 ![Downloads](https://img.shields.io/github/downloads/gaopengbin/geo-downloader/total?color=brightgreen&label=downloads)
 ![Latest Downloads](https://img.shields.io/github/downloads/gaopengbin/geo-downloader/latest/total?label=latest%20downloads)
 
+> 📊 [查看各版本下载统计](https://somsubhra.github.io/github-release-stats/?username=gaopengbin&repository=geo-downloader) | ⭐ [Star History](https://star-history.com/#gaopengbin/geo-downloader&Date)
+
 ## 🎉 v3.0.0 — 大版本更新
 
 > 产品更名：TIF地图下载工具 → **GeoDownloader**，覆盖 2D 瓦片 + 3D Tiles 全场景。
