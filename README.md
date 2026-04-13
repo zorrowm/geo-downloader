@@ -2,6 +2,8 @@
 
 一个基于 Tauri + Rust 的高性能地理空间数据下载与导出桌面工具。支持 2D 地图瓦片、3D Tiles 裁剪下载、Esri Wayback 历史影像，导出 GeoTIFF。
 
+欢迎沟通交流 本人微信 gpb230314
+
 ![Rust](https://img.shields.io/badge/rust-1.77+-orange.svg)
 ![Tauri](https://img.shields.io/badge/tauri-2.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
