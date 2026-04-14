@@ -201,6 +201,8 @@ impl TaskManager {
                 && entry.info.status != TaskStatus::Cancelled
             {
                 entry.cancel_token.cancel();
+                // 同步删除持久化文件，防止应用退出时异步清理未完成导致下次启动变「已中断」
+                remove_task_file(id);
                 return true;
             }
         }
@@ -284,14 +286,70 @@ impl TaskManager {
         }
     }
 
-    /// 获取任务日志
+    /// 获取任务日志（内存优先，若任务已移除则从文件回读）
     pub fn get_logs(&self, id: &str) -> Vec<TaskLog> {
         let tasks = self.tasks.lock().unwrap();
         if let Some(entry) = tasks.get(id) {
-            entry.logs.clone()
+            if !entry.logs.is_empty() {
+                return entry.logs.clone();
+            }
+        }
+        drop(tasks);
+        // 内存为空，尝试从日志文件回读
+        self.read_log_file(id)
+    }
+
+    /// 从磁盘日志文件读取日志
+    fn read_log_file(&self, id: &str) -> Vec<TaskLog> {
+        let prefix = if id.len() >= 8 { &id[..8] } else { id };
+        let log_path = self.log_dir.join(format!("task_{}.log", prefix));
+        Self::parse_log_file(&log_path)
+    }
+
+    /// 按完整文件路径读取日志
+    pub fn read_log_file_by_path(path: &str) -> Vec<TaskLog> {
+        let p = std::path::Path::new(path);
+        if p.exists() {
+            Self::parse_log_file(p)
         } else {
             Vec::new()
         }
+    }
+
+    /// 解析日志文件内容
+    fn parse_log_file(path: &std::path::Path) -> Vec<TaskLog> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => content.lines().filter_map(|line| {
+                // 格式: [HH:MM:SS] [LEVEL] message
+                let line = line.trim();
+                if line.len() < 16 { return None; }
+                let ts_end = line.find(']')?;
+                let timestamp = line[1..ts_end].to_string();
+                let rest = &line[ts_end + 2..]; // skip "] "
+                let lvl_start = rest.find('[')?;
+                let lvl_end = rest.find(']')?;
+                let level = rest[lvl_start + 1..lvl_end].to_string();
+                let message = rest[lvl_end + 2..].to_string(); // skip "] "
+                Some(TaskLog { timestamp, level, message })
+            }).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// 获取任务日志文件路径
+    pub fn get_log_file_path(&self, id: &str) -> Option<String> {
+        let prefix = if id.len() >= 8 { &id[..8] } else { id };
+        let log_path = self.log_dir.join(format!("task_{}.log", prefix));
+        if log_path.exists() {
+            Some(log_path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// 获取日志目录路径
+    pub fn get_log_dir(&self) -> String {
+        self.log_dir.to_string_lossy().to_string()
     }
 
     /// 检查任务是否已取消
@@ -371,6 +429,19 @@ pub fn load_resumable_tasks() -> Vec<PersistedTask> {
 
 /// 清理临时目录
 pub fn cleanup_temp_dir(task_id: &str) {
+    // 调试模式下保留临时目录
+    if let Ok(mgr) = crate::settings::SettingsManager::new() {
+        if let Ok(settings) = mgr.get() {
+            if settings.debug_mode {
+                let temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task_id));
+                log::info!("[{}] 调试模式已启用，保留临时目录: {}（瓦片为图片文件，可改后缀 .png/.jpg 查看）", task_id, temp_dir.display());
+                return;
+            }
+        }
+    }
     let temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task_id));
+    if temp_dir.exists() {
+        log::info!("[{}] 清理临时目录: {}", task_id, temp_dir.display());
+    }
     let _ = std::fs::remove_dir_all(temp_dir);
 }

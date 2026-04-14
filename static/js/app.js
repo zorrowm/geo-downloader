@@ -10,6 +10,7 @@ let currentBounds = null;
 let currentPolygon = null;
 let boundaryLayer = null;
 let mapLayers = {}; // Store layer objects by ID
+let tileSourceConfigs = {}; // 图源配置（含 max_zoom）
 let overlayLayers = {}; // 叠加图层（标注等）
 let layerControl = null; // 图层控制器引用
 let activeTaskListeners = {}; // 活动任务的事件监听器 { taskId: unlisten函数 }
@@ -349,6 +350,10 @@ function applySettings(settings) {
     if (ionTokenInput && settings.cesium_ion_token) {
         ionTokenInput.value = settings.cesium_ion_token;
     }
+
+    // 调试模式
+    const debugCheckbox = document.getElementById('debug-mode-checkbox');
+    if (debugCheckbox) debugCheckbox.checked = !!settings.debug_mode;
 }
 
 function getTianDiTuToken() {
@@ -500,6 +505,7 @@ async function loadMapSources() {
     try {
         const customToken = getTianDiTuToken();
         const sources = await TifApi.getTileSources(customToken);
+        tileSourceConfigs = sources; // 保存图源配置
         const baseMaps = {};
         let firstLayer = null;
         
@@ -535,8 +541,11 @@ async function loadMapSources() {
         if (mapLayers['osm']) {
             mapLayers['osm'].addTo(map);
             sourceSelect.value = 'osm';
+            updateZoomSliderMax('osm');
         } else if (firstLayer) {
             firstLayer.addTo(map);
+            const firstKey = Object.keys(sources)[0];
+            if (firstKey) updateZoomSliderMax(firstKey);
         }
         
         // 创建天地图标注叠加图层
@@ -597,6 +606,8 @@ function syncDropdownWithMap() {
             mapLayers[selectedKey].addTo(map);
             checkGcj02Warning(selectedKey);
         }
+        // 更新 zoom slider 的最大值
+        updateZoomSliderMax(selectedKey);
     });
     
     // 当地图图层通过控件改变时，更新下拉框
@@ -605,6 +616,7 @@ function syncDropdownWithMap() {
             if (layer === e.layer) {
                 sourceSelect.value = key;
                 checkGcj02Warning(key);
+                updateZoomSliderMax(key);
                 break;
             }
         }
@@ -784,6 +796,17 @@ function initSettingsPanel() {
     const saveBtn = document.getElementById('save-settings-btn');
     if (saveBtn) {
         saveBtn.addEventListener('click', saveAllSettings);
+    }
+
+    // 调试模式 — 即时生效
+    const debugCheckbox = document.getElementById('debug-mode-checkbox');
+    if (debugCheckbox) {
+        debugCheckbox.addEventListener('change', async () => {
+            if (appSettings) {
+                appSettings.debug_mode = debugCheckbox.checked;
+                try { await TifApi.saveSettings(appSettings); } catch (e) { /* silent */ }
+            }
+        });
     }
     
     // 清空历史按钮
@@ -1205,7 +1228,8 @@ async function saveAllSettings() {
         default_format: 'geotiff',
         default_source: 'osm',
         custom_sources: appSettings?.custom_sources || [],
-        source_overrides: appSettings?.source_overrides || []
+        source_overrides: appSettings?.source_overrides || [],
+        debug_mode: document.getElementById('debug-mode-checkbox').checked
     };
     
     try {
@@ -1235,33 +1259,63 @@ async function saveAllSettings() {
 // ============ 缩放级别滑块 ============
 function initZoomSlider() {
     const slider = document.getElementById('zoom-slider');
-    const badge = document.getElementById('zoom-badge');
-    
-    function updateZoomBadge(value) {
-        const z = parseInt(value);
-        let level = '';
-        if (z <= 3) level = '全球';
-        else if (z <= 5) level = '大洲';
-        else if (z <= 7) level = '国家';
-        else if (z <= 9) level = '省域';
-        else if (z <= 11) level = '城市';
-        else if (z <= 13) level = '区县';
-        else if (z <= 15) level = '街道';
-        else if (z <= 17) level = '建筑';
-        else if (z <= 19) level = '细节';
-        else level = '超清';
-        
-        badge.textContent = `z${z} · ${level}级`;
-    }
-    
-    updateZoomBadge(slider.value);
-    
+
+    refreshZoomBadge();
+
     slider.addEventListener('input', (e) => {
-        updateZoomBadge(e.target.value);
+        refreshZoomBadge();
         if (currentBounds) {
             estimateDownload();
         }
     });
+}
+
+// 刷新 zoom badge 显示（读取 slider 当前值和 max）
+function refreshZoomBadge() {
+    const slider = document.getElementById('zoom-slider');
+    const badge = document.getElementById('zoom-badge');
+    if (!slider || !badge) return;
+
+    const z = parseInt(slider.value);
+    const maxZ = parseInt(slider.max);
+    let level = '';
+    if (z <= 3) level = '全球';
+    else if (z <= 5) level = '大洲';
+    else if (z <= 7) level = '国家';
+    else if (z <= 9) level = '省域';
+    else if (z <= 11) level = '城市';
+    else if (z <= 13) level = '区县';
+    else if (z <= 15) level = '街道';
+    else if (z <= 17) level = '建筑';
+    else if (z <= 19) level = '细节';
+    else level = '超清';
+
+    badge.textContent = `z${z} · ${level}级 (最高z${maxZ})`;
+}
+
+// 根据图源更新 zoom slider 最大值
+function updateZoomSliderMax(sourceKey) {
+    const slider = document.getElementById('zoom-slider');
+    if (!slider) return;
+
+    // 从 tileSourceConfigs 查找当前图源的 max_zoom
+    let maxZoom = 22;
+    if (tileSourceConfigs && tileSourceConfigs[sourceKey]) {
+        maxZoom = tileSourceConfigs[sourceKey].max_zoom || 22;
+    }
+
+    slider.max = maxZoom;
+
+    // 如果当前值超出新的最大值，钳位到最大值
+    if (parseInt(slider.value) > maxZoom) {
+        slider.value = maxZoom;
+    }
+
+    refreshZoomBadge();
+
+    if (currentBounds) {
+        estimateDownload();
+    }
 }
 
 // ============ 并发数滑块 ============
@@ -1633,7 +1687,7 @@ async function estimateDownload() {
         if (result.allowed) {
             estimateDiv.className = 'estimate-card';
             estimateDiv.innerHTML = `
-                <strong>${result.tile_count.toLocaleString()}</strong> 个瓦片 · 约 <strong>${result.estimated_size_mb.toFixed(1)} MB</strong>
+                <strong>${result.tile_count.toLocaleString()}</strong> 个瓦片 (${result.cols}列 × ${result.rows}行) · 约 <strong>${result.estimated_size_mb.toFixed(1)} MB</strong>
             `;
             downloadBtn.disabled = false;
         } else {
@@ -1662,6 +1716,8 @@ async function startDownload() {
     }
     
     const downloadBtn = document.getElementById('download-btn');
+    if (downloadBtn.disabled) return; // 防止重复触发
+    downloadBtn.disabled = true;
     
     // 获取文件格式和默认文件名
     const format = document.getElementById('format-select').value;
@@ -1681,9 +1737,14 @@ async function startDownload() {
             } else if (window.pywebview) {
                 savePath = await window.pywebview.api.save_file_dialog(defaultFilename);
             }
-            if (!savePath) return;
+            if (!savePath) {
+                resetDownloadButton(downloadBtn);
+                return;
+            }
         } catch (e) {
             console.error('保存对话框错误:', e);
+            resetDownloadButton(downloadBtn);
+            return;
         }
     }
     
@@ -1710,7 +1771,36 @@ async function startDownload() {
     // Tauri 模式：创建下载任务
     if (TifApi._checkIsTauri()) {
         try {
-            downloadBtn.disabled = true;
+            downloadBtn.innerHTML = '<span class="loading-spinner"></span> 探测瓦片...';
+
+            // 探测选区中心的瓦片是否有数据
+            const centerLat = (currentBounds.north + currentBounds.south) / 2;
+            const centerLng = (currentBounds.east + currentBounds.west) / 2;
+            const probeResult = await TifApi.probeTile(
+                request.source,
+                request.zoom,
+                centerLat,
+                centerLng,
+                request.tianditu_token,
+                request.proxy,
+            );
+
+            if (!probeResult.has_data) {
+                const maxZoom = tileSourceConfigs[request.source]?.max_zoom || '?';
+                const proceed = await TifApi.showAskDialog(
+                    `探测发现该区域在 z${request.zoom} 可能无数据\n` +
+                    `${probeResult.message}\n\n` +
+                    `该图源最高支持 z${maxZoom}，但部分区域实际覆盖可能低于此级别。\n` +
+                    `建议降低缩放级别后重试。\n\n` +
+                    `是否仍然继续下载？`,
+                    '⚠️ 瓦片探测警告'
+                );
+                if (!proceed) {
+                    resetDownloadButton(downloadBtn);
+                    return;
+                }
+            }
+
             downloadBtn.innerHTML = '<span class="loading-spinner"></span> 创建任务...';
             
             const sourceSelect = document.getElementById('source-select');
@@ -2335,9 +2425,11 @@ function renderHistoryCard(record) {
     
     const fileSize = formatFileSize(record.file_size);
     const date = new Date(record.created_at).toLocaleString('zh-CN');
+    const logFile = record.log_file || '';
+    const isFailed = record.status === 'failed';
     
     return `
-        <div class="history-card" data-id="${record.id}" data-path="${record.file_path.replace(/"/g, '&quot;')}">
+        <div class="history-card" data-id="${record.id}" data-path="${record.file_path.replace(/"/g, '&quot;')}" data-log-file="${logFile.replace(/"/g, '&quot;')}">
             <div class="history-card-header">
                 <span class="history-card-title">${record.name}</span>
                 <span class="history-card-status ${statusClass}">${statusIcon}</span>
@@ -2346,16 +2438,18 @@ function renderHistoryCard(record) {
                 <span>${record.source_name}</span>
                 ${record.zoom > 0 ? `<span>z${record.zoom}</span>` : ''}
                 <span>${record.tile_count} ${record.zoom > 0 ? '瓦片' : '节点'}</span>
-                <span>${fileSize}</span>
+                ${record.file_size > 0 ? `<span>${fileSize}</span>` : ''}
             </div>
-            <div class="history-card-path">${record.file_path}</div>
+            ${isFailed ? '' : `<div class="history-card-path">${record.file_path}</div>`}
             <div class="history-card-meta">
                 <span>${date}</span>
             </div>
             <div class="history-card-actions">
-                <button class="btn btn-outline btn-sm btn-open-folder">打开文件夹</button>
+                ${isFailed ? '' : '<button class="btn btn-outline btn-sm btn-open-folder">打开文件夹</button>'}
+                ${logFile ? '<button class="btn btn-outline btn-sm btn-view-log">日志</button>' : ''}
                 <button class="btn btn-outline btn-sm btn-delete-record">删除</button>
             </div>
+            <div class="history-log-panel" style="display:none"></div>
         </div>
     `;
 }
@@ -2382,9 +2476,49 @@ function initHistoryListEvents() {
             } catch (error) {
                 alert('打开文件夹失败: ' + error.message);
             }
+        } else if (e.target.closest('.btn-view-log')) {
+            const logFile = card.dataset.logFile;
+            const panel = card.querySelector('.history-log-panel');
+            if (!panel || !logFile) return;
+            
+            if (panel.style.display === 'none') {
+                try {
+                    const logs = await TifApi.readLogFile(logFile);
+                    if (logs.length === 0) {
+                        panel.innerHTML = '<div class="task-log-content" style="padding:8px;color:#999">日志文件为空或已删除</div>';
+                    } else {
+                        const logContent = logs.map(l => {
+                            const cls = l.level === 'ERROR' ? 'log-error' : l.level === 'WARN' ? 'log-warn' : '';
+                            return `<div class="task-log-line ${cls}"><span class="log-time">${l.timestamp}</span> ${escapeHtml(l.message)}</div>`;
+                        }).join('');
+                        panel.innerHTML = `
+                            <div class="task-log-toolbar">
+                                <button class="btn-copy-log btn-copy-history-log" title="复制日志">📋 复制</button>
+                            </div>
+                            <div class="task-log-content">${logContent}</div>
+                        `;
+                        // 绑定复制按钮
+                        panel.querySelector('.btn-copy-history-log')?.addEventListener('click', async () => {
+                            const text = logs.map(l => `[${l.timestamp}] [${l.level}] ${l.message}`).join('\n');
+                            try {
+                                await navigator.clipboard.writeText(text);
+                                const btn = panel.querySelector('.btn-copy-history-log');
+                                if (btn) { btn.textContent = '✅ 已复制'; setTimeout(() => btn.textContent = '📋 复制', 1500); }
+                            } catch (err) { console.error('复制失败:', err); }
+                        });
+                    }
+                    panel.style.display = 'block';
+                } catch (err) {
+                    panel.innerHTML = '<div class="task-log-content" style="padding:8px;color:#f66">读取日志失败: ' + escapeHtml(err.toString()) + '</div>';
+                    panel.style.display = 'block';
+                }
+            } else {
+                panel.style.display = 'none';
+            }
         } else if (e.target.closest('.btn-delete-record')) {
             const id = card.dataset.id;
-            if (!confirm('确定要删除这条记录吗？')) return;
+            const ok = await TifApi.showAskDialog('删除记录', '确定要删除这条记录吗？');
+            if (!ok) return;
             try {
                 await TifApi.deleteDownloadRecord(id);
                 loadDownloadHistory();
@@ -2396,7 +2530,8 @@ function initHistoryListEvents() {
 }
 
 async function clearAllHistory() {
-    if (!confirm('确定要清空所有下载记录吗？\n此操作不会删除已下载的文件。')) return;
+    const ok = await TifApi.showAskDialog('清空记录', '确定要清空所有下载记录吗？\n此操作不会删除已下载的文件。');
+    if (!ok) return;
     
     try {
         await TifApi.clearDownloadHistory();
@@ -2514,18 +2649,42 @@ function appendTaskLog(taskId, log) {
 
 function renderTaskLogPanel(taskId, panel) {
     const logs = taskLogs[taskId] || [];
-    panel.innerHTML = logs.map(l => {
+    const logContent = logs.map(l => {
         const cls = l.level === 'ERROR' ? 'log-error' : l.level === 'WARN' ? 'log-warn' : '';
         return `<div class="task-log-line ${cls}"><span class="log-time">${l.timestamp}</span> ${escapeHtml(l.message)}</div>`;
     }).join('');
+    panel.innerHTML = `
+        <div class="task-log-toolbar">
+            <button class="btn-copy-log" onclick="copyTaskLogs('${taskId}')" title="复制日志">复制</button>
+        </div>
+        <div class="task-log-content">${logContent}</div>
+    `;
     // 自动滚动到底部
-    panel.scrollTop = panel.scrollHeight;
+    const content = panel.querySelector('.task-log-content');
+    if (content) content.scrollTop = content.scrollHeight;
 }
 
 function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+async function copyTaskLogs(taskId) {
+    const logs = taskLogs[taskId] || [];
+    const text = logs.map(l => `[${l.timestamp}] [${l.level}] ${l.message}`).join('\n');
+    try {
+        await navigator.clipboard.writeText(text);
+        // 短暂显示反馈
+        const btn = document.querySelector(`.task-card[data-task-id="${taskId}"] .btn-copy-log`);
+        if (btn) {
+            const orig = btn.textContent;
+            btn.textContent = '✓ 已复制';
+            setTimeout(() => btn.textContent = orig, 1500);
+        }
+    } catch (e) {
+        console.error('复制失败:', e);
+    }
 }
 
 async function toggleTaskLog(taskId) {
@@ -2603,11 +2762,16 @@ function updateTaskCard(payload) {
             }, 2000);
             loadDownloadHistory();
         } else {
-            // 失败/取消的任务显示移除按钮
+            // 失败/取消的任务 5 秒后自动移除（留阅读时间）
             const actionsEl = card.querySelector('.task-card-actions');
             if (actionsEl) {
                 actionsEl.innerHTML = '<button class="btn btn-outline btn-sm btn-remove-task">移除</button>';
             }
+            setTimeout(() => {
+                removeTaskCardFromUI(task_id);
+                TifApi.removeTask(task_id);
+            }, 5000);
+            if (status === 'failed') loadDownloadHistory();
         }
     }
 }
@@ -2733,7 +2897,8 @@ function initResumableTaskEvents() {
                 alert('恢复失败: ' + error);
             }
         } else if (e.target.closest('.btn-discard-task')) {
-            if (!confirm('确定丢弃此任务？已下载的瓦片缓存将被删除。')) return;
+            const ok = await TifApi.showAskDialog('丢弃任务', '确定丢弃此任务？已下载的瓦片缓存将被删除。');
+            if (!ok) return;
             await TifApi.discardResumableTask(taskId);
             card.remove();
             const section = document.getElementById('resumable-tasks-section');

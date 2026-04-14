@@ -56,6 +56,9 @@ pub struct AppSettings {
     /// Cesium Ion Access Token
     #[serde(default)]
     pub cesium_ion_token: Option<String>,
+    /// 调试模式：保留临时瓦片目录
+    #[serde(default)]
+    pub debug_mode: bool,
 }
 
 fn default_proxy_enabled() -> bool { false }
@@ -78,6 +81,7 @@ impl Default for AppSettings {
             custom_sources: vec![],
             source_overrides: vec![],
             cesium_ion_token: None,
+            debug_mode: false,
         }
     }
 }

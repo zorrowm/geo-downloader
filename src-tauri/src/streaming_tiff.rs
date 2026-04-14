@@ -86,11 +86,11 @@ pub fn merge_and_export_streaming(
     // strip 缓冲区 drop，释放内存
 
     // ===== 3. 写入 IFD 所需的额外数据 =====
-    // BitsPerSample [8, 8, 8]
-    let bps_offset = stream_pos(&mut w)?;
-    write_u16(&mut w, 8)?;
-    write_u16(&mut w, 8)?;
-    write_u16(&mut w, 8)?;
+    // BitsPerSample [8, 8, 8] — 3 SHORTs = 6 bytes ≤ 8, BigTIFF 要求 inline
+    let bps_inline: u64 = 8u64 | (8u64 << 16) | (8u64 << 32);
+
+    // XResolution, YResolution (72/1) — 1 RATIONAL = 8 bytes = 8, BigTIFF 要求 inline
+    let res_inline: u64 = 72u64 | (1u64 << 32);  // numerator=72, denominator=1
 
     // StripOffsets (LONG8 for BigTIFF)
     let strip_offsets_offset = stream_pos(&mut w)?;
@@ -103,14 +103,6 @@ pub fn merge_and_export_streaming(
     for &cnt in &strip_counts {
         write_u64(&mut w, cnt)?;
     }
-
-    // XResolution, YResolution (72/1)
-    let xres_offset = stream_pos(&mut w)?;
-    write_u32(&mut w, 72)?;
-    write_u32(&mut w, 1)?;
-    let yres_offset = stream_pos(&mut w)?;
-    write_u32(&mut w, 72)?;
-    write_u32(&mut w, 1)?;
 
     // GeoTIFF: 转换为 EPSG:3857 (Web Mercator) 米坐标
     let (west_m, south_m, east_m, north_m) = bounds_to_mercator(bounds);
@@ -153,15 +145,15 @@ pub fn merge_and_export_streaming(
     // BigTIFF IFD entry: tag(2) + type(2) + count(8) + value/offset(8) = 20 bytes
     write_bigtiff_entry(&mut w, 256, 4, 1, width as u64)?;                          // ImageWidth
     write_bigtiff_entry(&mut w, 257, 4, 1, height as u64)?;                         // ImageLength
-    write_bigtiff_entry(&mut w, 258, 3, 3, bps_offset)?;                            // BitsPerSample
+    write_bigtiff_entry(&mut w, 258, 3, 3, bps_inline)?;                            // BitsPerSample (inline)
     write_bigtiff_entry(&mut w, 259, 3, 1, 1)?;                                     // Compression = None
     write_bigtiff_entry(&mut w, 262, 3, 1, 2)?;                                     // PhotometricInterpretation = RGB
     write_bigtiff_entry(&mut w, 273, 16, num_strips as u64, strip_offsets_offset)?;  // StripOffsets (LONG8)
     write_bigtiff_entry(&mut w, 277, 3, 1, 3)?;                                     // SamplesPerPixel
     write_bigtiff_entry(&mut w, 278, 4, 1, rows_per_strip as u64)?;                 // RowsPerStrip
     write_bigtiff_entry(&mut w, 279, 16, num_strips as u64, strip_counts_offset)?;  // StripByteCounts (LONG8)
-    write_bigtiff_entry(&mut w, 282, 5, 1, xres_offset)?;                           // XResolution
-    write_bigtiff_entry(&mut w, 283, 5, 1, yres_offset)?;                           // YResolution
+    write_bigtiff_entry(&mut w, 282, 5, 1, res_inline)?;                            // XResolution (inline 72/1)
+    write_bigtiff_entry(&mut w, 283, 5, 1, res_inline)?;                            // YResolution (inline 72/1)
     write_bigtiff_entry(&mut w, 296, 3, 1, 2)?;                                     // ResolutionUnit = Inch
     // GeoTIFF tags (EPSG:3857)
     write_bigtiff_entry(&mut w, 33550, 12, 3, pixel_scale_offset)?;                 // ModelPixelScaleTag
@@ -180,7 +172,35 @@ pub fn merge_and_export_streaming(
     let file_size = std::fs::metadata(save_path)
         .map(|m| m.len())
         .unwrap_or(0);
+    
+    // 验证 BigTIFF 文件头完整性
+    validate_bigtiff_header(save_path, ifd_pos)?;
+    
     Ok(file_size)
+}
+
+/// 验证 BigTIFF 文件头是否完整写入
+fn validate_bigtiff_header(path: &Path, expected_ifd_pos: u64) -> Result<(), String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("验证失败: 无法打开文件: {}", e))?;
+    let mut header = [0u8; 16];
+    f.read_exact(&mut header).map_err(|e| format!("验证失败: 读取头部: {}", e))?;
+    
+    // byte order
+    if &header[0..2] != b"II" {
+        return Err("验证失败: 文件字节序标记无效".to_string());
+    }
+    // version 43 (BigTIFF)
+    let version = u16::from_le_bytes([header[2], header[3]]);
+    if version != 43 {
+        return Err(format!("验证失败: TIFF 版本标记 {} 不是 BigTIFF (43)", version));
+    }
+    // IFD offset
+    let ifd_offset = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    if ifd_offset != expected_ifd_pos {
+        return Err(format!("验证失败: IFD 偏移量 {} 与预期 {} 不一致", ifd_offset, expected_ifd_pos));
+    }
+    Ok(())
 }
 
 // ===== 辅助函数 =====
@@ -192,10 +212,6 @@ fn stream_pos<W: Seek>(w: &mut W) -> Result<u64, String> {
 }
 
 fn write_u16<W: Write>(w: &mut W, v: u16) -> Result<(), String> {
-    w.write_all(&v.to_le_bytes()).map_err(e2s)
-}
-
-fn write_u32<W: Write>(w: &mut W, v: u32) -> Result<(), String> {
     w.write_all(&v.to_le_bytes()).map_err(e2s)
 }
 

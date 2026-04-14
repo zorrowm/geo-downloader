@@ -19,6 +19,7 @@ pub struct DownloadProgress {
     pub total: u32,
     pub completed: u32,
     pub failed: u32,
+    pub no_data: u32,
     pub status: String,
 }
 
@@ -91,6 +92,11 @@ impl TileDownloader {
         url
     }
 
+    /// 生成瓦片 URL（公开接口，供探测等外部调用）
+    pub fn get_tile_url_public(&self, tile: &TileCoord) -> String {
+        self.get_tile_url(tile)
+    }
+
     /// 获取请求头
     fn get_headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -120,6 +126,16 @@ impl TileDownloader {
         headers
     }
 
+    /// 获取请求头（公开接口，供探测等外部调用）
+    pub fn get_headers_public(&self) -> reqwest::header::HeaderMap {
+        self.get_headers()
+    }
+
+    /// 获取 HTTP 客户端引用
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// 下载单个瓦片（带重试）
     async fn download_one_tile(
         client: &Client,
@@ -146,6 +162,8 @@ impl TileDownloader {
                             }
                         } else if status.as_u16() == 404 {
                             // 瓦片不存在（该区域/缩放级别无数据），跳过不重试
+                            // 清除可能残存的旧文件，避免断点续传误判
+                            let _ = tokio::fs::remove_file(file_path).await;
                             Ok(())
                         } else if status.as_u16() == 429 || status.as_u16() == 503 {
                             Err((format!("HTTP {}", status), true))
@@ -216,7 +234,7 @@ impl TileDownloader {
         // 检查已存在的瓦片文件（断点续传）
         let mut need_download: Vec<TileCoord> = Vec::new();
         for tile in &tiles {
-            let file_path = temp_dir.join(format!("{}_{}.bin", tile.x, tile.y));
+            let file_path = temp_dir.join(format!("{}_{}.png", tile.x, tile.y));
             if file_path.exists() && std::fs::metadata(&file_path).map_or(false, |m| m.len() > 0) {
                 tile_files.insert((tile.x, tile.y), file_path);
                 completed += 1;
@@ -228,7 +246,7 @@ impl TileDownloader {
 
         // 报告初始进度
         progress_callback(DownloadProgress {
-            total, completed, failed, status: if skipped > 0 {
+            total, completed, failed, no_data: 0, status: if skipped > 0 {
                 format!("已跳过 {} 个已下载瓦片", skipped)
             } else {
                 "downloading".to_string()
@@ -248,26 +266,30 @@ impl TileDownloader {
             let rc = retrying_counter.clone();
 
             async move {
-                let file_path = td.join(format!("{}_{}.bin", tile.x, tile.y));
+                let file_path = td.join(format!("{}_{}.png", tile.x, tile.y));
                 let result = Self::download_one_tile(&client, &url, &headers, &file_path, retry_times, Some(&rc)).await;
-                (tile, result.map(|_| file_path))
+                // 404 返回 Ok(()) 但不会创建文件，需要检查文件实际存在才算成功
+                (tile, result.and_then(|_| {
+                    if file_path.exists() { Ok(file_path) } else { Err("no_data".to_string()) }
+                }))
             }
         });
 
         let mut tile_stream = stream::iter(all_futures).buffer_unordered(concurrency);
         let mut stall_timer = tokio::time::interval(Duration::from_secs(3));
         stall_timer.tick().await; // 跳过第一个立即触发的 tick
+        let mut no_data_count = 0u32;
 
         loop {
             // 暂停检查：如果已暂停，等待恢复后再继续拉取新瓦片
             if let Some(pc) = pause_control {
                 if pc.is_paused() {
                     progress_callback(DownloadProgress {
-                        total, completed, failed, status: "paused".to_string(),
+                        total, completed, failed, no_data: no_data_count, status: "paused".to_string(),
                     });
                     pc.wait_if_paused().await;
                     progress_callback(DownloadProgress {
-                        total, completed, failed, status: "downloading".to_string(),
+                        total, completed, failed, no_data: no_data_count, status: "downloading".to_string(),
                     });
                 }
             }
@@ -278,9 +300,15 @@ impl TileDownloader {
                             tile_files.insert((tile.x, tile.y), path);
                             completed += 1;
                         }
-                        Some((tile, Err(_))) => {
-                            failed_tiles.push(tile);
-                            failed += 1;
+                        Some((_tile, Err(e))) => {
+                            if e == "no_data" {
+                                // 404 无数据，不重试，不算失败
+                                no_data_count += 1;
+                                completed += 1;
+                            } else {
+                                failed_tiles.push(_tile);
+                                failed += 1;
+                            }
                         }
                         None => break, // 所有瓦片处理完毕
                     }
@@ -295,7 +323,7 @@ impl TileDownloader {
                             "downloading".to_string()
                         };
                         progress_callback(DownloadProgress {
-                            total, completed, failed, status,
+                            total, completed, failed, no_data: no_data_count, status,
                         });
                     }
                 }
@@ -307,7 +335,7 @@ impl TileDownloader {
                     let retrying = retrying_counter.load(Ordering::Relaxed);
                     if retrying > 0 {
                         progress_callback(DownloadProgress {
-                            total, completed, failed,
+                            total, completed, failed, no_data: no_data_count,
                             status: format!("下载中，{} 个瓦片正在重试", retrying),
                         });
                     }
@@ -336,7 +364,7 @@ impl TileDownloader {
             let retry_count = failed_tiles.len();
             let wait_secs = retry_delays_secs[round];
             progress_callback(DownloadProgress {
-                total, completed, failed,
+                total, completed, failed, no_data: no_data_count,
                 status: format!("重试第{}轮: {} 个失败瓦片，等待 {}s 后重试...", round + 1, retry_count, wait_secs),
             });
 
@@ -344,7 +372,7 @@ impl TileDownloader {
             tokio::time::sleep(Duration::from_secs(wait_secs)).await;
 
             progress_callback(DownloadProgress {
-                total, completed, failed,
+                total, completed, failed, no_data: no_data_count,
                 status: format!("重试第{}轮: 开始重试 {} 个瓦片，并发 {}", round + 1, retry_count, retry_concurrencies[round]),
             });
 
@@ -360,10 +388,12 @@ impl TileDownloader {
                 let td = temp_dir.clone();
 
                 async move {
-                    let file_path = td.join(format!("{}_{}.bin", tile.x, tile.y));
+                    let file_path = td.join(format!("{}_{}.png", tile.x, tile.y));
                     // 重试轮只给 1 次重试机会
                     let result = Self::download_one_tile(&client, &url, &headers, &file_path, 1, None).await;
-                    (tile, result.map(|_| file_path))
+                    (tile, result.and_then(|_| {
+                        if file_path.exists() { Ok(file_path) } else { Err("no_data".to_string()) }
+                    }))
                 }
             });
 
@@ -379,12 +409,18 @@ impl TileDownloader {
                         completed += 1;
                         failed -= 1;
                     }
-                    Err(_) => {
-                        still_failed.push(tile);
+                    Err(e) => {
+                        if e == "no_data" {
+                            no_data_count += 1;
+                            completed += 1;
+                            failed -= 1;
+                        } else {
+                            still_failed.push(tile);
+                        }
                     }
                 }
                 progress_callback(DownloadProgress {
-                    total, completed, failed,
+                    total, completed, failed, no_data: no_data_count,
                     status: format!("重试第{}轮...", round + 1),
                 });
             }
@@ -393,12 +429,21 @@ impl TileDownloader {
         }
 
         // 报告完成
-        let status = if failed == 0 { "completed" } else { "completed_with_errors" };
+        let status = if failed == 0 && no_data_count == 0 {
+            "completed"
+        } else if failed == 0 {
+            "completed_with_no_data"
+        } else {
+            "completed_with_errors"
+        };
         progress_callback(DownloadProgress {
-            total, completed, failed, status: status.to_string(),
+            total, completed, failed, no_data: no_data_count, status: status.to_string(),
         });
 
         if tile_files.is_empty() {
+            if no_data_count > 0 {
+                return Err(format!("该区域在此缩放级别无可用数据（全部 {} 张瓦片均返回 404）", no_data_count));
+            }
             return Err("没有成功下载任何瓦片".to_string());
         }
 

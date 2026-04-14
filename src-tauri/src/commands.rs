@@ -63,6 +63,8 @@ pub struct PolygonCoord {
 #[derive(Debug, Clone, Serialize)]
 pub struct EstimateResult {
     pub tile_count: u32,
+    pub cols: u32,
+    pub rows: u32,
     pub estimated_size_mb: f64,
     pub allowed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,7 +126,8 @@ pub fn get_builtin_sources(tianditu_token: Option<String>) -> HashMap<String, Ti
 /// 估算下载大小
 #[tauri::command]
 pub fn estimate_download(bounds: Bounds, zoom: u8) -> EstimateResult {
-    let tile_count = tile::estimate_tile_count(&bounds, zoom);
+    let (_x_min, _y_min, _x_max, _y_max, cols, rows) = tile::get_tile_matrix_size(&bounds, zoom);
+    let tile_count = cols * rows;
     let avg_tile_size_kb = 20.0;
     let estimated_size_mb = (tile_count as f64 * avg_tile_size_kb) / 1024.0;
     
@@ -133,6 +136,8 @@ pub fn estimate_download(bounds: Bounds, zoom: u8) -> EstimateResult {
     if tile_count > max_tiles {
         EstimateResult {
             tile_count,
+            cols,
+            rows,
             estimated_size_mb,
             allowed: false,
             warning: Some(format!("区域过大（{} 个瓦片），超过 {} 个上限。请缩小区域或降低缩放级别。", tile_count, max_tiles)),
@@ -140,6 +145,8 @@ pub fn estimate_download(bounds: Bounds, zoom: u8) -> EstimateResult {
     } else {
         EstimateResult {
             tile_count,
+            cols,
+            rows,
             estimated_size_mb,
             allowed: true,
             warning: None,
@@ -203,6 +210,10 @@ pub async fn create_download_task(
     // spawn 后台任务
     let tm = Arc::clone(&task_manager);
     let tid = task_id.clone();
+    // 保留用于失败时记录历史
+    let req_source = request.source.clone();
+    let req_zoom = request.zoom;
+    let req_format = request.format.clone();
     
     tokio::spawn(async move {
         let result = execute_download_task(
@@ -229,6 +240,25 @@ pub async fn create_download_task(
                     });
                 } else {
                     task_log(&app, &tm, &tid, "ERROR", &format!("任务失败: {}", e));
+                    crate::task::remove_task_file(&tid);
+                    crate::task::cleanup_temp_dir(&tid);
+                    // 失败也记录到历史（failed_count=0 因为是整体失败而非逐瓦片失败）
+                    let log_file_path = tm.get_log_file_path(&tid);
+                    let record = DownloadRecord::new(
+                        task_name.to_string(),
+                        req_source.clone(),
+                        source_name.to_string(),
+                        req_zoom,
+                        req_format.clone(),
+                        save_path.clone(),
+                        0,
+                        tile_count,
+                        0,
+                        DownloadStatus::Failed,
+                    ).with_log_file(log_file_path);
+                    if let Ok(manager) = HistoryManager::new() {
+                        let _ = manager.add(record);
+                    }
                     tm.fail_task(&tid, e.clone());
                     let _ = app.emit(&format!("task-progress-{}", tid), TaskProgressPayload {
                         task_id: tid,
@@ -296,16 +326,59 @@ async fn execute_download_task(
         task_log(app, tm, task_id, "INFO", "启用 LZW 压缩");
     }
     
+    // 记录原始 bounds 坐标（便于问题诊断）
+    let b = &request.bounds;
+    task_log(app, tm, task_id, "INFO", &format!(
+        "选区坐标: 北={:.8} 南={:.8} 东={:.8} 西={:.8}",
+        b.north, b.south, b.east, b.west
+    ));
+    
+    // bounds 有效性校验
+    if b.north < b.south {
+        task_log(app, tm, task_id, "WARN", &format!(
+            "异常: 北纬({:.6}) < 南纬({:.6})，bounds 可能翻转", b.north, b.south
+        ));
+    }
+    if b.east < b.west {
+        task_log(app, tm, task_id, "WARN", &format!(
+            "异常: 东经({:.6}) < 西经({:.6})，bounds 可能翻转", b.east, b.west
+        ));
+    }
+    if b.north.abs() > 85.06 || b.south.abs() > 85.06 {
+        task_log(app, tm, task_id, "WARN", &format!(
+            "异常: 纬度超出 Web Mercator 范围 (±85.06°): N={:.6} S={:.6}", b.north, b.south
+        ));
+    }
+    if b.east.abs() > 180.0 || b.west.abs() > 180.0 {
+        task_log(app, tm, task_id, "WARN", &format!(
+            "异常: 经度超出有效范围 (±180°): E={:.6} W={:.6}", b.east, b.west
+        ));
+    }
+    
     // 获取瓦片列表
     let tiles = tile::get_tiles_in_bounds(&request.bounds, request.zoom);
     let actual_count = tiles.len() as u32;
-    let (x_min, y_min, x_max, y_max, _, _) = tile::get_tile_matrix_size(&request.bounds, request.zoom);
-    task_log(app, tm, task_id, "INFO", &format!("瓦片数量: {}，矩阵范围: x[{}-{}] y[{}-{}]", actual_count, x_min, x_max, y_min, y_max));
+    let (x_min, y_min, x_max, y_max, cols, rows) = tile::get_tile_matrix_size(&request.bounds, request.zoom);
+    task_log(app, tm, task_id, "INFO", &format!(
+        "瓦片数量: {}，矩阵: {}列×{}行，范围: x[{}-{}] y[{}-{}]",
+        actual_count, cols, rows, x_min, x_max, y_min, y_max
+    ));
+    
+    // 宽高比异常警告
+    if cols > 0 && rows > 0 {
+        let ratio = if cols > rows { cols as f64 / rows as f64 } else { rows as f64 / cols as f64 };
+        if ratio > 50.0 {
+            task_log(app, tm, task_id, "WARN", &format!(
+                "异常: 瓦片矩阵宽高比 {:.1}:1 极不平衡，可能是坐标错误", ratio
+            ));
+        }
+    }
     
     // 创建临时目录
     let temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task_id));
     std::fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("创建临时目录失败: {}", e))?;
+    task_log(app, tm, task_id, "INFO", &format!("瓦片临时目录: {}", temp_dir.display()));
     
     // 创建下载器
     let downloader = TileDownloader::new(source, request.proxy.as_deref())?;
@@ -322,25 +395,35 @@ async fn execute_download_task(
     let mut last_log_pct: f64 = 0.0;
     
     let mut last_status = String::new();
+    let no_data_tracker = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let no_data_tracker_c = no_data_tracker.clone();
     
     let tile_files = downloader.download_tiles(tiles, concurrency, &temp_dir, Some(cancel_token), Some(pause_control), move |progress| {
+        no_data_tracker_c.store(progress.no_data, std::sync::atomic::Ordering::Relaxed);
         let p = progress.percent();
         // 映射到 0-85% 范围
         let mapped = p * 0.85;
         
         // 检测重试状态变化，记录日志
-        let is_retry = progress.status != "downloading" && progress.status != "completed" && progress.status != "completed_with_errors";
+        let is_terminal = progress.status == "completed" || progress.status == "completed_with_errors" || progress.status == "completed_with_no_data";
+        let is_normal = progress.status == "downloading" || is_terminal;
         if progress.status != last_status {
             last_status = progress.status.clone();
-            if let Some(log) = tm_c.append_log(&tid, if is_retry { "WARN" } else { "INFO" }, &progress.status) {
+            if let Some(log) = tm_c.append_log(&tid, if is_normal { "INFO" } else { "WARN" }, &progress.status) {
                 let _ = app_c.emit(&format!("task-log-{}", tid), &log);
             }
         }
         
-        let display_msg = if is_retry {
-            format!("{} ({}/{})", progress.status, progress.completed, progress.total)
-        } else {
+        let display_msg = if is_terminal {
+            if progress.status == "completed_with_no_data" {
+                format!("全部 {} 张瓦片均无数据", progress.total)
+            } else {
+                format!("下载完成 {}/{}", progress.completed, progress.total)
+            }
+        } else if progress.status == "downloading" {
             format!("下载中 {}/{}", progress.completed, progress.total)
+        } else {
+            format!("{} ({}/{})", progress.status, progress.completed, progress.total)
         };
         
         tm_c.update_progress(&tid, TaskStatus::Downloading, mapped, progress.completed, progress.failed, Some(display_msg.clone()));
@@ -367,8 +450,32 @@ async fn execute_download_task(
     }
     
     let failed_count = actual_count - tile_files.len() as u32;
+    let no_data_final = no_data_tracker.load(std::sync::atomic::Ordering::Relaxed);
+    let real_failed = if failed_count > no_data_final { failed_count - no_data_final } else { 0 };
     let download_elapsed = start_time.elapsed();
-    task_log(app, tm, task_id, "INFO", &format!("下载完成，成功 {} 张，失败 {} 张，耗时 {:.1}s", tile_files.len(), failed_count, download_elapsed.as_secs_f64()));
+    
+    let mut summary_parts = vec![format!("成功 {} 张", tile_files.len())];
+    if no_data_final > 0 {
+        summary_parts.push(format!("无数据 {} 张", no_data_final));
+    }
+    if real_failed > 0 {
+        summary_parts.push(format!("失败 {} 张", real_failed));
+    }
+    task_log(app, tm, task_id, "INFO", &format!(
+        "下载完成，{}，耗时 {:.1}s",
+        summary_parts.join("，"),
+        download_elapsed.as_secs_f64()
+    ));
+    
+    if no_data_final > 0 {
+        let pct = (no_data_final as f64 / actual_count as f64 * 100.0).round();
+        if pct > 50.0 {
+            task_log(app, tm, task_id, "WARN", &format!(
+                "有 {:.0}% 的瓦片返回无数据（404），该区域在此缩放级别可能不完整",
+                pct
+            ));
+        }
+    }
     
     // 判断是否使用流式写入路径 (GeoTIFF + 瓦片数 > 5000)
     let is_geotiff = ExportFormat::from_str(&request.format) == ExportFormat::GeoTiff;
@@ -475,6 +582,7 @@ async fn execute_download_task(
     });
     
     // 自动添加历史记录
+    let log_file_path = tm.get_log_file_path(task_id);
     let record = DownloadRecord::new(
         task_name.to_string(),
         request.source.clone(),
@@ -486,7 +594,7 @@ async fn execute_download_task(
         actual_count,
         failed_count,
         if failed_count == 0 { DownloadStatus::Completed } else { DownloadStatus::Completed },
-    );
+    ).with_log_file(log_file_path);
     if let Ok(manager) = HistoryManager::new() {
         let _ = manager.add(record);
     }
@@ -504,6 +612,98 @@ pub fn get_active_tasks(task_manager: State<'_, Arc<TaskManager>>) -> Vec<TaskIn
 #[tauri::command]
 pub fn get_task_logs(task_manager: State<'_, Arc<TaskManager>>, task_id: String) -> Vec<TaskLog> {
     task_manager.get_logs(&task_id)
+}
+
+/// 按日志文件路径读取日志（用于历史任务日志回看）
+#[tauri::command]
+pub fn read_log_file(task_manager: State<'_, Arc<TaskManager>>, file_path: String) -> Vec<TaskLog> {
+    // 安全校验：仅允许读取日志目录下的文件
+    let log_dir_str = task_manager.get_log_dir();
+    let log_dir = std::path::Path::new(&log_dir_str);
+    let target = std::path::Path::new(&file_path);
+    match (target.canonicalize(), log_dir.canonicalize()) {
+        (Ok(abs_target), Ok(abs_dir)) if abs_target.starts_with(&abs_dir) => {
+            TaskManager::read_log_file_by_path(&file_path)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// 获取日志目录路径
+#[tauri::command]
+pub fn get_log_dir(task_manager: State<'_, Arc<TaskManager>>) -> String {
+    task_manager.get_log_dir()
+}
+
+/// 探测指定位置和层级的瓦片是否有数据
+#[derive(Debug, Serialize)]
+pub struct ProbeResult {
+    pub has_data: bool,
+    pub status_code: u16,
+    pub content_length: usize,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn probe_tile(
+    source_key: String,
+    zoom: u8,
+    lat: f64,
+    lng: f64,
+    tianditu_token: Option<String>,
+    proxy: Option<String>,
+) -> Result<ProbeResult, String> {
+    let sources = config::get_tile_sources(tianditu_token.as_deref());
+    let source = sources
+        .get(&source_key)
+        .ok_or_else(|| format!("未知图源: {}", source_key))?
+        .clone();
+
+    // 构造 tile 坐标
+    let (tx, ty) = tile::latlng_to_tile(lat, lng, zoom);
+    let tile_coord = tile::TileCoord { x: tx, y: ty, z: zoom };
+
+    // 复用 TileDownloader 的 URL 构造与请求头
+    let downloader = TileDownloader::new(source, proxy.as_deref())?;
+    let url = downloader.get_tile_url_public(&tile_coord);
+    let headers = downloader.get_headers_public();
+    let client = downloader.client();
+
+    let resp = client
+        .get(&url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let status_code = resp.status().as_u16();
+
+    if !resp.status().is_success() {
+        return Ok(ProbeResult {
+            has_data: false,
+            status_code,
+            content_length: 0,
+            message: format!("HTTP {}", status_code),
+        });
+    }
+
+    let bytes = resp.bytes().await.map_err(|e| format!("读取失败: {}", e))?;
+    let content_length = bytes.len();
+
+    // 启发式判断：卫星/影像 tile 通常 > 5KB，空白/占位 tile 通常 < 1KB
+    let has_data = content_length > 1000;
+    let message = if has_data {
+        format!("瓦片有效 ({}B)", content_length)
+    } else {
+        format!("瓦片可能为空 ({}B)，该区域在此层级可能无数据", content_length)
+    };
+
+    Ok(ProbeResult {
+        has_data,
+        status_code,
+        content_length,
+        message,
+    })
 }
 
 /// 取消任务
@@ -596,6 +796,11 @@ pub async fn resume_task(
     
     let tm = Arc::clone(&task_manager);
     let tid = task_id.clone();
+    let req_source_r = request.source.clone();
+    let req_zoom_r = request.zoom;
+    let req_format_r = request.format.clone();
+    let task_name_r = task_name.clone();
+    let source_name_r = source_name.clone();
     
     tokio::spawn(async move {
         let result = execute_download_task(
@@ -620,6 +825,25 @@ pub async fn resume_task(
                     });
                 } else {
                     task_log(&app, &tm, &tid, "ERROR", &format!("任务失败: {}", e));
+                    crate::task::remove_task_file(&tid);
+                    crate::task::cleanup_temp_dir(&tid);
+                    // 失败也记录到历史
+                    let log_file_path = tm.get_log_file_path(&tid);
+                    let record = DownloadRecord::new(
+                        task_name_r,
+                        req_source_r,
+                        source_name_r,
+                        req_zoom_r,
+                        req_format_r,
+                        save_path.clone(),
+                        0,
+                        tile_count,
+                        0,
+                        DownloadStatus::Failed,
+                    ).with_log_file(log_file_path);
+                    if let Ok(manager) = HistoryManager::new() {
+                        let _ = manager.add(record);
+                    }
                     tm.fail_task(&tid, e.clone());
                     let _ = app.emit(&format!("task-progress-{}", tid), TaskProgressPayload {
                         task_id: tid,
@@ -875,10 +1099,11 @@ pub async fn create_osm_download_task(
         });
 
         // 自动添加历史记录
+        let log_file_path = tm.get_log_file_path(&tid);
         let record = DownloadRecord::new(
             task_name, "osm_vector".to_string(), "OSM Overpass".to_string(),
             0, "geojson".to_string(), save_path, file_size, 0, 0, DownloadStatus::Completed,
-        );
+        ).with_log_file(log_file_path);
         if let Ok(manager) = HistoryManager::new() {
             let _ = manager.add(record);
         }
@@ -1119,6 +1344,7 @@ pub async fn create_3dtiles_task(
                     );
                 } else {
                     task_log(&app, &tm, &tid, "ERROR", &format!("任务失败: {}", e));
+                    crate::task::remove_task_file(&tid);
                     tm.fail_task(&tid, e.clone());
                     let _ = app.emit(
                         &format!("task-progress-{}", tid),
@@ -1224,6 +1450,7 @@ async fn execute_3dtiles_task(
     tm.complete_task(task_id, dir_size);
 
     // 写入下载历史记录
+    let log_file_path = tm.get_log_file_path(task_id);
     let record = DownloadRecord::new(
         task_name.to_string(),
         "3dtiles".to_string(),
@@ -1235,7 +1462,7 @@ async fn execute_3dtiles_task(
         tile_count,
         0,
         DownloadStatus::Completed,
-    );
+    ).with_log_file(log_file_path);
     if let Ok(manager) = HistoryManager::new() {
         let _ = manager.add(record);
     }
@@ -1587,6 +1814,8 @@ pub async fn create_wayback_task(
                     });
                 } else {
                     task_log(&app, &tm, &tid, "ERROR", &format!("任务失败: {}", e));
+                    crate::task::remove_task_file(&tid);
+                    crate::task::cleanup_temp_dir(&tid);
                     tm.fail_task(&tid, e.clone());
                     let _ = app.emit(&format!("task-progress-{}", tid), TaskProgressPayload {
                         task_id: tid,

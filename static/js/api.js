@@ -107,6 +107,25 @@
         return [];
     }
 
+    async function readLogFile(filePath) {
+        if (checkTauri()) return await invoke('read_log_file', { filePath });
+        return [];
+    }
+
+    async function getLogDir() {
+        if (checkTauri()) return await invoke('get_log_dir');
+        return '';
+    }
+
+    async function probeTile(sourceKey, zoom, lat, lng, tiandiTuToken, proxy) {
+        if (checkTauri()) return await invoke('probe_tile', {
+            sourceKey, zoom, lat, lng,
+            tiandiTuToken: tiandiTuToken || null,
+            proxy: proxy || null,
+        });
+        return { has_data: true, status_code: 0, content_length: 0, message: '无法探测' };
+    }
+
     async function getResumableTasks() {
         if (checkTauri()) return await invoke('get_resumable_tasks');
         return [];
@@ -176,6 +195,16 @@
             });
         }
         return null;
+    }
+
+    async function showAskDialog(message, title) {
+        if (checkTauri() && window.__TAURI__.dialog) {
+            return await window.__TAURI__.dialog.ask(message, {
+                title: title || 'GeoDownloader',
+                kind: 'warning'
+            });
+        }
+        return confirm(message);
     }
 
     function triggerBrowserDownload(blob, filename) {
@@ -324,6 +353,7 @@
         getAdminBoundary,
         geocodeSearch,
         showSaveDialog,
+        showAskDialog,
         triggerBrowserDownload,
         // 历史记录
         getDownloadHistory,
@@ -343,6 +373,9 @@
         createOsmDownloadTask,
         getActiveTasks,
         getTaskLogs,
+        readLogFile,
+        getLogDir,
+        probeTile,
         getResumableTasks,
         resumeTask,
         discardResumableTask,

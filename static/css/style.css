@@ -892,6 +892,46 @@ body {
     justify-content: space-between;
 }
 
+/* 缩放级别提示气泡 */
+.form-label {
+    position: relative;
+}
+.zoom-tip-icon {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 4px;
+    color: var(--text-muted, #999);
+    cursor: pointer;
+    vertical-align: middle;
+    transition: color 0.2s;
+}
+.zoom-tip-icon:hover,
+.zoom-tip-icon:focus {
+    color: var(--primary, #4a90d9);
+}
+.zoom-tip-bubble {
+    display: none;
+    position: absolute;
+    left: 0;
+    top: calc(100% + 8px);
+    width: 320px;
+    padding: 14px 16px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e0e0e0);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text, #333);
+    z-index: 1000;
+    font-weight: normal;
+}
+.zoom-tip-icon:hover + .zoom-tip-bubble,
+.zoom-tip-icon:focus + .zoom-tip-bubble,
+.zoom-tip-bubble:hover {
+    display: block;
+}
+
 .form-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -1608,13 +1648,67 @@ body {
     margin-top: 8px;
     background: #1a1a2e;
     border-radius: 4px;
-    padding: 8px;
     max-height: 200px;
-    overflow-y: auto;
+    overflow: hidden;
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     font-size: 11px;
     line-height: 1.5;
     color: #c8c8d0;
+}
+
+.task-log-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 8px;
+    background: #12122a;
+    border-bottom: 1px solid #2a2a4a;
+}
+
+.btn-copy-log {
+    background: none;
+    border: 1px solid #3a3a5a;
+    color: #8888aa;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-copy-log:hover {
+    color: #fff;
+    border-color: #5b8def;
+}
+
+.task-log-content {
+    padding: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.history-log-panel {
+    margin-top: 8px;
+    background: #1a1a2e;
+    border-radius: 4px;
+    overflow: hidden;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #c8c8d0;
+}
+
+.history-log-panel .task-log-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 8px;
+    background: #12122a;
+    border-bottom: 1px solid #2a2a4a;
+}
+
+.history-log-panel .task-log-content {
+    padding: 8px;
+    max-height: 200px;
+    overflow-y: auto;
 }
 
 .task-log-line {

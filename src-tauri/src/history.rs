@@ -21,6 +21,9 @@ pub struct DownloadRecord {
     pub failed_count: u32,
     pub created_at: DateTime<Utc>,
     pub status: DownloadStatus,
+    /// 关联的日志文件路径
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_file: Option<String>,
 }
 
 /// 下载状态
@@ -58,7 +61,14 @@ impl DownloadRecord {
             failed_count,
             created_at: Utc::now(),
             status,
+            log_file: None,
         }
+    }
+
+    /// 创建新记录（带日志文件）
+    pub fn with_log_file(mut self, log_file: Option<String>) -> Self {
+        self.log_file = log_file;
+        self
     }
 }
 

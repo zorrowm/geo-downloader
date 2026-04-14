@@ -204,7 +204,20 @@
                         <!-- 缩放级别 -->
                         <div class="form-group">
                             <div class="form-label-row">
-                                <label class="form-label" for="zoom-slider">缩放级别</label>
+                                <label class="form-label" for="zoom-slider">缩放级别
+                                    <span class="zoom-tip-icon" id="zoom-tip-trigger" tabindex="0" title="点击查看缩放级别说明">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                                    </span>
+                                    <div class="zoom-tip-bubble" id="zoom-tip-bubble">
+                                        <b>⚠ 缩放级别直接影响下载结果</b><br><br>
+                                        级别越高，影像越清晰，但瓦片数量呈指数增长。若选择的级别超出图源或该区域实际支持的最大级别，下载可能全部返回空白瓦片（404），导致 TIF 文件异常或无法打开。<br><br>
+                                        <b>建议操作：</b><br>
+                                        1. 先在地图上缩放到你期望的清晰度（底部状态栏显示当前层级）<br>
+                                        2. 观察该区域在此层级下能否正常加载影像<br>
+                                        3. 以此层级作为下载级别的参考上限<br><br>
+                                        <span style="opacity:0.7">下载前会自动探测中心瓦片，若发现无数据会弹窗提醒。</span>
+                                    </div>
+                                </label>
                                 <span class="badge badge-primary" id="zoom-badge">z15 · 街道级</span>
                             </div>
                             <input type="range" id="zoom-slider" class="form-range" min="1" max="22" value="15">
@@ -671,6 +684,23 @@
                             </div>
                             <div id="custom-sources-list" class="source-list"></div>
                         </div>
+                    </section>
+
+                    <!-- 开发者选项 -->
+                    <section class="panel-section">
+                        <div class="section-header">
+                            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M16 18l6-6-6-6"/>
+                                <path d="M8 6l-6 6 6 6"/>
+                            </svg>
+                            <h3>开发者选项</h3>
+                        </div>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="debug-mode-checkbox">
+                            <span class="checkbox-mark"></span>
+                            <span>调试模式（保留临时瓦片目录）</span>
+                        </label>
+                        <p class="form-hint">启用后下载完成/失败的瓦片临时文件不会被删除，便于排查问题。目录位于系统 Temp 中的 tif-dl-* 文件夹。</p>
                     </section>
 
                     <section class="panel-section">

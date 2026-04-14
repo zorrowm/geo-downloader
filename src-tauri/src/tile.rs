@@ -96,8 +96,8 @@ pub fn get_tile_matrix_size(bounds: &Bounds, zoom: u8) -> (u32, u32, u32, u32, u
     let (x_min, y_min) = latlng_to_tile(bounds.north, bounds.west, zoom);
     let (x_max, y_max) = latlng_to_tile(bounds.south, bounds.east, zoom);
 
-    let cols = x_max - x_min + 1;
-    let rows = y_max - y_min + 1;
+    let cols = x_max.saturating_sub(x_min) + 1;
+    let rows = y_max.saturating_sub(y_min) + 1;
 
     (x_min, y_min, x_max, y_max, cols, rows)
 }

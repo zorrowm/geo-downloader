@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "geo-downloader"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "anyhow",
  "chrono",
