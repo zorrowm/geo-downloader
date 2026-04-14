@@ -374,3 +374,52 @@ src-tauri/src/
 - **侧边栏可拖拽调整宽度**：280–600px 范围，拖拽条 hover/dragging 高亮
 - **Cesium 3D 球状态栏**：鼠标移动显示经纬度，相机变化显示高度（m/km 自动切换）
 - 模式切换新增 "历史影像" 标签页
+
+---
+
+## v3.2.1 — Bug 修复与质量加固
+
+> 日期: 2026-04-14
+
+### 28. BigTIFF 文件结构修复
+
+- BitsPerSample [8,8,8] 和 XResolution/YResolution 改为 BigTIFF inline 存储（6/8 bytes ≤ 8 bytes 阈值），修复 QGIS "Cannot handle different per-sample values" 读取错误
+- 新增 `validate_bigtiff_header()` 写后校验
+
+### 29. 安全与健壮性修复
+
+- `read_log_file` 命令增加路径穿越防护：`canonicalize()` + `starts_with(log_dir)` 校验
+- `create_download_task` 失败分支：`failed_count` 从 `tile_count` 修正为 `0`
+- `resume_task` 失败分支：补全 DownloadRecord + HistoryManager 历史记录写入
+- 404 瓦片：清理已下载的空/残文件（`tokio::fs::remove_file`），防止续传时被误判为已完成
+- 前端 `confirm()` 全部替换为 `await TifApi.showAskDialog()`（WebView2 异步对话框）
+
+### 30. 任务日志增强
+
+- 新增下载前瓦片探测机制（`probe_tile`），日志记录首张瓦片 HTTP 状态与大小
+- 新增调试模式（`settings.debug_mode`）控制临时目录保留
+- 日志持久化到磁盘文件（`{AppData}/geo-downloader/logs/task_*.log`）
+- 前端日志工具栏：清除 + 复制按钮
+- 历史记录卡片：日志文件链接
+
+### 31. 缩放级别智能约束
+
+- 不同图源根据已知最大级别约束滑块范围（Google z21、天地图 z18 等）
+- 缩放滑块悬停显示 tooltip 解释各级别精度
+
+---
+
+## TIFF 压缩方式可选
+
+> 日期: 2026-04-14
+
+### 32. 压缩类型三选一
+
+- `DownloadRequest.compress: bool` → `compression: String`（`"none"` / `"lzw"` / `"deflate"`）
+- 流式 BigTIFF 路径 (`streaming_tiff.rs`)：
+  - LZW: `weezl::Encoder::with_tiff_size_switch(BitOrder::Msb, 8)`（TIFF early code size bump）
+  - Deflate: `flate2::write::ZlibEncoder`（TIFF Compression=8, zlib 封装）
+  - 无压缩: 原始数据直写
+- 常规路径 (`exporter.rs`)：`tiff` crate 的 `Lzw` / `Deflate` / `Uncompressed`
+- 前端 checkbox → select 下拉框，默认 Deflate（速度快、压缩率高）
+- 新增依赖：`flate2 = "1.0"`、`weezl = "0.1"`（均为 `tiff` crate 传递依赖的显式声明）
