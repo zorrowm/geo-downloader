@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GeoDownloader — 高性能地理空间数据下载工具</title>
+  <meta name="description" content="基于 Rust + Tauri 的开源桌面工具，支持 2D 地图瓦片、3D Tiles、Esri Wayback 历史影像下载，导出 GeoTIFF。安装包仅 10MB，Win/macOS/Linux 全平台。">
+  <meta name="keywords" content="GeoDownloader,GeoTIFF,地图下载,瓦片下载,3D Tiles,Wayback,卫星影像,遥感,GIS,开源,Tauri,Rust">
+  <meta name="author" content="gaopengbin">
+  <link rel="canonical" href="https://gpb.cc/">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://gpb.cc/">
+  <meta property="og:title" content="GeoDownloader — 高性能地理空间数据下载工具">
+  <meta property="og:description" content="开源免费桌面工具，支持 2D 瓦片 / 3D Tiles / 历史影像下载，导出 GeoTIFF。Rust + Tauri 构建，安装包仅 10MB。">
+  <meta property="og:image" content="https://gpb.cc/images/geotiff.png">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="GeoDownloader — 高性能地理空间数据下载工具">
+  <meta name="twitter:description" content="开源免费桌面工具，支持 2D 瓦片 / 3D Tiles / 历史影像下载，导出 GeoTIFF。">
+  <meta name="twitter:image" content="https://gpb.cc/images/geotiff.png">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html { scroll-behavior: smooth; }
+    .hero-bg {
+      background: linear-gradient(135deg, #1e3a5a 0%, #1e40af 50%, #2563eb 100%);
+    }
+    .screenshot-card {
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    .screenshot-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+    }
+    .feature-icon {
+      width: 48px; height: 48px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 12px; font-size: 24px;
+    }
+    @keyframes fade-up {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-up { animation: fade-up 0.6s ease-out both; }
+    .dl-btn {
+      transition: all 0.2s ease;
+    }
+    .dl-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+    }
+  </style>
+</head>
+<body class="bg-white text-gray-900 antialiased">
+
+  <!-- Nav -->
+  <nav class="fixed top-0 w-full bg-white/80 backdrop-blur-md border-b border-gray-100 z-50">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="#" class="font-bold text-xl">
+        <span class="text-blue-600">GeoD</span><span class="text-gray-700">ownloader</span>
+      </a>
+      <div class="hidden md:flex items-center gap-8 text-sm text-gray-600">
+        <a href="#features" class="hover:text-blue-600 transition">功能</a>
+        <a href="#screenshots" class="hover:text-blue-600 transition">截图</a>
+        <a href="#comparison" class="hover:text-blue-600 transition">对比</a>
+        <a href="#download" class="hover:text-blue-600 transition">下载</a>
+        <a href="https://github.com/gaopengbin/geo-downloader" target="_blank" class="hover:text-blue-600 transition flex items-center gap-1">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero-bg pt-32 pb-20 md:pt-40 md:pb-28">
+    <div class="max-w-6xl mx-auto px-6 text-center text-white">
+      <h1 class="text-4xl md:text-6xl font-bold tracking-tight animate-fade-up">
+        <span class="text-blue-200">GeoD</span>ownloader
+      </h1>
+      <p class="mt-6 text-lg md:text-xl text-blue-100 max-w-2xl mx-auto animate-fade-up" style="animation-delay:0.1s">
+        高性能地理空间数据下载工具<br class="md:hidden">
+        <span class="text-blue-200">2D 瓦片 · 3D Tiles · 历史影像 · GeoTIFF 导出</span>
+      </p>
+      <div class="mt-4 flex flex-wrap justify-center gap-3 text-sm text-blue-200 animate-fade-up" style="animation-delay:0.15s">
+        <span class="bg-white/10 rounded-full px-3 py-1">Rust + Tauri 2.0</span>
+        <span class="bg-white/10 rounded-full px-3 py-1">安装包 ~10 MB</span>
+        <span class="bg-white/10 rounded-full px-3 py-1">开源免费</span>
+        <span class="bg-white/10 rounded-full px-3 py-1">Win / macOS / Linux</span>
+      </div>
+      <div class="mt-4 flex justify-center gap-2 animate-fade-up" style="animation-delay:0.18s">
+        <img src="https://img.shields.io/github/downloads/gaopengbin/geo-downloader/total?color=brightgreen&label=downloads&style=flat-square" alt="Total Downloads" class="h-5">
+        <img src="https://img.shields.io/github/downloads/gaopengbin/geo-downloader/latest/total?label=latest&style=flat-square&color=blue" alt="Latest Downloads" class="h-5">
+        <img src="https://img.shields.io/github/stars/gaopengbin/geo-downloader?style=flat-square&color=yellow" alt="Stars" class="h-5">
+      </div>
+      <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-up" style="animation-delay:0.2s">
+        <a id="hero-download-btn" href="#download" class="dl-btn inline-flex items-center gap-2 bg-white font-semibold px-8 py-3.5 rounded-xl text-lg shadow-lg" style="color:#1d4ed8">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V3"/></svg>
+          <span id="hero-download-text">下载最新版</span>
+        </a>
+        <a href="https://github.com/gaopengbin/geo-downloader" target="_blank" class="inline-flex items-center gap-2 border border-white/30 text-white font-medium px-6 py-3 rounded-xl hover:bg-white/10 transition">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="py-20 bg-gray-50">
+    <div class="max-w-6xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-4">核心功能</h2>
+      <p class="text-center text-gray-500 mb-14 max-w-xl mx-auto">覆盖 GIS 数据获取的全场景需求</p>
+      <div class="grid md:grid-cols-3 gap-8">
+
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <div class="feature-icon bg-blue-50 text-blue-600 mb-4">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <h3 class="font-semibold text-lg mb-2">10+ 内置图源</h3>
+          <p class="text-gray-500 text-sm leading-relaxed">OSM、ArcGIS、天地图、Google Maps、高德地图等，支持自定义 XYZ 瓦片图源</p>
+        </div>
+
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <div class="feature-icon bg-emerald-50 text-emerald-600 mb-4">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+          </div>
+          <h3 class="font-semibold text-lg mb-2">3D Tiles 下载</h3>
+          <p class="text-gray-500 text-sm leading-relaxed">Cesium Ion / Google 3D Tiles / 自定义 URL，空间裁剪，递归下载全 LOD，离线预览</p>
+        </div>
+
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <div class="feature-icon bg-amber-50 text-amber-600 mb-4">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <h3 class="font-semibold text-lg mb-2">历史影像回溯</h3>
+          <p class="text-gray-500 text-sm leading-relaxed">Esri World Imagery Wayback，时间轴选择任意历史时期影像，支持批量下载</p>
+        </div>
+
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <div class="feature-icon bg-purple-50 text-purple-600 mb-4">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          </div>
+          <h3 class="font-semibold text-lg mb-2">GeoTIFF 导出</h3>
+          <p class="text-gray-500 text-sm leading-relaxed">自动写入坐标投影标签，可选 LZW / Deflate 压缩，大范围自动 BigTIFF 流式写入</p>
+        </div>
+
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <div class="feature-icon bg-rose-50 text-rose-600 mb-4">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+          </div>
+          <h3 class="font-semibold text-lg mb-2">行政区划裁剪</h3>
+          <p class="text-gray-500 text-sm leading-relaxed">省/市/区县三级联动，上传 GeoJSON / Shapefile，手绘矩形/多边形，按边界精准裁剪</p>
+        </div>
+
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <div class="feature-icon bg-cyan-50 text-cyan-600 mb-4">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          </div>
+          <h3 class="font-semibold text-lg mb-2">极致性能</h3>
+          <p class="text-gray-500 text-sm leading-relaxed">Rust 真异步并发，安装包仅 ~10 MB，内存占用 ~50 MB，多任务并行 + 断点续传</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- Screenshots -->
+  <section id="screenshots" class="py-20">
+    <div class="max-w-6xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-4">界面预览</h2>
+      <p class="text-center text-gray-500 mb-14">三大核心模块，一个桌面工具搞定</p>
+      <div class="grid md:grid-cols-3 gap-6">
+
+        <div class="screenshot-card rounded-2xl overflow-hidden shadow-md border border-gray-100">
+          <img src="./images/geotiff.png" alt="GeoTIFF 地图下载" class="w-full" loading="lazy">
+          <div class="p-4">
+            <h3 class="font-semibold">GeoTIFF 下载</h3>
+            <p class="text-sm text-gray-500 mt-1">多图源 + 区域选择 + 压缩导出</p>
+          </div>
+        </div>
+
+        <div class="screenshot-card rounded-2xl overflow-hidden shadow-md border border-gray-100">
+          <img src="./images/3dtiles.png" alt="3D Tiles 下载" class="w-full" loading="lazy">
+          <div class="p-4">
+            <h3 class="font-semibold">3D Tiles</h3>
+            <p class="text-sm text-gray-500 mt-1">Cesium Ion / Google 3D Tiles 裁剪下载</p>
+          </div>
+        </div>
+
+        <div class="screenshot-card rounded-2xl overflow-hidden shadow-md border border-gray-100">
+          <img src="./images/wayback.png" alt="历史影像下载" class="w-full" loading="lazy">
+          <div class="p-4">
+            <h3 class="font-semibold">Wayback 历史影像</h3>
+            <p class="text-sm text-gray-500 mt-1">时间轴回溯 · 任意日期卫星影像</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- Comparison -->
+  <section id="comparison" class="py-20 bg-gray-50">
+    <div class="max-w-4xl mx-auto px-6">
+      <h2 class="text-3xl font-bold text-center mb-4">为什么选 Rust + Tauri?</h2>
+      <p class="text-center text-gray-500 mb-14">从 Python + PyWebView 重构而来，性能质变</p>
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-gray-50 border-b border-gray-100">
+              <th class="py-4 px-6 text-left font-semibold text-gray-600"></th>
+              <th class="py-4 px-6 text-center font-semibold text-gray-400">Python 版</th>
+              <th class="py-4 px-6 text-center font-semibold text-blue-600">Rust/Tauri 版</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-50">
+            <tr>
+              <td class="py-4 px-6 font-medium">安装包大小</td>
+              <td class="py-4 px-6 text-center text-gray-400">~200 MB</td>
+              <td class="py-4 px-6 text-center font-semibold text-blue-600">~10 MB</td>
+            </tr>
+            <tr>
+              <td class="py-4 px-6 font-medium">运行内存</td>
+              <td class="py-4 px-6 text-center text-gray-400">~300 MB</td>
+              <td class="py-4 px-6 text-center font-semibold text-blue-600">~50 MB</td>
+            </tr>
+            <tr>
+              <td class="py-4 px-6 font-medium">下载速度</td>
+              <td class="py-4 px-6 text-center text-gray-400">受 GIL 限制</td>
+              <td class="py-4 px-6 text-center font-semibold text-blue-600">tokio 真异步</td>
+            </tr>
+            <tr>
+              <td class="py-4 px-6 font-medium">大图导出</td>
+              <td class="py-4 px-6 text-center text-gray-400">内存爆炸</td>
+              <td class="py-4 px-6 text-center font-semibold text-blue-600">BigTIFF 流式写入</td>
+            </tr>
+            <tr>
+              <td class="py-4 px-6 font-medium">跨平台</td>
+              <td class="py-4 px-6 text-center text-gray-400">打包困难</td>
+              <td class="py-4 px-6 text-center font-semibold text-blue-600">Win / macOS / Linux</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Download -->
+  <section id="download" class="py-20">
+    <div class="max-w-4xl mx-auto px-6 text-center">
+      <h2 class="text-3xl font-bold mb-4">立即下载</h2>
+      <p class="text-gray-500 mb-2">当前最新版本：<span id="latest-version" class="font-mono text-blue-600">加载中...</span></p>
+      <p class="text-gray-400 text-sm mb-4" id="download-stats"></p>
+      <div id="download-grid" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-8">
+        <!-- JS 动态填充 -->
+      </div>
+      <p class="mt-8 text-sm text-gray-400">
+        或前往 <a href="https://github.com/gaopengbin/geo-downloader/releases" target="_blank" class="text-blue-600 hover:underline">GitHub Releases</a> 查看所有版本
+      </p>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="bg-gray-900 text-gray-400 py-12">
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-center justify-between gap-6">
+        <div class="text-center md:text-left">
+          <span class="text-white font-bold text-lg"><span class="text-blue-400">GeoD</span>ownloader</span>
+          <p class="text-sm mt-1">开源免费 · MIT License</p>
+        </div>
+        <div class="flex items-center gap-6 text-sm">
+          <a href="https://github.com/gaopengbin/geo-downloader" target="_blank" class="hover:text-white transition">GitHub</a>
+          <a href="https://github.com/gaopengbin/geo-downloader/issues" target="_blank" class="hover:text-white transition">反馈</a>
+          <span>微信: gpb230314</span>
+        </div>
+      </div>
+      <div class="mt-8 pt-6 border-t border-gray-800 text-center text-xs text-gray-500">
+        &copy; 2024-2025 GeoD. All rights reserved.
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const REPO = 'gaopengbin/geo-downloader';
+    const API = `https://api.github.com/repos/${REPO}/releases/latest`;
+
+    const PLATFORM_MAP = [
+      { match: /\.msi$/i,           name: 'Windows (MSI)',         icon: winIcon(),   os: 'windows' },
+      { match: /\.exe$/i,           name: 'Windows (EXE)',         icon: winIcon(),   os: 'windows' },
+      { match: /aarch64.*\.dmg$/i,  name: 'macOS (Apple Silicon)', icon: macIcon(),   os: 'macos' },
+      { match: /x64.*\.dmg$/i,      name: 'macOS (Intel)',         icon: macIcon(),   os: 'macos' },
+      { match: /\.dmg$/i,           name: 'macOS',                 icon: macIcon(),   os: 'macos' },
+      { match: /\.deb$/i,           name: 'Linux (deb)',           icon: linuxIcon(), os: 'linux' },
+      { match: /\.AppImage$/i,      name: 'Linux (AppImage)',      icon: linuxIcon(), os: 'linux' },
+      { match: /\.rpm$/i,           name: 'Linux (rpm)',           icon: linuxIcon(), os: 'linux' },
+    ];
+
+    function winIcon() {
+      return '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>';
+    }
+    function macIcon() {
+      return '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>';
+    }
+    function linuxIcon() {
+      return '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.368 1.884 1.43.868.07 1.578-.533 1.79-1.5.108-.512.087-1.024.04-1.533-.024-.228-.053-.424-.072-.498-.093-.28.023-.508.088-.69.07-.19.088-.347.105-.49.083-.637-.34-.99-.76-1.199V15.98c-.07-.21-.152-.395-.212-.587-.1-.318-.143-.666-.163-1.063-.034-.723-.034-1.674.167-2.554.117-.514.286-1.003.43-1.492.145-.49.265-.943.338-1.416.14-.906.088-1.787-.283-2.556C15.848 5.053 14.54 4.016 13 3.545V3.538C12.836 3.505 12.67 3.484 12.504 3.484V0z"/></svg>';
+    }
+
+    function detectOS() {
+      var ua = navigator.userAgent;
+      if (/Win/.test(ua)) return 'windows';
+      if (/Mac/.test(ua)) return 'macos';
+      if (/Linux/.test(ua)) return 'linux';
+      return 'windows';
+    }
+
+    function formatSize(bytes) {
+      if (bytes > 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+      if (bytes > 1024) return (bytes / 1024).toFixed(0) + ' KB';
+      return bytes + ' B';
+    }
+
+    async function loadRelease() {
+      try {
+        var res = await fetch(API);
+        var data = await res.json();
+        var version = data.tag_name;
+        document.getElementById('latest-version').textContent = version;
+
+        var userOS = detectOS();
+        var grid = document.getElementById('download-grid');
+        var heroSet = false;
+
+        // 计算总下载量（所有 asset）
+        var totalDownloads = 0;
+        for (var k = 0; k < data.assets.length; k++) {
+          totalDownloads += data.assets[k].download_count || 0;
+        }
+        var statsEl = document.getElementById('download-stats');
+        if (totalDownloads > 0) {
+          statsEl.textContent = '本版本已被下载 ' + totalDownloads.toLocaleString() + ' 次';
+        }
+
+        // 同时拉取所有 release 的总下载量
+        fetch('https://api.github.com/repos/' + REPO + '/releases')
+          .then(function(r) { return r.json(); })
+          .then(function(releases) {
+            var allTotal = 0;
+            for (var i = 0; i < releases.length; i++) {
+              for (var j = 0; j < releases[i].assets.length; j++) {
+                allTotal += releases[i].assets[j].download_count || 0;
+              }
+            }
+            if (allTotal > 0) {
+              statsEl.textContent = '本版本下载 ' + totalDownloads.toLocaleString() + ' 次 · 累计 ' + allTotal.toLocaleString() + ' 次';
+            }
+          }).catch(function() {});
+
+        var assets = data.assets.filter(function(a) {
+          return /\.(msi|exe|dmg|deb|AppImage|rpm)$/i.test(a.name);
+        });
+
+        var cards = [];
+        for (var i = 0; i < assets.length; i++) {
+          var asset = assets[i];
+          var pm = null;
+          for (var j = 0; j < PLATFORM_MAP.length; j++) {
+            if (PLATFORM_MAP[j].match.test(asset.name)) {
+              pm = PLATFORM_MAP[j];
+              break;
+            }
+          }
+          if (!pm) continue;
+          var isUserOS = pm.os === userOS;
+          cards.push({ asset: asset, pm: pm, isUserOS: isUserOS });
+
+          if (isUserOS && !heroSet) {
+            document.getElementById('hero-download-btn').href = asset.browser_download_url;
+            document.getElementById('hero-download-text').textContent = '下载 ' + version + ' (' + pm.name + ')';
+            heroSet = true;
+          }
+        }
+
+        cards.sort(function(a, b) { return (b.isUserOS ? 1 : 0) - (a.isUserOS ? 1 : 0); });
+
+        grid.innerHTML = cards.map(function(c) {
+          var highlight = c.isUserOS
+            ? 'border-blue-200 bg-blue-50/50 ring-2 ring-blue-100'
+            : 'border-gray-100 bg-white';
+          var badge = c.isUserOS
+            ? '<span class="ml-auto text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full shrink-0">推荐</span>'
+            : '';
+          return '<a href="' + c.asset.browser_download_url + '" '
+            + 'class="flex items-center gap-4 p-5 rounded-xl border ' + highlight + ' hover:shadow-md transition group">'
+            + '<div class="text-gray-400 group-hover:text-blue-600 transition shrink-0">' + c.pm.icon + '</div>'
+            + '<div class="text-left min-w-0">'
+            + '<div class="font-medium text-gray-900 truncate">' + c.pm.name + '</div>'
+            + '<div class="text-xs text-gray-400 mt-0.5">' + formatSize(c.asset.size) + (c.asset.download_count > 0 ? ' · ' + c.asset.download_count.toLocaleString() + ' 次下载' : '') + '</div>'
+            + '</div>'
+            + badge
+            + '</a>';
+        }).join('');
+
+      } catch (e) {
+        document.getElementById('latest-version').textContent = '加载失败';
+        document.getElementById('download-grid').innerHTML =
+          '<div class="col-span-full text-gray-400 py-8">'
+          + '无法连接 GitHub API，请前往 '
+          + '<a href="https://github.com/gaopengbin/geo-downloader/releases" target="_blank" class="text-blue-600 hover:underline">Releases 页面</a> 下载'
+          + '</div>';
+      }
+    }
+
+    loadRelease();
+  </script>
+
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "GeoDownloader",
+    "applicationCategory": "UtilitiesApplication",
+    "operatingSystem": "Windows, macOS, Linux",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "description": "高性能地理空间数据下载工具，支持 2D 地图瓦片、3D Tiles、Esri Wayback 历史影像下载，导出 GeoTIFF。",
+    "url": "https://gpb.cc/",
+    "downloadUrl": "https://github.com/gaopengbin/geo-downloader/releases/latest",
+    "softwareVersion": "3.2.2",
+    "author": { "@type": "Person", "name": "gaopengbin", "url": "https://github.com/gaopengbin" },
+    "license": "https://opensource.org/licenses/MIT",
+    "screenshot": "https://gpb.cc/images/geotiff.png"
+  }
+  </script>
+
+</body>
+</html>
