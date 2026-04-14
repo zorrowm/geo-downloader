@@ -102,8 +102,8 @@ fn need_bigtiff(width: u32, height: u32, channels: u32) -> bool {
 }
 
 /// 导出 RGB 图片为 GeoTIFF 字节 (带地理坐标信息，超大图像自动使用 BigTIFF)
-pub fn export_tiff_bytes(image: &RgbImage, bounds: Option<&TileBounds>, compress: bool) -> Result<Vec<u8>, String> {
-    use tiff::encoder::{TiffEncoder, colortype::RGB8, compression::{Lzw, Uncompressed}};
+pub fn export_tiff_bytes(image: &RgbImage, bounds: Option<&TileBounds>, compression: &str) -> Result<Vec<u8>, String> {
+    use tiff::encoder::{TiffEncoder, colortype::RGB8, compression::{Lzw, Deflate, Uncompressed}};
     
     let (width, height) = image.dimensions();
     let mut buffer = Cursor::new(Vec::new());
@@ -111,18 +111,28 @@ pub fn export_tiff_bytes(image: &RgbImage, bounds: Option<&TileBounds>, compress
     
     macro_rules! encode_rgb {
         ($encoder:expr) => {
-            if compress {
-                let mut img = $encoder
-                    .new_image_with_compression::<RGB8, _>(width, height, Lzw::default())
-                    .map_err(|e| format!("TIFF 导出失败: {}", e))?;
-                write_geotiff_tags!(img, bounds, width, height);
-                img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
-            } else {
-                let mut img = $encoder
-                    .new_image_with_compression::<RGB8, _>(width, height, Uncompressed::default())
-                    .map_err(|e| format!("TIFF 导出失败: {}", e))?;
-                write_geotiff_tags!(img, bounds, width, height);
-                img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+            match compression {
+                "lzw" => {
+                    let mut img = $encoder
+                        .new_image_with_compression::<RGB8, _>(width, height, Lzw::default())
+                        .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                    write_geotiff_tags!(img, bounds, width, height);
+                    img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                }
+                "deflate" => {
+                    let mut img = $encoder
+                        .new_image_with_compression::<RGB8, _>(width, height, Deflate::default())
+                        .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                    write_geotiff_tags!(img, bounds, width, height);
+                    img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                }
+                _ => {
+                    let mut img = $encoder
+                        .new_image_with_compression::<RGB8, _>(width, height, Uncompressed::default())
+                        .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                    write_geotiff_tags!(img, bounds, width, height);
+                    img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                }
             }
         };
     }
@@ -141,8 +151,8 @@ pub fn export_tiff_bytes(image: &RgbImage, bounds: Option<&TileBounds>, compress
 }
 
 /// 导出 RGBA 图片为 GeoTIFF 字节 (带地理坐标信息，超大图像自动使用 BigTIFF)
-pub fn export_rgba_tiff_bytes(image: &RgbaImage, bounds: Option<&TileBounds>, compress: bool) -> Result<Vec<u8>, String> {
-    use tiff::encoder::{TiffEncoder, colortype::RGBA8, compression::{Lzw, Uncompressed}};
+pub fn export_rgba_tiff_bytes(image: &RgbaImage, bounds: Option<&TileBounds>, compression: &str) -> Result<Vec<u8>, String> {
+    use tiff::encoder::{TiffEncoder, colortype::RGBA8, compression::{Lzw, Deflate, Uncompressed}};
     
     let (width, height) = image.dimensions();
     let mut buffer = Cursor::new(Vec::new());
@@ -150,18 +160,28 @@ pub fn export_rgba_tiff_bytes(image: &RgbaImage, bounds: Option<&TileBounds>, co
     
     macro_rules! encode_rgba {
         ($encoder:expr) => {
-            if compress {
-                let mut img = $encoder
-                    .new_image_with_compression::<RGBA8, _>(width, height, Lzw::default())
-                    .map_err(|e| format!("TIFF 导出失败: {}", e))?;
-                write_geotiff_tags!(img, bounds, width, height);
-                img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
-            } else {
-                let mut img = $encoder
-                    .new_image_with_compression::<RGBA8, _>(width, height, Uncompressed::default())
-                    .map_err(|e| format!("TIFF 导出失败: {}", e))?;
-                write_geotiff_tags!(img, bounds, width, height);
-                img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+            match compression {
+                "lzw" => {
+                    let mut img = $encoder
+                        .new_image_with_compression::<RGBA8, _>(width, height, Lzw::default())
+                        .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                    write_geotiff_tags!(img, bounds, width, height);
+                    img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                }
+                "deflate" => {
+                    let mut img = $encoder
+                        .new_image_with_compression::<RGBA8, _>(width, height, Deflate::default())
+                        .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                    write_geotiff_tags!(img, bounds, width, height);
+                    img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                }
+                _ => {
+                    let mut img = $encoder
+                        .new_image_with_compression::<RGBA8, _>(width, height, Uncompressed::default())
+                        .map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                    write_geotiff_tags!(img, bounds, width, height);
+                    img.write_data(image.as_raw()).map_err(|e| format!("TIFF 导出失败: {}", e))?;
+                }
             }
         };
     }
@@ -184,12 +204,12 @@ pub fn export_image(
     image: &RgbImage,
     format: ExportFormat,
     bounds: Option<&TileBounds>,
-    compress: bool,
+    compression: &str,
 ) -> Result<Vec<u8>, String> {
     match format {
         ExportFormat::Png => export_png_bytes(image),
         ExportFormat::Jpeg => export_jpeg_bytes(image, 90),
-        ExportFormat::GeoTiff => export_tiff_bytes(image, bounds, compress),
+        ExportFormat::GeoTiff => export_tiff_bytes(image, bounds, compression),
     }
 }
 
@@ -198,7 +218,7 @@ pub fn export_rgba_image(
     image: &RgbaImage,
     format: ExportFormat,
     bounds: Option<&TileBounds>,
-    compress: bool,
+    compression: &str,
 ) -> Result<Vec<u8>, String> {
     match format {
         ExportFormat::Png => export_rgba_png_bytes(image),
@@ -206,7 +226,7 @@ pub fn export_rgba_image(
             let rgb = DynamicImage::ImageRgba8(image.clone()).to_rgb8();
             export_jpeg_bytes(&rgb, 90)
         }
-        ExportFormat::GeoTiff => export_rgba_tiff_bytes(image, bounds, compress),
+        ExportFormat::GeoTiff => export_rgba_tiff_bytes(image, bounds, compression),
     }
 }
 

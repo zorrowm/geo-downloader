@@ -257,11 +257,14 @@
                         </label>
                         
                         <!-- 压缩选项 (TIFF 专用) -->
-                        <label class="checkbox-label" id="compress-option">
-                            <input type="checkbox" id="compress-checkbox" checked>
-                            <span class="checkbox-mark"></span>
-                            <span>LZW 压缩 <span class="text-muted">(减小约70%，耗时增加)</span></span>
-                        </label>
+                        <div class="form-group" id="compress-option">
+                            <label class="form-label">TIFF 压缩</label>
+                            <select id="compress-select" class="form-select">
+                                <option value="none">无压缩 (最快导出)</option>
+                                <option value="lzw">LZW (通用兼容)</option>
+                                <option value="deflate" selected>Deflate (推荐)</option>
+                            </select>
+                        </div>
                         
                         <!-- 下载按钮 -->
                         <button id="download-btn" class="btn btn-cta btn-lg btn-block" disabled>
@@ -485,11 +488,14 @@
                         <div id="wayback-estimate-info" class="estimate-card"></div>
 
                         <!-- 压缩选项 -->
-                        <label class="checkbox-label" id="wayback-compress-option">
-                            <input type="checkbox" id="wayback-compress-checkbox" checked>
-                            <span class="checkbox-mark"></span>
-                            <span>LZW 压缩 <span class="text-muted">(减小约70%，耗时增加)</span></span>
-                        </label>
+                        <div class="form-group" id="wayback-compress-option">
+                            <label class="form-label">TIFF 压缩</label>
+                            <select id="wayback-compress-select" class="form-select">
+                                <option value="none">无压缩 (最快导出)</option>
+                                <option value="lzw">LZW (通用兼容)</option>
+                                <option value="deflate" selected>Deflate (推荐)</option>
+                            </select>
+                        </div>
 
                         <!-- 裁剪选项 -->
                         <label class="checkbox-label">

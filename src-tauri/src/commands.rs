@@ -39,17 +39,17 @@ pub struct DownloadRequest {
     /// 并发数 (10-100, 默认30)
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
-    /// TIFF 压缩 (默认 true)
-    #[serde(default = "default_compress")]
-    pub compress: bool,
+    /// TIFF 压缩方式: "none", "lzw", "deflate"（默认 "lzw"）
+    #[serde(default = "default_compression")]
+    pub compression: String,
 }
 
 fn default_concurrency() -> usize {
     30
 }
 
-fn default_compress() -> bool {
-    true
+fn default_compression() -> String {
+    "lzw".to_string()
 }
 
 /// 多边形坐标
@@ -322,8 +322,8 @@ async fn execute_download_task(
     if request.crop_to_shape {
         task_log(app, tm, task_id, "INFO", "启用边界裁剪");
     }
-    if request.compress {
-        task_log(app, tm, task_id, "INFO", "启用 LZW 压缩");
+    if request.compression != "none" {
+        task_log(app, tm, task_id, "INFO", &format!("启用 {} 压缩", request.compression.to_uppercase()));
     }
     
     // 记录原始 bounds 坐标（便于问题诊断）
@@ -499,11 +499,12 @@ async fn execute_download_task(
         
         let merged_bounds = tile::get_merged_bounds(x_min, y_min, x_max, y_max, request.zoom);
         let sp = save_path.clone();
+        let compression = request.compression.clone();
         
         file_size = tokio::task::spawn_blocking(move || {
             streaming_tiff::merge_and_export_streaming(
                 &tile_files, x_min, y_min, x_max, y_max,
-                &merged_bounds, Path::new(&sp),
+                &merged_bounds, Path::new(&sp), &compression,
             )
         }).await.map_err(|e| format!("流式导出失败: {}", e))??;
     } else {
@@ -545,7 +546,7 @@ async fn execute_download_task(
         let polygon_opt = request.polygon.clone();
         // 使用瓦片网格边界（而非用户选区）做多边形裁剪的坐标参考
         let grid_bounds_tuple = (merged_bounds.north, merged_bounds.south, merged_bounds.east, merged_bounds.west);
-        let compress = request.compress;
+        let compression = request.compression.clone();
         
         let bytes = tokio::task::spawn_blocking(move || {
             if crop_to_shape && polygon_opt.is_some() {
@@ -554,9 +555,9 @@ async fn execute_download_task(
                     .map(|ring| ring.iter().map(|p| merger::PolygonPoint { lat: p.lat, lng: p.lng }).collect())
                     .collect();
                 let masked = merger::mask_image_by_polygons(&merged, &polygons, grid_bounds_tuple);
-                exporter::export_rgba_image(&masked, format, Some(&merged_bounds), compress)
+                exporter::export_rgba_image(&masked, format, Some(&merged_bounds), &compression)
             } else {
-                exporter::export_image(&merged, format, Some(&merged_bounds), compress)
+                exporter::export_image(&merged, format, Some(&merged_bounds), &compression)
             }
         }).await.map_err(|e| format!("导出失败: {}", e))??;
         

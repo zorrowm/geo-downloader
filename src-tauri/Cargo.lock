@@ -1713,6 +1713,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs 5.0.1",
+ "flate2",
  "futures",
  "futures-util",
  "gdal",
@@ -1737,6 +1738,7 @@ dependencies = [
  "tokio-util",
  "urlencoding",
  "uuid",
+ "weezl",
 ]
 
 [[package]]

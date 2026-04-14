@@ -1,11 +1,36 @@
 //! 流式 GeoTIFF 写入器
 //! 逐行写入瓦片行，内存仅需一行瓦片宽度，支持超大图像导出。
+//! 使用 LZW 压缩减少文件体积（TIFF Compression=5）。
 
 use crate::config::TILE_SIZE;
 use crate::tile::{TileBounds, bounds_to_mercator};
 use std::collections::HashMap;
 use std::io::{Write, Seek, SeekFrom, BufWriter};
 use std::path::{Path, PathBuf};
+
+/// LZW 压缩一个 strip（TIFF 规范：MSB 位序，最小码长 8，early code size switch）
+fn lzw_compress(data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut encoder = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
+    encoder.encode(data).map_err(|e| format!("LZW 压缩失败: {}", e))
+}
+
+/// Deflate 压缩一个 strip（TIFF Compression=8，zlib 封装）
+fn deflate_compress(data: &[u8]) -> Result<Vec<u8>, String> {
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data).map_err(|e| format!("Deflate 压缩失败: {}", e))?;
+    encoder.finish().map_err(|e| format!("Deflate 压缩失败: {}", e))
+}
+
+/// 压缩 strip 数据，返回 (compressed_data, tiff_compression_tag)
+fn compress_strip(data: &[u8], compression: &str) -> Result<(Vec<u8>, u64), String> {
+    match compression {
+        "lzw" => Ok((lzw_compress(data)?, 5)),
+        "deflate" => Ok((deflate_compress(data)?, 8)),
+        _ => Ok((data.to_vec(), 1)), // none: 无压缩
+    }
+}
 
 /// 流式合并瓦片并直接写入 GeoTIFF 文件
 /// 内存占用: 仅 width × TILE_SIZE × 3 字节（一行瓦片）
@@ -17,6 +42,7 @@ pub fn merge_and_export_streaming(
     y_max: u32,
     bounds: &TileBounds,
     save_path: &Path,
+    compression: &str,
 ) -> Result<u64, String> {
     let cols = x_max - x_min + 1;
     let rows = y_max - y_min + 1;
@@ -47,8 +73,6 @@ pub fn merge_and_export_streaming(
     let mut strip_counts: Vec<u64> = Vec::with_capacity(num_strips as usize);
 
     for tile_y in y_min..=y_max {
-        let offset = stream_pos(&mut w)?;
-
         // 创建一行瓦片的 strip 缓冲区（白色背景）
         let mut strip = vec![255u8; strip_byte_size];
 
@@ -79,9 +103,14 @@ pub fn merge_and_export_streaming(
             // img 在这里 drop，只保留当前 strip
         }
 
-        w.write_all(&strip).map_err(e2s)?;
+        // 压缩后写入
+        let (compressed, _comp_tag) = compress_strip(&strip, compression)?;
+        drop(strip);
+
+        let offset = stream_pos(&mut w)?;
+        w.write_all(&compressed).map_err(e2s)?;
         strip_offsets.push(offset);
-        strip_counts.push(strip_byte_size as u64);
+        strip_counts.push(compressed.len() as u64);
     }
     // strip 缓冲区 drop，释放内存
 
@@ -146,7 +175,7 @@ pub fn merge_and_export_streaming(
     write_bigtiff_entry(&mut w, 256, 4, 1, width as u64)?;                          // ImageWidth
     write_bigtiff_entry(&mut w, 257, 4, 1, height as u64)?;                         // ImageLength
     write_bigtiff_entry(&mut w, 258, 3, 3, bps_inline)?;                            // BitsPerSample (inline)
-    write_bigtiff_entry(&mut w, 259, 3, 1, 1)?;                                     // Compression = None
+    write_bigtiff_entry(&mut w, 259, 3, 1, match compression { "lzw" => 5, "deflate" => 8, _ => 1 })?; // Compression
     write_bigtiff_entry(&mut w, 262, 3, 1, 2)?;                                     // PhotometricInterpretation = RGB
     write_bigtiff_entry(&mut w, 273, 16, num_strips as u64, strip_offsets_offset)?;  // StripOffsets (LONG8)
     write_bigtiff_entry(&mut w, 277, 3, 1, 3)?;                                     // SamplesPerPixel

@@ -1752,7 +1752,7 @@ async function startDownload() {
     const proxyUrl = document.getElementById('proxy-input').value.trim();
     const tiandituToken = getTianDiTuToken();
     const concurrency = parseInt(document.getElementById('concurrency-slider').value);
-    const compress = format === 'geotiff' && document.getElementById('compress-checkbox').checked;
+    const compression = format === 'geotiff' ? document.getElementById('compress-select').value : 'none';
     
     const request = {
         bounds: currentBounds,
@@ -1765,7 +1765,7 @@ async function startDownload() {
         tianditu_token: tiandituToken || null,
         save_path: savePath || null,
         concurrency: concurrency,
-        compress: compress
+        compression: compression
     };
     
     // Tauri 模式：创建下载任务
@@ -3956,7 +3956,7 @@ async function startWaybackDownload() {
     const format = document.getElementById('wayback-format-select').value;
     const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
     const concurrency = parseInt(document.getElementById('wayback-concurrency-slider').value);
-    const compress = format === 'geotiff' && document.getElementById('wayback-compress-checkbox').checked;
+    const compression = format === 'geotiff' ? document.getElementById('wayback-compress-select').value : 'none';
 
     const ext = format === 'geotiff' ? '.tif' : format === 'png' ? '.png' : '.jpg';
     const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -3989,7 +3989,7 @@ async function startWaybackDownload() {
         tianditu_token: null,
         save_path: savePath,
         concurrency: concurrency,
-        compress: compress
+        compression: compression
     };
 
     const taskName = `Wayback ${versionDate} z${zoom}`;
@@ -4239,7 +4239,7 @@ async function startBatchWaybackDownload() {
     const format = document.getElementById('wayback-format-select').value;
     const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
     const concurrency = parseInt(document.getElementById('wayback-concurrency-slider').value);
-    const compress = format === 'geotiff' && document.getElementById('wayback-compress-checkbox').checked;
+    const compression = format === 'geotiff' ? document.getElementById('wayback-compress-select').value : 'none';
     const useProxy = document.getElementById('proxy-checkbox')?.checked;
     const proxyUrl = document.getElementById('proxy-input')?.value?.trim();
     const ext = format === 'geotiff' ? '.tif' : format === 'png' ? '.png' : '.jpg';
@@ -4277,7 +4277,7 @@ async function startBatchWaybackDownload() {
             tianditu_token: null,
             save_path: savePath,
             concurrency,
-            compress
+            compression
         };
 
         const taskName = `Wayback ${versionDate} z${zoom}`;
