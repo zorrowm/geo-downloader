@@ -11,6 +11,21 @@
 ![Downloads](https://img.shields.io/github/downloads/gaopengbin/geo-downloader/total?color=brightgreen&label=downloads)
 ![Latest Downloads](https://img.shields.io/github/downloads/gaopengbin/geo-downloader/latest/total?label=latest%20downloads)
 
+## 🎉 v3.2.x — 压缩与稳定性
+
+### 新增
+- **TIFF 压缩三选一**：无压缩（最快导出）/ LZW（通用兼容）/ Deflate（推荐，速度快压缩率高）
+- **BigTIFF 流式写入器**加入 LZW + Deflate 压缩支持，超大范围导出也能压缩
+- **任务日志系统**：每个任务独立日志文件，实时记录全流程
+- **断点续传增强**：崩溃后重启可恢复中断的任务
+- **缩放级别智能约束**：不同图源按已知最大级别约束滑块
+
+### 修复
+- BigTIFF IFD 字段内联存储修复（QGIS 读取兼容性）
+- `read_log_file` 路径穿越防护
+- 404 瓦片残文件清理，防止续传误判
+- 前端 `confirm()` 全部替换为异步对话框
+
 ## 🎉 v3.0.0 — 大版本更新
 
 > 产品更名：TIF地图下载工具 → **GeoDownloader**，覆盖 2D 瓦片 + 3D Tiles 全场景。
@@ -31,7 +46,7 @@
 - **多图源支持**：OSM、ArcGIS 卫星/地形/街道、天地图、Carto、Google Maps、高德地图/卫星、OpenTopoMap 等
 - **自定义图源**：支持添加任意 `{z}/{x}/{y}` 格式的瓦片图源
 - **多任务并行下载**：支持同时创建多个下载任务，实时进度显示
-- **多格式导出**：GeoTIFF（带地理坐标 + LZW 压缩）、PNG、JPEG
+- **多格式导出**：GeoTIFF（带地理坐标 + 可选 LZW/Deflate 压缩）、PNG、JPEG
 - **按边界裁剪**：支持按多边形边界裁剪，透明背景
 - **可调并发**：支持 10-100 并发下载，快速高效
 - **下载历史**：自动记录每次下载，支持快速打开文件夹
@@ -133,9 +148,9 @@ MIT License
 如果这个项目对你有帮助，欢迎请作者喝杯咖啡 ☕
 
 <p align="center">
-  <img src="./wx.jpg" alt="微信赞赏" width="250">
+  <img src="./static/images/wx.jpg" alt="微信赞赏" width="250">
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="./zfb.jpg" alt="支付宝赞赏" width="250">
+  <img src="./static/images/zfb.jpg" alt="支付宝赞赏" width="250">
 </p>
 <p align="center">
   <sub>微信</sub>
