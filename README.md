@@ -4,7 +4,9 @@
 
 **🌐 [官网 geodownloader.pages.dev](https://geodownloader.pages.dev)**
 
-欢迎沟通交流 本人微信 gpb230314
+欢迎沟通交流
+<img width="228" height="320" alt="a612400f395ff8c3d9b84db184fe1166" src="https://github.com/user-attachments/assets/65aa67eb-8925-4284-b2fd-c58d1008aaaa" />
+
 
 ![Rust](https://img.shields.io/badge/rust-1.77+-orange.svg)
 ![Tauri](https://img.shields.io/badge/tauri-2.0-blue.svg)
