@@ -49,7 +49,7 @@ impl TileDownloader {
             .pool_max_idle_per_host(20)
             .pool_idle_timeout(Duration::from_secs(30))
             .tcp_keepalive(Duration::from_secs(15))
-            .danger_accept_invalid_certs(true);
+            .danger_accept_invalid_certs(config::allow_invalid_certs());
 
         // 配置代理
         if let Some(proxy_url) = proxy {

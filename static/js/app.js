@@ -18,6 +18,28 @@ let activeTaskLogListeners = {}; // 任务日志事件监听器
 let taskLogs = {}; // 任务日志数据 { taskId: [log1, log2, ...] }
 
 // ============ 工具函数 ============
+
+/**
+ * HTML 转义：防御 XSS，应用于所有通过 innerHTML 模板插入的外部/用户数据。
+ * 必须在所有动态字符串插值（远程 API、用户输入、文件解析结果等）处使用。
+ */
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * 转义字符串使其可安全嵌入 HTML 属性（单/双引号 + 引号上下文）。
+ * 用于 data-* 属性或 title 等内联属性场景。
+ */
+function escapeAttr(str) {
+    return escapeHtml(str);
+}
 /**
  * 从 GeoJSON 中提取所有多边形坐标
  * 支持 Polygon、MultiPolygon、FeatureCollection（多个 Feature）
@@ -902,7 +924,7 @@ function showUpdateDialog(latestVersion, downloadUrl, releaseUrl, body) {
     const notesEl = document.getElementById('update-notes');
     const listEl = document.getElementById('update-notes-list');
     if (notes.length > 0) {
-        listEl.innerHTML = notes.map(n => `<li>${n}</li>`).join('');
+        listEl.innerHTML = notes.map(n => `<li>${escapeHtml(n)}</li>`).join('');
         notesEl.style.display = '';
     } else {
         notesEl.style.display = 'none';
@@ -1129,15 +1151,15 @@ function renderBuiltinSourcesList() {
         const tag = isModified ? '<span class="source-tag source-tag-modified">已修改</span>' : '';
         return `<div class="source-item">
             <div class="source-item-info">
-                <span class="source-item-name">${name}</span>
-                <span class="badge badge-secondary" style="font-size:10px;padding:1px 5px">z${zoom}</span>
+                <span class="source-item-name">${escapeHtml(name)}</span>
+                <span class="badge badge-secondary" style="font-size:10px;padding:1px 5px">z${escapeHtml(zoom)}</span>
                 ${tag}
             </div>
             <div class="source-item-actions">
-                <button class="btn-icon btn-edit-builtin" data-id="${id}" title="编辑">
+                <button class="btn-icon btn-edit-builtin" data-id="${escapeAttr(id)}" title="编辑">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 </button>
-                ${isModified ? `<button class="btn-icon btn-reset-builtin" data-id="${id}" title="重置为默认">
+                ${isModified ? `<button class="btn-icon btn-reset-builtin" data-id="${escapeAttr(id)}" title="重置为默认">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg>
                 </button>` : ''}
             </div>
@@ -1189,14 +1211,14 @@ function renderCustomSourcesList() {
     listEl.innerHTML = sources.map(s => `
         <div class="source-item">
             <div class="source-item-info">
-                <span class="source-item-name">${s.name}</span>
-                <span class="badge badge-secondary" style="font-size:10px;padding:1px 5px">z${s.max_zoom}</span>
+                <span class="source-item-name">${escapeHtml(s.name)}</span>
+                <span class="badge badge-secondary" style="font-size:10px;padding:1px 5px">z${escapeHtml(s.max_zoom)}</span>
             </div>
             <div class="source-item-actions">
-                <button class="btn-icon btn-edit-source" data-id="${s.id}" title="编辑">
+                <button class="btn-icon btn-edit-source" data-id="${escapeAttr(s.id)}" title="编辑">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 </button>
-                <button class="btn-icon btn-delete-source" data-id="${s.id}" title="删除">
+                <button class="btn-icon btn-delete-source" data-id="${escapeAttr(s.id)}" title="删除">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
                 </button>
             </div>
@@ -1411,12 +1433,20 @@ async function searchPlace() {
             return;
         }
         
-        resultsContainer.innerHTML = results.map(r => `
-            <div class="search-result-item" onclick="goToLocation(${r.lat}, ${r.lng}, ${r.bounds ? JSON.stringify(r.bounds).replace(/"/g, '&quot;') : 'null'}, ${r.address ? JSON.stringify(r.address).replace(/"/g, '&quot;') : 'null'})">
-                <div class="name">${r.name}</div>
-                <div class="detail">${r.display_name}</div>
+        resultsContainer.innerHTML = results.map((r, idx) => `
+            <div class="search-result-item" data-idx="${idx}">
+                <div class="name">${escapeHtml(r.name)}</div>
+                <div class="detail">${escapeHtml(r.display_name)}</div>
             </div>
         `).join('');
+        // 改用事件委托，避免 onclick 内联拼接导致的 XSS / JSON 注入风险
+        Array.from(resultsContainer.querySelectorAll('.search-result-item')).forEach(el => {
+            el.addEventListener('click', () => {
+                const r = results[parseInt(el.dataset.idx, 10)];
+                if (!r) return;
+                goToLocation(r.lat, r.lng, r.bounds || null, r.address || null);
+            });
+        });
     } catch (error) {
         resultsContainer.innerHTML = '<div class="search-result-item">搜索失败</div>';
         console.error('Search error:', error);
@@ -2143,7 +2173,7 @@ function addVectorToMap(geojson, filename) {
                 const props = Object.entries(feature.properties)
                     .filter(([k, v]) => v !== null && v !== '')
                     .slice(0, 10)  // 最多显示10个属性
-                    .map(([k, v]) => `<b>${k}:</b> ${v}`)
+                    .map(([k, v]) => `<b>${escapeHtml(k)}:</b> ${escapeHtml(v)}`)
                     .join('<br>');
                 if (props) {
                     layer.bindPopup(props);
@@ -2429,20 +2459,20 @@ function renderHistoryCard(record) {
     const isFailed = record.status === 'failed';
     
     return `
-        <div class="history-card" data-id="${record.id}" data-path="${record.file_path.replace(/"/g, '&quot;')}" data-log-file="${logFile.replace(/"/g, '&quot;')}">
+        <div class="history-card" data-id="${escapeAttr(record.id)}" data-path="${escapeAttr(record.file_path)}" data-log-file="${escapeAttr(logFile)}">
             <div class="history-card-header">
-                <span class="history-card-title">${record.name}</span>
+                <span class="history-card-title">${escapeHtml(record.name)}</span>
                 <span class="history-card-status ${statusClass}">${statusIcon}</span>
             </div>
             <div class="history-card-meta">
-                <span>${record.source_name}</span>
-                ${record.zoom > 0 ? `<span>z${record.zoom}</span>` : ''}
-                <span>${record.tile_count} ${record.zoom > 0 ? '瓦片' : '节点'}</span>
-                ${record.file_size > 0 ? `<span>${fileSize}</span>` : ''}
+                <span>${escapeHtml(record.source_name)}</span>
+                ${record.zoom > 0 ? `<span>z${Number(record.zoom)}</span>` : ''}
+                <span>${Number(record.tile_count)} ${record.zoom > 0 ? '瓦片' : '节点'}</span>
+                ${record.file_size > 0 ? `<span>${escapeHtml(fileSize)}</span>` : ''}
             </div>
-            ${isFailed ? '' : `<div class="history-card-path">${record.file_path}</div>`}
+            ${isFailed ? '' : `<div class="history-card-path">${escapeHtml(record.file_path)}</div>`}
             <div class="history-card-meta">
-                <span>${date}</span>
+                <span>${escapeHtml(date)}</span>
             </div>
             <div class="history-card-actions">
                 ${isFailed ? '' : '<button class="btn btn-outline btn-sm btn-open-folder">打开文件夹</button>'}
@@ -2489,7 +2519,7 @@ function initHistoryListEvents() {
                     } else {
                         const logContent = logs.map(l => {
                             const cls = l.level === 'ERROR' ? 'log-error' : l.level === 'WARN' ? 'log-warn' : '';
-                            return `<div class="task-log-line ${cls}"><span class="log-time">${l.timestamp}</span> ${escapeHtml(l.message)}</div>`;
+                            return `<div class="task-log-line ${cls}"><span class="log-time">${escapeHtml(l.timestamp)}</span> ${escapeHtml(l.message)}</div>`;
                         }).join('');
                         panel.innerHTML = `
                             <div class="task-log-toolbar">
@@ -2580,15 +2610,15 @@ function addTaskCardToUI(taskId, name, sourceName, zoom, tileCount) {
     
     taskLogs[taskId] = [];
     const html = `
-        <div class="task-card" data-task-id="${taskId}" data-status="pending">
+        <div class="task-card" data-task-id="${escapeAttr(taskId)}" data-status="pending">
             <div class="task-card-header">
-                <span class="task-card-title">${name}</span>
+                <span class="task-card-title">${escapeHtml(name)}</span>
                 <span class="task-card-status">等待中</span>
             </div>
             <div class="task-card-meta">
-                <span>${sourceName}</span>
-                ${zoom > 0 ? `<span>z${zoom}</span>` : ''}
-                <span>${tileCount.toLocaleString()} ${zoom > 0 ? '瓦片' : '节点'}</span>
+                <span>${escapeHtml(sourceName)}</span>
+                ${zoom > 0 ? `<span>z${Number(zoom)}</span>` : ''}
+                <span>${Number(tileCount).toLocaleString()} ${zoom > 0 ? '瓦片' : '节点'}</span>
             </div>
             <div class="task-progress-bar">
                 <div class="task-progress-fill" style="width: 0%"></div>
@@ -2651,23 +2681,22 @@ function renderTaskLogPanel(taskId, panel) {
     const logs = taskLogs[taskId] || [];
     const logContent = logs.map(l => {
         const cls = l.level === 'ERROR' ? 'log-error' : l.level === 'WARN' ? 'log-warn' : '';
-        return `<div class="task-log-line ${cls}"><span class="log-time">${l.timestamp}</span> ${escapeHtml(l.message)}</div>`;
+        return `<div class="task-log-line ${cls}"><span class="log-time">${escapeHtml(l.timestamp)}</span> ${escapeHtml(l.message)}</div>`;
     }).join('');
     panel.innerHTML = `
         <div class="task-log-toolbar">
-            <button class="btn-copy-log" onclick="copyTaskLogs('${taskId}')" title="复制日志">复制</button>
+            <button class="btn-copy-log" data-task-id="${escapeAttr(taskId)}" title="复制日志">复制</button>
         </div>
         <div class="task-log-content">${logContent}</div>
     `;
+    // 事件委托绑定复制按钮，避免 onclick 内联 taskId 注入
+    const copyBtn = panel.querySelector('.btn-copy-log');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', () => copyTaskLogs(copyBtn.dataset.taskId));
+    }
     // 自动滚动到底部
     const content = panel.querySelector('.task-log-content');
     if (content) content.scrollTop = content.scrollHeight;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
 }
 
 async function copyTaskLogs(taskId) {

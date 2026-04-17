@@ -981,7 +981,10 @@ pub fn get_settings() -> Result<AppSettings, String> {
 #[tauri::command]
 pub fn save_settings(settings: AppSettings) -> Result<(), String> {
     let manager = SettingsManager::new()?;
-    manager.save(&settings)
+    manager.save(&settings)?;
+    // 同步全局 TLS 严格性开关，避免用户变更后仍需重启才生效
+    crate::config::set_allow_invalid_certs(settings.allow_invalid_certs);
+    Ok(())
 }
 
 // ============ 矢量数据下载命令 ============
@@ -1638,7 +1641,7 @@ pub async fn start_tile_proxy(
     }
     let client = reqwest::Client::builder()
         .default_headers(default_headers)
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(crate::config::allow_invalid_certs())
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 

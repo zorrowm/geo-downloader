@@ -4,6 +4,20 @@
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
+/// Web Mercator 瓦片系统允许的最大 zoom 级别。
+///
+/// 限制原因：
+/// - `2^zoom` 在 z=32 时溢出 `u32`
+/// - 主流图源最高支持 z21-23（Google, Esri, Mapbox）
+/// - z24 单瓦片已达 ~0.6cm/pixel，远超任何卫星影像源精度
+const MAX_ZOOM: u8 = 24;
+
+/// 将 zoom 限制到合法范围 `[0, MAX_ZOOM]`，防止 `2^zoom` 整数溢出。
+#[inline]
+fn clamp_zoom(zoom: u8) -> u8 {
+    zoom.min(MAX_ZOOM)
+}
+
 /// 瓦片坐标
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TileCoord {
@@ -32,6 +46,7 @@ pub struct TileBounds {
 
 /// 经纬度转瓦片坐标 (浮点数)
 pub fn latlng_to_tile_float(lat: f64, lng: f64, zoom: u8) -> (f64, f64) {
+    let zoom = clamp_zoom(zoom);
     // 限制纬度范围
     let lat = lat.max(-85.05112878).min(85.05112878);
     let n = 2.0_f64.powi(zoom as i32);
@@ -45,17 +60,30 @@ pub fn latlng_to_tile_float(lat: f64, lng: f64, zoom: u8) -> (f64, f64) {
 
 /// 经纬度转瓦片坐标 (整数)
 pub fn latlng_to_tile(lat: f64, lng: f64, zoom: u8) -> (u32, u32) {
+    let zoom = clamp_zoom(zoom);
     let (x, y) = latlng_to_tile_float(lat, lng, zoom);
-    let n = 2.0_f64.powi(zoom as i32) as u32;
+    // zoom 已 clamp 到 ≤ 24，2^24 = 16,777,216 安全的落在 u32
+    let n = (1u64 << zoom) as u32;
+    let max_idx = n.saturating_sub(1);
 
-    let x_int = (x as u32).min(n.saturating_sub(1));
-    let y_int = (y as u32).min(n.saturating_sub(1));
+    // 显式处理负值 / NaN / 超过 u32::MAX 的 f64
+    let x_int = if x.is_finite() && x >= 0.0 {
+        (x as u64).min(max_idx as u64) as u32
+    } else {
+        0
+    };
+    let y_int = if y.is_finite() && y >= 0.0 {
+        (y as u64).min(max_idx as u64) as u32
+    } else {
+        0
+    };
 
     (x_int, y_int)
 }
 
 /// 瓦片坐标转地理边界
 pub fn tile_to_latlng(x: u32, y: u32, zoom: u8) -> TileBounds {
+    let zoom = clamp_zoom(zoom);
     let n = 2.0_f64.powi(zoom as i32);
 
     // 左上角 (西北)
@@ -93,11 +121,12 @@ pub fn get_tiles_in_bounds(bounds: &Bounds, zoom: u8) -> Vec<TileCoord> {
 
 /// 获取瓦片矩阵尺寸
 pub fn get_tile_matrix_size(bounds: &Bounds, zoom: u8) -> (u32, u32, u32, u32, u32, u32) {
+    let zoom = clamp_zoom(zoom);
     let (x_min, y_min) = latlng_to_tile(bounds.north, bounds.west, zoom);
     let (x_max, y_max) = latlng_to_tile(bounds.south, bounds.east, zoom);
 
-    let cols = x_max.saturating_sub(x_min) + 1;
-    let rows = y_max.saturating_sub(y_min) + 1;
+    let cols = x_max.saturating_sub(x_min).saturating_add(1);
+    let rows = y_max.saturating_sub(y_min).saturating_add(1);
 
     (x_min, y_min, x_max, y_max, cols, rows)
 }
@@ -115,15 +144,17 @@ pub fn get_merged_bounds(x_min: u32, y_min: u32, x_max: u32, y_max: u32, zoom: u
     }
 }
 
-/// 估算瓦片数量
+/// 估算瓦片数量（防溢出：内部用 u64 计算，饱和返回 u32）
 pub fn estimate_tile_count(bounds: &Bounds, zoom: u8) -> u32 {
+    let zoom = clamp_zoom(zoom);
     let (x_min, y_min) = latlng_to_tile(bounds.north, bounds.west, zoom);
     let (x_max, y_max) = latlng_to_tile(bounds.south, bounds.east, zoom);
 
-    let cols = x_max.saturating_sub(x_min) + 1;
-    let rows = y_max.saturating_sub(y_min) + 1;
+    // u64 防止 cols * rows 溢出 u32
+    let cols = (x_max.saturating_sub(x_min) as u64) + 1;
+    let rows = (y_max.saturating_sub(y_min) as u64) + 1;
 
-    cols * rows
+    cols.saturating_mul(rows).min(u32::MAX as u64) as u32
 }
 
 /// 计算给定纬度和缩放级别的每像素米数
@@ -215,7 +246,6 @@ mod tests {
     #[test]
     fn test_mercator_pixel_scale_uniform() {
         for zoom in [1u8, 5, 10, 15, 18] {
-            let n = 2.0_f64.powi(zoom as i32);
             let (x_min, y_min) = latlng_to_tile(55.0, 73.0, zoom);
             let (x_max, y_max) = latlng_to_tile(3.0, 135.0, zoom);
             let cols = x_max - x_min + 1;

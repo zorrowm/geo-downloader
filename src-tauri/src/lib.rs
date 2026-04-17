@@ -92,6 +92,13 @@ pub fn run() {
             commands::download_and_install_update,
         ])
         .setup(|app| {
+            // 启动时从用户设置同步 TLS 严格性开关（默认 false = 严格验证证书）
+            if let Ok(sm) = settings::SettingsManager::new() {
+                if let Ok(s) = sm.get() {
+                    config::set_allow_invalid_certs(s.allow_invalid_certs);
+                }
+            }
+
             // 系统托盘右键菜单
             let show = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;

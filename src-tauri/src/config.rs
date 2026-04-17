@@ -2,6 +2,28 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// 全局 TLS 严格性开关。
+///
+/// 默认 `false`（严格验证证书）。由应用启动流程（`lib.rs::run`）从
+/// 用户设置读取 `allow_invalid_certs` 后统一调用 [`set_allow_invalid_certs`]
+/// 初始化一次；运行时仅在用户显式变更设置后调用再次同步。
+///
+/// 读取者：`downloader.rs` / `tiles3d/fetcher.rs` / `commands.rs` 中
+/// 所有 `reqwest::Client::builder()` 构造处。
+static ALLOW_INVALID_CERTS: AtomicBool = AtomicBool::new(false);
+
+/// 设置"允许无效证书"标志。**仅应从 settings 同步，不应在代码硬编码 true。**
+pub fn set_allow_invalid_certs(allow: bool) {
+    ALLOW_INVALID_CERTS.store(allow, Ordering::Relaxed);
+}
+
+/// 读取当前"允许无效证书"标志。**默认 false（严格 TLS 验证）。**
+#[inline]
+pub fn allow_invalid_certs() -> bool {
+    ALLOW_INVALID_CERTS.load(Ordering::Relaxed)
+}
 
 /// 瓦片大小 (像素)
 pub const TILE_SIZE: u32 = 256;

@@ -38,7 +38,7 @@ impl Tiles3dFetcher {
             .pool_max_idle_per_host(50)
             .tcp_keepalive(std::time::Duration::from_secs(15))
             .http2_adaptive_window(true)
-            .danger_accept_invalid_certs(true);
+            .danger_accept_invalid_certs(crate::config::allow_invalid_certs());
 
         if let Some(proxy_url) = proxy {
             if !proxy_url.is_empty() {

@@ -59,6 +59,13 @@ pub struct AppSettings {
     /// 调试模式：保留临时瓦片目录
     #[serde(default)]
     pub debug_mode: bool,
+    /// 允许接受无效的 HTTPS 证书（⚠️ 安全风险）
+    ///
+    /// 默认 `false` —— 严格验证 TLS 证书。仅在用户明确知晓风险（如企业
+    /// 内网自签证书、测试私有图源）时手动开启。开启后 HTTPS 连接可被
+    /// 中间人攻击嗅探或篡改，**不得默认启用**。
+    #[serde(default)]
+    pub allow_invalid_certs: bool,
 }
 
 fn default_proxy_enabled() -> bool { false }
@@ -82,6 +89,7 @@ impl Default for AppSettings {
             source_overrides: vec![],
             cesium_ion_token: None,
             debug_mode: false,
+            allow_invalid_certs: false,
         }
     }
 }
