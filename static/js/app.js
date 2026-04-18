@@ -848,16 +848,15 @@ function initSettingsPanel() {
         });
     }
 
-    // 获取系统内存信息
-    try {
-        const memInfo = await TifApi.getSystemMemory();
+    // 获取系统内存信息（异步加载，不阻塞初始化）
+    TifApi.getSystemMemory().then(memInfo => {
         const memInfoEl = document.getElementById('system-memory-info');
         if (memInfo && memInfoEl) {
             const totalGB = (memInfo.total_mb / 1024).toFixed(1);
             const availGB = (memInfo.available_mb / 1024).toFixed(1);
             memInfoEl.textContent = `本机内存：总计 ${totalGB} GB，当前可用 ${availGB} GB`;
         }
-    } catch (e) { /* silent */ }
+    }).catch(() => { /* silent */ });
     
     // 清空历史按钮
     const clearHistoryBtn = document.getElementById('clear-history-btn');
