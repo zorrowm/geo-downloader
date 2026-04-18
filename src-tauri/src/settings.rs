@@ -59,6 +59,11 @@ pub struct AppSettings {
     /// 调试模式：保留临时瓦片目录
     #[serde(default)]
     pub debug_mode: bool,
+    /// 内存预算 (MB)，控制单次导出任务的最大内存占用
+    ///
+    /// 范围 512 - 16384，默认 2048。超出预算的导出请求会被拒绝并给出建议。
+    #[serde(default = "default_memory_budget_mb")]
+    pub memory_budget_mb: u64,
     /// 允许接受无效的 HTTPS 证书（⚠️ 安全风险）
     ///
     /// 默认 `false` —— 严格验证 TLS 证书。仅在用户明确知晓风险（如企业
@@ -74,6 +79,7 @@ fn default_concurrency() -> u32 { 30 }
 fn default_zoom() -> u8 { 15 }
 fn default_format() -> String { "geotiff".to_string() }
 fn default_source() -> String { "osm".to_string() }
+fn default_memory_budget_mb() -> u64 { 2048 }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -88,6 +94,7 @@ impl Default for AppSettings {
             custom_sources: vec![],
             source_overrides: vec![],
             cesium_ion_token: None,
+            memory_budget_mb: default_memory_budget_mb(),
             debug_mode: false,
             allow_invalid_certs: false,
         }

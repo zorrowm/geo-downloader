@@ -11,6 +11,7 @@ pub mod task;
 pub mod streaming_tiff;
 pub mod tiles3d;
 pub mod wayback;
+pub mod budget;
 
 // Tauri commands
 mod commands;
@@ -45,6 +46,7 @@ pub fn run() {
             commands::get_tile_sources,
             commands::get_builtin_sources,
             commands::estimate_download,
+            commands::get_system_memory,
             // 任务管理
             commands::create_download_task,
             commands::get_active_tasks,

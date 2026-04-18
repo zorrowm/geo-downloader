@@ -28,9 +28,9 @@
         return {};
     }
 
-    async function estimateDownload(bounds, zoom) {
+    async function estimateDownload(bounds, zoom, format, cropToShape) {
         if (checkTauri()) {
-            return await invoke('estimate_download', { bounds, zoom });
+            return await invoke('estimate_download', { bounds, zoom, format: format || null, crop_to_shape: cropToShape || false });
         }
         const res = await fetch('/api/estimate', {
             method: 'POST',
@@ -265,6 +265,11 @@
         if (checkTauri()) return await invoke('save_settings', { settings });
     }
 
+    async function getSystemMemory() {
+        if (checkTauri()) return await invoke('get_system_memory');
+        return null;
+    }
+
     // ============ 矢量数据 API ============
     async function downloadOsmData(bounds, featureType, savePath, proxy, polygon) {
         if (checkTauri()) {
@@ -365,6 +370,7 @@
         // 设置
         getSettings,
         saveSettings,
+        getSystemMemory,
         // 矢量数据
         downloadOsmData,
         downloadAdminBoundaryFile,

@@ -1,5 +1,6 @@
 //! Tauri commands 模块
 
+use crate::budget::{self, FormatClass};
 use crate::config::{self, TileSource};
 use crate::tile::{self, Bounds};
 use crate::downloader::TileDownloader;
@@ -69,6 +70,9 @@ pub struct EstimateResult {
     pub allowed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    /// 内存预算检查结果（前端可据此展示提示）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_check: Option<budget::BudgetCheckResult>,
 }
 
 
@@ -123,9 +127,15 @@ pub fn get_builtin_sources(tianditu_token: Option<String>) -> HashMap<String, Ti
     config::get_tile_sources(tianditu_token.as_deref())
 }
 
+/// 获取系统内存信息
+#[tauri::command]
+pub fn get_system_memory() -> Option<budget::SystemMemoryInfo> {
+    budget::get_system_memory()
+}
+
 /// 估算下载大小
 #[tauri::command]
-pub fn estimate_download(bounds: Bounds, zoom: u8) -> EstimateResult {
+pub fn estimate_download(bounds: Bounds, zoom: u8, format: Option<String>, crop_to_shape: Option<bool>) -> EstimateResult {
     let (_x_min, _y_min, _x_max, _y_max, cols, rows) = tile::get_tile_matrix_size(&bounds, zoom);
     let tile_count = cols * rows;
     let avg_tile_size_kb = 20.0;
@@ -134,23 +144,60 @@ pub fn estimate_download(bounds: Bounds, zoom: u8) -> EstimateResult {
     let max_tiles = 500_000u32;
     
     if tile_count > max_tiles {
-        EstimateResult {
+        return EstimateResult {
             tile_count,
             cols,
             rows,
             estimated_size_mb,
             allowed: false,
             warning: Some(format!("区域过大（{} 个瓦片），超过 {} 个上限。请缩小区域或降低缩放级别。", tile_count, max_tiles)),
-        }
+            budget_check: None,
+        };
+    }
+
+    // 内存预算检查
+    let fmt = format.as_deref().unwrap_or("geotiff");
+    let has_crop = crop_to_shape.unwrap_or(false);
+    let is_geotiff = ExportFormat::from_str(fmt) == ExportFormat::GeoTiff;
+    let use_streaming = is_geotiff && tile_count > 5_000 && !has_crop;
+
+    let format_class = if use_streaming {
+        FormatClass::StreamingTiff
+    } else if is_geotiff {
+        FormatClass::FullTiff
     } else {
-        EstimateResult {
+        FormatClass::RasterImage
+    };
+
+    let budget_mb = SettingsManager::new()
+        .and_then(|m| m.get())
+        .map(|s| s.memory_budget_mb)
+        .unwrap_or(budget::DEFAULT_BUDGET_MB);
+
+    let bc = budget::check_budget(cols, rows, format_class, has_crop, budget_mb);
+    let budget_allowed = bc.allowed;
+    let budget_check = Some(bc);
+
+    if !budget_allowed {
+        return EstimateResult {
             tile_count,
             cols,
             rows,
             estimated_size_mb,
-            allowed: true,
-            warning: None,
-        }
+            allowed: false,
+            warning: Some("内存预算不足，请查看建议调整参数".to_string()),
+            budget_check,
+        };
+    }
+
+    EstimateResult {
+        tile_count,
+        cols,
+        rows,
+        estimated_size_mb,
+        allowed: true,
+        warning: None,
+        budget_check,
     }
 }
 
@@ -509,6 +556,24 @@ async fn execute_download_task(
         }).await.map_err(|e| format!("流式导出失败: {}", e))??;
     } else {
         // ===== 常规路径：内存拼接 + 导出 =====
+        // 内存预算守卫：常规路径会全量加载画布，需检查预算
+        let has_crop = request.crop_to_shape && request.polygon.is_some();
+        let format_class = if is_geotiff {
+            FormatClass::FullTiff
+        } else {
+            FormatClass::RasterImage
+        };
+        let budget_mb = SettingsManager::new()
+            .and_then(|m| m.get())
+            .map(|s| s.memory_budget_mb)
+            .unwrap_or(budget::DEFAULT_BUDGET_MB);
+        let bc = budget::check_budget(cols, rows, format_class, has_crop, budget_mb);
+        if !bc.allowed {
+            let err_msg = budget::format_budget_error(&bc);
+            task_log(app, tm, task_id, "ERROR", &err_msg);
+            return Err(err_msg);
+        }
+
         task_log(app, tm, task_id, "INFO", "使用常规内存拼接路径");
         task_log(app, tm, task_id, "INFO", "开始拼接瓦片...");
         tm.update_progress(task_id, TaskStatus::Merging, 88.0, actual_count - failed_count, failed_count, Some("拼接中...".to_string()));

@@ -376,6 +376,14 @@ function applySettings(settings) {
     // 调试模式
     const debugCheckbox = document.getElementById('debug-mode-checkbox');
     if (debugCheckbox) debugCheckbox.checked = !!settings.debug_mode;
+
+    // 内存预算
+    const budgetSlider = document.getElementById('memory-budget-slider');
+    const budgetValue = document.getElementById('memory-budget-value');
+    if (budgetSlider && settings.memory_budget_mb) {
+        budgetSlider.value = settings.memory_budget_mb;
+        if (budgetValue) budgetValue.textContent = settings.memory_budget_mb + ' MB';
+    }
 }
 
 function getTianDiTuToken() {
@@ -830,6 +838,26 @@ function initSettingsPanel() {
             }
         });
     }
+
+    // 内存预算滑块 — 实时显示数值
+    const budgetSlider = document.getElementById('memory-budget-slider');
+    const budgetValue = document.getElementById('memory-budget-value');
+    if (budgetSlider && budgetValue) {
+        budgetSlider.addEventListener('input', () => {
+            budgetValue.textContent = budgetSlider.value + ' MB';
+        });
+    }
+
+    // 获取系统内存信息
+    try {
+        const memInfo = await TifApi.getSystemMemory();
+        const memInfoEl = document.getElementById('system-memory-info');
+        if (memInfo && memInfoEl) {
+            const totalGB = (memInfo.total_mb / 1024).toFixed(1);
+            const availGB = (memInfo.available_mb / 1024).toFixed(1);
+            memInfoEl.textContent = `本机内存：总计 ${totalGB} GB，当前可用 ${availGB} GB`;
+        }
+    } catch (e) { /* silent */ }
     
     // 清空历史按钮
     const clearHistoryBtn = document.getElementById('clear-history-btn');
@@ -1251,7 +1279,8 @@ async function saveAllSettings() {
         default_source: 'osm',
         custom_sources: appSettings?.custom_sources || [],
         source_overrides: appSettings?.source_overrides || [],
-        debug_mode: document.getElementById('debug-mode-checkbox').checked
+        debug_mode: document.getElementById('debug-mode-checkbox').checked,
+        memory_budget_mb: parseInt(document.getElementById('memory-budget-slider').value) || 2048
     };
     
     try {
@@ -1711,18 +1740,39 @@ async function estimateDownload() {
     const estimateDiv = document.getElementById('estimate-info');
     const downloadBtn = document.getElementById('download-btn');
     
+    // 收集当前格式和裁剪状态
+    const formatSelect = document.getElementById('format-select');
+    const cropCheckbox = document.getElementById('crop-to-shape');
+    const format = formatSelect ? formatSelect.value : undefined;
+    const cropToShape = cropCheckbox ? cropCheckbox.checked : false;
+    
     try {
-        const result = await TifApi.estimateDownload(currentBounds, zoom);
+        const result = await TifApi.estimateDownload(currentBounds, zoom, format, cropToShape);
         
         if (result.allowed) {
             estimateDiv.className = 'estimate-card';
-            estimateDiv.innerHTML = `
+            let html = `
                 <strong>${result.tile_count.toLocaleString()}</strong> 个瓦片 (${result.cols}列 × ${result.rows}行) · 约 <strong>${result.estimated_size_mb.toFixed(1)} MB</strong>
             `;
+            // 显示预算信息（即使通过也可提示）
+            if (result.budget_check && result.budget_check.estimated_peak_bytes) {
+                const peakMB = Math.round(result.budget_check.estimated_peak_bytes / 1024 / 1024);
+                const budgetMB = Math.round(result.budget_check.budget_bytes / 1024 / 1024);
+                html += `<br><small style="color:#888">内存预估 ${peakMB} MB / ${budgetMB} MB</small>`;
+            }
+            estimateDiv.innerHTML = html;
             downloadBtn.disabled = false;
         } else {
             estimateDiv.className = 'estimate-card error';
-            estimateDiv.innerHTML = result.warning;
+            let html = result.warning || '不允许下载';
+            if (result.budget_check && result.budget_check.suggestions && result.budget_check.suggestions.length > 0) {
+                html += '<ul style="margin:4px 0;padding-left:18px;font-size:12px">';
+                result.budget_check.suggestions.forEach(s => {
+                    html += `<li>${s}</li>`;
+                });
+                html += '</ul>';
+            }
+            estimateDiv.innerHTML = html;
             downloadBtn.disabled = true;
         }
     } catch (error) {
