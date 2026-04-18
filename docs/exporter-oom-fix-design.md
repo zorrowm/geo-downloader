@@ -150,8 +150,9 @@ pub enum BudgetError {
 | **M2** 流式路径扩展 | 2 天 | streaming_tiff 支持任意 tile_count + 裁剪 | E2E：50k 瓦片 + 多边形 + GeoTIFF 内存峰值 < 1 GB |
 | **M3** PNG/JPEG 流式 | 2 天 | streaming PNG/JPEG encoder | E2E：50k 瓦片 PNG 内存峰值 < 1 GB |
 | **M4** 原地裁剪 | 1 天 | 消除 clone，RGB→RGBA 原地扩展 | 多边形裁剪场景内存峰值减半 |
+| **M5** 合成性能优化 | 1 天 | rayon 并行解码 + 双缓冲流水线 | 50k 瓦片合成耗时降低 5-7× |
 
-**总计**：~6 个工作日，可拆为 4 个独立 PR。
+**总计**：~7 个工作日，可拆为 5 个独立 PR。
 
 ---
 
@@ -205,6 +206,9 @@ pub enum BudgetError {
 - **不实现"自动分块导出多文件"**：避免破坏用户预期的单文件输出，超预算直接报错让用户调整
 - **不将 max_tiles 降低**：max_tiles 是 UI 层提示，真正的守门员是内存预算
 - **流式裁剪暂不支持非凸多边形优化**：先正确性优先，性能优化后续 RFC
+- **不引入 spng FFI 做 PNG 加速解码**：Rust 绑定 5 年无人维护（v0.1.0），C 依赖引入构建复杂度 + 安全面；纯 Rust 的 `zune-png` 可达相当性能（2-4×），但 PNG 瓦片源占比有限，优先级低于 rayon 并行（全格式通吃）
+- **不引入 turbojpeg FFI 做 JPEG 加速解码**：同理 C 依赖成本高；rayon 并行解码已覆盖 JPEG 瓦片源加速需求
+- **合成性能优先做 rayon 并行而非单线程解码器替换**：并行解码 4-6× 加速是全格式通吃的杠杆，而 zune-png/turbojpeg 各自仅覆盖单一输入格式
 
 ---
 
@@ -214,3 +218,52 @@ pub enum BudgetError {
 - `streaming_tiff.rs` 当前实现：v3.2.x 主干
 - `png` crate StreamWriter：https://docs.rs/png/latest/png/struct.StreamWriter.html
 - `jpeg-encoder` crate：https://docs.rs/jpeg-encoder/
+
+---
+
+## 附录：合成性能优化方案（M5）
+
+### 现状瓶颈
+
+合成阶段（瓦片解码 → strip 填充 → 编码写盘）中，**解码占 50-70% 耗时**，当前完全单线程。
+
+典型输入：JPEG 瓦片（卫星影像）> PNG 瓦片（标注图/DEM）。
+
+### M5.1 rayon strip 内并行解码（P0，0.5 天）
+
+```rust
+use rayon::prelude::*;
+
+let decoded: Vec<RgbImage> = (0..cols).into_par_iter()
+    .map(|col| {
+        let path = tile_paths.get(&(col, row))?;
+        let bytes = fs::read(path)?;
+        image::load_from_memory(&bytes)?.to_rgb8()
+    })
+    .collect::<Result<_>>()?;
+
+// 串行填入 strip（避免 cache line 抖动）
+for (col, tile) in decoded.iter().enumerate() {
+    fill_strip(&mut strip, col, tile);
+}
+```
+
+预期加速：8 核机器 **4-6×**（解码 60% × 6× ≈ 3.6-4.2× 总加速）。
+
+### M5.2 双缓冲流水线（P1，0.5 天）
+
+```
+strip[0] 在 CPU 解码 + 填充    ←─ 并行
+strip[1] 已填好，在压缩 + 写盘  ←─ 并行
+```
+
+预期加速：在 M5.1 基础上再 1.3-1.5×。
+
+### 后续评估项（v3.4，不在 v3.3 范围）
+
+| 方案 | 加速 | 适用 | 成本 |
+|------|------|------|------|
+| 升级 `image` crate（含 fdeflate）| 1.5× | PNG 输入 | 0.2d |
+| `zune-png` 纯 Rust PNG 解码器 | 2-4× | PNG 输入 | 1d + 基准测试 |
+| `turbojpeg` FFI | 2-4× | JPEG 输入 | 1.5d + C 依赖 |
+| GPU 解码 | 10× | 旗舰场景 | 高复杂度 |
