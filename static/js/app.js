@@ -900,7 +900,7 @@ function initSettingsPanel() {
 
 // ============ 自动更新 ============
 
-let APP_VERSION = '3.1.0';
+let APP_VERSION = '3.3.0';
 const GITHUB_REPO = 'gaopengbin/geo-downloader';
 
 // 从 Tauri 配置动态读取版本号，保持单一数据源 (tauri.conf.json)
