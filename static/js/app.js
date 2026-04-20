@@ -17,6 +17,7 @@ let activeTaskListeners = {}; // 活动任务的事件监听器 { taskId: unlist
 let activeTaskLogListeners = {}; // 任务日志事件监听器
 let taskLogs = {}; // 任务日志数据 { taskId: [log1, log2, ...] }
 let taskTimers = {}; // 任务计时器 { taskId: intervalId }
+let batchGeojson = null; // 批量下载时暂存的 FeatureCollection + 文件名
 
 // ============ 工具函数 ============
 
@@ -118,6 +119,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (e.target.classList.contains('sponsor-overlay')) e.target.style.display = 'none';
     });
     initSettingsPanel();
+    initBatchEvents(); // 批量下载面板事件
     initHistoryListEvents();
     initTaskListEvents();
     initResumableTaskEvents();
@@ -2297,41 +2299,100 @@ async function loadBoundaryFile(event) {
     if (!files || files.length === 0) return;
     
     const infoEl = document.getElementById('selection-info');
-    infoEl.innerHTML = '<p class="hint">⬇️ 正在加载边界文件...</p>';
+    infoEl.innerHTML = '<p class="hint">-- 正在加载边界文件...</p>';
     
     // 延迟执行，让 UI 有时间更新
     await new Promise(r => setTimeout(r, 50));
     
     try {
-        // 检查是否是 Shapefile 组合
         const fileArray = Array.from(files);
-        const shpFile = fileArray.find(f => f.name.toLowerCase().endsWith('.shp'));
-        const geojsonFile = fileArray.find(f => f.name.toLowerCase().endsWith('.geojson') || f.name.toLowerCase().endsWith('.json'));
-        
+
+        // 检测多文件批量：多个独立 .geojson 或多组 .shp
+        const geojsonFiles = fileArray.filter(f => {
+            const n = f.name.toLowerCase();
+            return n.endsWith('.geojson') || n.endsWith('.json');
+        });
+        const shpFiles = fileArray.filter(f => f.name.toLowerCase().endsWith('.shp'));
+        const isMultiFile = geojsonFiles.length > 1 || shpFiles.length > 1;
+
         let geojson;
         let filename;
-        
-        if (shpFile) {
-            // Shapefile
-            infoEl.innerHTML = '<p class="hint">⚙️ 正在转换 Shapefile...</p>';
+
+        if (isMultiFile) {
+            // 多文件批量模式：解析每个文件并合并
+            infoEl.innerHTML = '<p class="hint">-- 正在解析多个文件...</p>';
             await new Promise(r => setTimeout(r, 50));
-            geojson = await convertShapefilesToGeoJSON(fileArray);
-            filename = shpFile.name;
-        } else if (geojsonFile) {
-            // 直接读取 GeoJSON
-            const text = await geojsonFile.text();
-            geojson = JSON.parse(text);
-            filename = geojsonFile.name;
+            const allFeatures = [];
+
+            if (shpFiles.length > 1) {
+                // 多组 Shapefile：按 .shp 基名分组
+                const auxFiles = fileArray.filter(f => !f.name.toLowerCase().endsWith('.shp'));
+                for (const sf of shpFiles) {
+                    const baseName = sf.name.replace(/\.shp$/i, '');
+                    const group = [sf, ...auxFiles.filter(af => {
+                        const afBase = af.name.replace(/\.[^.]+$/, '');
+                        return afBase.toLowerCase() === baseName.toLowerCase();
+                    })];
+                    const gj = await convertShapefilesToGeoJSON(group);
+                    const features = gj.type === 'FeatureCollection' ? (gj.features || []) : [gj];
+                    features.forEach(f => {
+                        if (!f.properties) f.properties = {};
+                        f.properties.__source_file = sf.name;
+                        allFeatures.push(f);
+                    });
+                }
+                filename = shpFiles.length + ' 个 Shapefile';
+            } else {
+                // 多个 GeoJSON
+                for (const gf of geojsonFiles) {
+                    const text = await gf.text();
+                    const gj = JSON.parse(text);
+                    const features = gj.type === 'FeatureCollection' ? (gj.features || []) : [gj];
+                    features.forEach(f => {
+                        if (!f.properties) f.properties = {};
+                        f.properties.__source_file = gf.name;
+                        allFeatures.push(f);
+                    });
+                }
+                filename = geojsonFiles.length + ' 个 GeoJSON';
+            }
+
+            geojson = { type: 'FeatureCollection', features: allFeatures };
         } else {
-            throw new Error('请选择 .geojson 或 .shp 文件 (需同时选择 .shx, .dbf)');
+            // 单文件模式（原逻辑）
+            const shpFile = fileArray.find(f => f.name.toLowerCase().endsWith('.shp'));
+            const geojsonFile = fileArray.find(f => {
+                const n = f.name.toLowerCase();
+                return n.endsWith('.geojson') || n.endsWith('.json');
+            });
+
+            if (shpFile) {
+                infoEl.innerHTML = '<p class="hint">-- 正在转换 Shapefile...</p>';
+                await new Promise(r => setTimeout(r, 50));
+                geojson = await convertShapefilesToGeoJSON(fileArray);
+                filename = shpFile.name;
+            } else if (geojsonFile) {
+                const text = await geojsonFile.text();
+                geojson = JSON.parse(text);
+                filename = geojsonFile.name;
+            } else {
+                throw new Error('请选择 .geojson 或 .shp 文件 (需同时选择 .shx, .dbf)');
+            }
         }
         
         if (geojson) {
-            setBoundaryFromGeoJSON(geojson, filename);
+            // 检测多要素：仅桌面端支持独立下载模式
+            const featureCount = geojson.type === 'FeatureCollection' ? (geojson.features || []).length : 0;
+            if (featureCount > 1 && isDesktopApp()) {
+                batchGeojson = { geojson, filename };
+                showBatchModeDialog(featureCount);
+            } else {
+                setBoundaryFromGeoJSON(geojson, filename);
+            }
         }
     } catch (error) {
         console.error('Failed to load boundary file:', error);
-        infoEl.innerHTML = `<p class="hint" style="color:#dc3545">❌ 加载失败: ${error.message}</p>`;
+        infoEl.innerHTML = `<p class="hint" style="color:#dc3545">-- 加载失败: ${error.message}</p>`;
     }
     
     // 清空文件输入
@@ -2477,6 +2538,226 @@ async function convertShapefilesToGeoJSON(files) {
     const geojson = await shp.combine([shp.parseShp(shpBuffer), dbfBuffer ? shp.parseDbf(dbfBuffer) : []]);
     
     return geojson;
+}
+
+// ============ 批量 Shapefile 下载 ============
+
+function showBatchModeDialog(featureCount) {
+    const hint = batchGeojson.filename.match(/\d+\s*个/)
+        ? `${batchGeojson.filename}，共 ${featureCount} 个要素，请选择下载模式：`
+        : `文件中包含 ${featureCount} 个要素，请选择下载模式：`;
+    document.getElementById('batch-mode-info').textContent = hint;
+    document.querySelector('input[name="batch-mode"][value="merge"]').checked = true;
+    document.getElementById('batch-mode-dialog').style.display = 'flex';
+}
+
+function showBatchPanel() {
+    const features = batchGeojson.geojson.features;
+    const keys = BatchDownload.collectPropertyKeys(features);
+    const nameField = BatchDownload.recommendNameField(keys);
+
+    // 命名字段下拉
+    const select = document.getElementById('batch-name-field');
+    select.innerHTML = keys.map(k => {
+        const label = k === '__source_file' ? '来源文件名' : escapeHtml(k);
+        return `<option value="${escapeAttr(k)}" ${k === nameField ? 'selected' : ''}>${label}</option>`;
+    }).join('') + '<option value="__index__">序号 (001, 002, ...)</option>';
+
+    renderBatchFeatureList(features, nameField || '__index__');
+    select.onchange = () => renderBatchFeatureList(features, select.value);
+
+    document.getElementById('batch-panel-dialog').style.display = 'flex';
+
+    // 在地图上显示全部要素
+    setBoundaryFromGeoJSON(batchGeojson.geojson, batchGeojson.filename);
+}
+
+function renderBatchFeatureList(features, nameField) {
+    const list = document.getElementById('batch-feature-list');
+    let html = '';
+    features.forEach((f, i) => {
+        const bbox = BatchDownload.featureBbox(f);
+        const area = bbox ? BatchDownload.bboxAreaKm2(bbox) : 0;
+        const name = nameField === '__index__'
+            ? String(i + 1).padStart(3, '0')
+            : (f.properties && f.properties[nameField] != null
+                ? String(f.properties[nameField])
+                : String(i + 1).padStart(3, '0'));
+        html += `
+            <label class="batch-feature-item">
+                <input type="checkbox" class="batch-feature-check" data-index="${i}" checked>
+                <span class="batch-feature-index">${String(i + 1).padStart(3, '0')}</span>
+                <span class="batch-feature-name" title="${escapeAttr(name)}">${escapeHtml(name)}</span>
+                <span class="batch-feature-area">${area.toFixed(2)} km&sup2;</span>
+            </label>`;
+    });
+    list.innerHTML = html;
+    updateBatchSummary();
+}
+
+function updateBatchSummary() {
+    if (!batchGeojson) return;
+    const total = batchGeojson.geojson.features.length;
+    const checked = document.querySelectorAll('#batch-feature-list .batch-feature-check:checked').length;
+    document.getElementById('batch-summary').textContent = `已选 ${checked} / ${total}`;
+    document.getElementById('batch-panel-start').disabled = checked === 0;
+}
+
+async function startBatchDownload() {
+    if (!batchGeojson) return;
+
+    const features = batchGeojson.geojson.features;
+    const nameField = document.getElementById('batch-name-field').value;
+    const batchConcurrency = parseInt(document.getElementById('batch-concurrency').value);
+
+    // 选中的要素索引
+    const selectedIndices = [];
+    document.querySelectorAll('#batch-feature-list .batch-feature-check:checked').forEach(cb => {
+        selectedIndices.push(parseInt(cb.dataset.index));
+    });
+    if (selectedIndices.length === 0) return;
+
+    // 共享下载参数
+    const format = document.getElementById('format-select').value;
+    const zoom = parseInt(document.getElementById('zoom-slider').value);
+    const ext = format === 'geotiff' ? '.tif' : format === 'png' ? '.png' : '.jpg';
+    const useProxy = document.getElementById('proxy-checkbox').checked;
+    const proxyUrl = document.getElementById('proxy-input').value.trim();
+    const tiandituToken = getTianDiTuToken();
+    const concurrency = parseInt(document.getElementById('concurrency-slider').value);
+    const compression = format === 'geotiff' ? document.getElementById('compress-select').value : 'none';
+    const buildPyramid = format === 'geotiff' && document.getElementById('pyramid-checkbox').checked;
+    const cropToShape = document.getElementById('crop-checkbox').checked;
+    const sourceKey = document.getElementById('source-select').value;
+    const sourceSelect = document.getElementById('source-select');
+    const sourceName = sourceSelect.options[sourceSelect.selectedIndex]?.text || sourceKey;
+
+    // 选择输出目录
+    let batchDir = null;
+    try {
+        if (window.__TAURI__?.dialog) {
+            batchDir = await window.__TAURI__.dialog.open({
+                directory: true,
+                title: '选择批量下载输出目录'
+            });
+        }
+        if (!batchDir) return;
+    } catch (e) {
+        console.error('选择目录失败:', e);
+        return;
+    }
+
+    // 生成文件名并去重
+    let rawNames = selectedIndices.map(i => {
+        const f = features[i];
+        if (nameField === '__index__') return String(i + 1).padStart(3, '0');
+        return f.properties && f.properties[nameField] != null
+            ? BatchDownload.sanitizeFilename(f.properties[nameField], i + 1)
+            : String(i + 1).padStart(3, '0');
+    });
+    rawNames = BatchDownload.deduplicateFilenames(rawNames);
+
+    // 关闭面板，切换到下载中心
+    document.getElementById('batch-panel-dialog').style.display = 'none';
+    switchToDownloadCenter();
+
+    // 路径拼接
+    const sep = batchDir.includes('/') ? '/' : '\\';
+    const tasks = selectedIndices.map((featureIdx, i) => ({
+        feature: features[featureIdx],
+        filename: `${rawNames[i]}_z${zoom}${ext}`,
+        savePath: `${batchDir}${sep}${rawNames[i]}_z${zoom}${ext}`
+    }));
+
+    // 按 batchConcurrency 并发调度
+    let active = 0;
+    const queue = [...tasks];
+
+    function launchNext() {
+        while (active < batchConcurrency && queue.length > 0) {
+            const task = queue.shift();
+            active++;
+            launchOne(task).finally(() => {
+                active--;
+                launchNext();
+            });
+        }
+    }
+
+    async function launchOne(task) {
+        const bbox = BatchDownload.featureBbox(task.feature);
+        if (!bbox) {
+            console.error('无法计算边界:', task.filename);
+            return;
+        }
+        const polygon = BatchDownload.extractFeaturePolygon(task.feature);
+        const request = {
+            bounds: bbox,
+            polygon: cropToShape ? polygon : null,
+            zoom: zoom,
+            source: sourceKey,
+            format: format,
+            crop_to_shape: cropToShape && polygon != null,
+            proxy: useProxy && proxyUrl ? proxyUrl : null,
+            tianditu_token: tiandituToken || null,
+            save_path: task.savePath,
+            concurrency: concurrency,
+            compression: compression,
+            build_pyramid: buildPyramid
+        };
+        try {
+            const result = await TifApi.createDownloadTask(request, task.filename, sourceName);
+            addTaskCardToUI(result.task_id, task.filename, sourceName, zoom, result.tile_count);
+            startTaskListener(result.task_id);
+        } catch (err) {
+            console.error(`批量任务 ${task.filename} 创建失败:`, err);
+        }
+    }
+
+    launchNext();
+}
+
+// 批量面板事件绑定（DOMContentLoaded 后执行）
+function initBatchEvents() {
+    // 模式选择对话框
+    document.getElementById('batch-mode-confirm').addEventListener('click', () => {
+        const mode = document.querySelector('input[name="batch-mode"]:checked').value;
+        document.getElementById('batch-mode-dialog').style.display = 'none';
+        if (mode === 'merge') {
+            setBoundaryFromGeoJSON(batchGeojson.geojson, batchGeojson.filename);
+            batchGeojson = null;
+        } else {
+            showBatchPanel();
+        }
+    });
+    document.getElementById('batch-mode-cancel').addEventListener('click', () => {
+        document.getElementById('batch-mode-dialog').style.display = 'none';
+        batchGeojson = null;
+    });
+    document.getElementById('batch-mode-close').addEventListener('click', () => {
+        document.getElementById('batch-mode-dialog').style.display = 'none';
+        batchGeojson = null;
+    });
+
+    // 要素列表面板
+    document.getElementById('batch-select-all').addEventListener('click', () => {
+        document.querySelectorAll('#batch-feature-list .batch-feature-check').forEach(cb => cb.checked = true);
+        updateBatchSummary();
+    });
+    document.getElementById('batch-invert-select').addEventListener('click', () => {
+        document.querySelectorAll('#batch-feature-list .batch-feature-check').forEach(cb => cb.checked = !cb.checked);
+        updateBatchSummary();
+    });
+    document.getElementById('batch-feature-list').addEventListener('change', (e) => {
+        if (e.target.classList.contains('batch-feature-check')) updateBatchSummary();
+    });
+    document.getElementById('batch-panel-start').addEventListener('click', startBatchDownload);
+    document.getElementById('batch-panel-cancel').addEventListener('click', () => {
+        document.getElementById('batch-panel-dialog').style.display = 'none';
+    });
+    document.getElementById('batch-panel-close').addEventListener('click', () => {
+        document.getElementById('batch-panel-dialog').style.display = 'none';
+    });
 }
 
 // ============ 下载历史记录 ============

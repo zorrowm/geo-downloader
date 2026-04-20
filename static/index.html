@@ -885,6 +885,75 @@
         </div>
     </div>
 
+    <!-- 批量下载 - 模式选择对话框 -->
+    <div id="batch-mode-dialog" class="modal-overlay" style="display:none">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-header">
+                <span class="modal-title">检测到多个要素</span>
+                <button class="btn-icon modal-close" id="batch-mode-close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="batch-mode-info"></p>
+                <div class="batch-mode-options">
+                    <label class="radio-label">
+                        <input type="radio" name="batch-mode" value="merge" checked>
+                        <span class="radio-text">合并为单个范围</span>
+                        <span class="radio-hint">所有要素的外接矩形，导出为一个文件</span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="batch-mode" value="independent">
+                        <span class="radio-text">每个要素独立下载</span>
+                        <span class="radio-hint">每个要素各自导出一个文件</span>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="batch-mode-cancel">取消</button>
+                <button class="btn btn-primary" id="batch-mode-confirm">继续</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量下载 - 要素列表配置面板 -->
+    <div id="batch-panel-dialog" class="modal-overlay" style="display:none">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-header">
+                <span class="modal-title">批量下载配置</span>
+                <button class="btn-icon modal-close" id="batch-panel-close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">命名字段</label>
+                        <select id="batch-name-field" class="form-select"></select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">批量并发</label>
+                        <select id="batch-concurrency" class="form-select">
+                            <option value="1">串行 (1)</option>
+                            <option value="3" selected>3 并行</option>
+                            <option value="6">6 并行</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="batch-feature-toolbar">
+                    <button class="btn btn-outline btn-sm" id="batch-select-all">全选</button>
+                    <button class="btn btn-outline btn-sm" id="batch-invert-select">反选</button>
+                    <span class="batch-summary" id="batch-summary"></span>
+                </div>
+                <div class="batch-feature-list" id="batch-feature-list"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="batch-panel-cancel">取消</button>
+                <button class="btn btn-primary" id="batch-panel-start">开始批量下载</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 更新对话框 -->
     <div id="update-dialog" class="update-overlay" style="display:none">
         <div class="update-dialog">
@@ -959,6 +1028,7 @@
     <!-- CesiumJS (CDN) -->
     <script src="https://cdn.jsdelivr.net/npm/cesium@1.140.0/Build/Cesium/Cesium.js"></script>
     <script src="./js/api.js"></script>
+    <script src="./js/batch-download.js"></script>
     <script src="./js/app.js"></script>
 </body>
 </html>
