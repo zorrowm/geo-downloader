@@ -423,3 +423,55 @@ src-tauri/src/
 - 常规路径 (`exporter.rs`)：`tiff` crate 的 `Lzw` / `Deflate` / `Uncompressed`
 - 前端 checkbox → select 下拉框，默认 Deflate（速度快、压缩率高）
 - 新增依赖：`flate2 = "1.0"`、`weezl = "0.1"`（均为 `tiff` crate 传递依赖的显式声明）
+
+---
+
+## TIFF 金字塔概览层
+
+> 日期: 2026-04-20
+
+### 33. GeoTIFF 金字塔 (Overview) 生成
+
+- 新增 `build_pyramid` 参数：勾选后 GeoTIFF 在导出完成后自动追加金字塔概览层
+- `streaming_tiff.rs` 新增 `append_pyramid_overviews()` — 将全分辨率数据 2x 逐级降采样，每级写为独立 IFD
+- 降采样使用双线性插值（2x2 平均），保持图像质量
+- BigTIFF / 标准 TIFF 统一支持，金字塔 IFD 链通过 NextIFD 指针串联
+- 前端新增"生成金字塔"复选框（仅 GeoTIFF 格式显示）
+- 提交：`11c4ab9`
+
+---
+
+## 批量 Shapefile/GeoJSON 独立下载
+
+> 日期: 2026-04-21
+
+### 34. 多要素独立下载模式 (Issue #4)
+
+**场景**：用户加载包含多个要素（如多个行政区、多个地块）的 Shapefile 或 GeoJSON，需要每个要素单独下载一份影像。
+
+**新增文件**
+- `static/js/batch-download.js` — 批量下载工具模块
+  - `sanitizeFilename` — 清理文件名，去除非法字符和矢量文件扩展名
+  - `recommendNameField` — 按优先级推荐命名属性字段（name > title > id > code）
+  - `featureBbox` / `bboxAreaKm2` — 包围盒计算与面积估算
+  - `extractFeaturePolygon` — 提取 Polygon/MultiPolygon 用于裁剪
+  - `deduplicateFilenames` — 重名自动追加 `_N` 后缀
+  - `collectPropertyKeys` — 收集属性键（排除 `__` 内部属性）
+
+**流程**
+1. 加载矢量文件 → 检测要素数 > 1（桌面端）
+2. 弹出模式选择对话框："合并为单范围" / "每个要素独立下载"
+3. 独立模式 → 要素列表面板：全选/反选、命名字段下拉、面积预览、并发度选择（1/3/6）
+4. 选择输出目录 → 按并发度调度，每个要素调用 `createDownloadTask` 创建独立任务
+5. 每个任务进入现有下载中心，独立进度/日志/暂停/取消
+
+### 35. 多文件批量上传
+
+**场景**：用户一次选择多个 .geojson 或多组 .shp 文件，每个文件包含一个区域。
+
+**实现**
+- `loadBoundaryFile` 检测多个独立 .geojson（`>1`）或多个 .shp 文件（`>1`）
+- 多组 Shapefile 按基名分组（`.shp` + `.shx` + `.dbf` 匹配），逐组解析
+- 所有要素合并为统一 `FeatureCollection`，注入 `__source_file` 属性标识来源
+- 命名字段下拉显示"来源文件名"选项，多文件模式下默认推荐
+- 提交：`14def75`
