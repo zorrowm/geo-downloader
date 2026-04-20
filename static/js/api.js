@@ -239,6 +239,10 @@
         if (checkTauri()) return await invoke('clear_download_history');
     }
 
+    async function buildPyramidForFile(recordId, filePath) {
+        if (checkTauri()) return await invoke('build_pyramid_for_file', { recordId, filePath });
+    }
+
     async function openFileLocation(filePath) {
         if (checkTauri()) return await invoke('open_file_location', { filePath });
     }
@@ -365,6 +369,7 @@
         addDownloadRecord,
         deleteDownloadRecord,
         clearDownloadHistory,
+        buildPyramidForFile,
         openFileLocation,
         openFile,
         // 设置

@@ -27,6 +27,9 @@ pub struct DownloadRecord {
     /// 任务耗时（秒）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<u64>,
+    /// 是否已构建金字塔
+    #[serde(default)]
+    pub has_pyramid: bool,
 }
 
 /// 下载状态
@@ -66,6 +69,7 @@ impl DownloadRecord {
             status,
             log_file: None,
             duration_secs: None,
+            has_pyramid: false,
         }
     }
 
@@ -77,6 +81,11 @@ impl DownloadRecord {
 
     pub fn with_duration(mut self, secs: u64) -> Self {
         self.duration_secs = Some(secs);
+        self
+    }
+
+    pub fn with_pyramid(mut self, has: bool) -> Self {
+        self.has_pyramid = has;
         self
     }
 }
@@ -133,13 +142,27 @@ impl HistoryManager {
         self.save(&Vec::new())
     }
 
-    /// 保存记录到文件
+    /// 更新记录
+    pub fn update(&self, record: &DownloadRecord) -> Result<(), String> {
+        let mut records = self.get_all()?;
+        if let Some(r) = records.iter_mut().find(|r| r.id == record.id) {
+            *r = record.clone();
+        }
+        self.save(&records)
+    }
+
+    /// 保存记录到文件（内部方法）
     fn save(&self, records: &[DownloadRecord]) -> Result<(), String> {
         let content = serde_json::to_string_pretty(records)
             .map_err(|e| format!("序列化失败: {}", e))?;
         
         fs::write(&self.file_path, content)
             .map_err(|e| format!("保存历史记录失败: {}", e))
+    }
+
+    /// 保存全部记录（公开方法，供外部批量更新使用）
+    pub fn save_all(&self, records: &[DownloadRecord]) -> Result<(), String> {
+        self.save(records)
     }
 }
 

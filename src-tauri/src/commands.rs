@@ -8,6 +8,7 @@ use crate::merger;
 use crate::exporter::{self, ExportFormat};
 use crate::streaming_tiff;
 use crate::streaming_raster;
+use crate::pyramid;
 use crate::admin::{self, AdminRegion, GeocodeResult};
 use crate::history::{DownloadRecord, DownloadStatus, HistoryManager};
 use crate::settings::{AppSettings, SettingsManager};
@@ -44,6 +45,9 @@ pub struct DownloadRequest {
     /// TIFF 压缩方式: "none", "lzw", "deflate"（默认 "lzw"）
     #[serde(default = "default_compression")]
     pub compression: String,
+    /// 导出 GeoTIFF 后是否构建内置金字塔（Overview Layers）
+    #[serde(default)]
+    pub build_pyramid: bool,
 }
 
 fn default_concurrency() -> usize {
@@ -691,6 +695,68 @@ async fn execute_download_task(
         }).await.map_err(|e| format!("导出失败: {}", e))??;
     }
     
+    // 金字塔构建（仅 BigTIFF + 用户勾选时）
+    let mut file_size = file_size;
+    let mut pyramid_built = false;
+    if request.build_pyramid && is_geotiff {
+        task_log(app, tm, task_id, "INFO", "开始构建影像金字塔...");
+        tm.update_progress(task_id, TaskStatus::Exporting, 95.0, actual_count - failed_count, failed_count, Some("构建金字塔...".to_string()));
+        let _ = app.emit(&event_name, TaskProgressPayload {
+            task_id: task_id.to_string(),
+            status: "building_pyramid".to_string(),
+            progress: 95.0,
+            completed: actual_count - failed_count,
+            total: actual_count,
+            message: Some("构建金字塔...".to_string()),
+        });
+
+        let pyramid_path = save_path.clone();
+        let pyramid_compression = request.compression.clone();
+        let app_clone = app.clone();
+        let event_clone = event_name.clone();
+        let total_tiles = actual_count;
+        let failed_tiles = failed_count;
+
+        let pyramid_result = tokio::task::spawn_blocking(move || {
+            pyramid::build_pyramid(
+                &pyramid_path,
+                pyramid::PyramidOptions {
+                    compression: pyramid_compression,
+                    progress_cb: Some(Box::new(move |current, total| {
+                        let _ = app_clone.emit(&event_clone, TaskProgressPayload {
+                            task_id: String::new(),
+                            status: "building_pyramid".to_string(),
+                            progress: 95.0 + (current as f64 / total as f64) * 4.0,
+                            completed: total_tiles - failed_tiles,
+                            total: total_tiles,
+                            message: Some(format!("构建金字塔 {}/{}...", current + 1, total)),
+                        });
+                    })),
+                    ..Default::default()
+                },
+            )
+        }).await;
+
+        match pyramid_result {
+            Ok(Ok(stats)) => {
+                task_log(app, tm, task_id, "INFO", &format!(
+                    "金字塔构建完成：{} 层，增加 {:.1} MB，耗时 {:.1}s",
+                    stats.levels_generated,
+                    stats.size_added_bytes as f64 / 1024.0 / 1024.0,
+                    stats.elapsed_ms as f64 / 1000.0,
+                ));
+                file_size += stats.size_added_bytes;
+                pyramid_built = true;
+            }
+            Ok(Err(e)) => {
+                task_log(app, tm, task_id, "WARN", &format!("金字塔构建失败（不影响导出文件）: {}", e));
+            }
+            Err(e) => {
+                task_log(app, tm, task_id, "WARN", &format!("金字塔构建线程异常: {}", e));
+            }
+        }
+    }
+
     // 标记完成，清理临时文件和持久化任务
     let total_elapsed = start_time.elapsed();
     let size_mb = file_size as f64 / 1024.0 / 1024.0;
@@ -721,7 +787,8 @@ async fn execute_download_task(
         failed_count,
         if failed_count == 0 { DownloadStatus::Completed } else { DownloadStatus::Completed },
     ).with_log_file(log_file_path)
-     .with_duration(total_elapsed.as_secs());
+     .with_duration(total_elapsed.as_secs())
+     .with_pyramid(pyramid_built);
     if let Ok(manager) = HistoryManager::new() {
         let _ = manager.add(record);
     }
@@ -1069,6 +1136,52 @@ pub fn delete_download_record(id: String) -> Result<(), String> {
 pub fn clear_download_history() -> Result<(), String> {
     let manager = HistoryManager::new()?;
     manager.clear()
+}
+
+/// 为已有 TIFF 文件补建金字塔
+#[tauri::command]
+pub async fn build_pyramid_for_file(
+    app: tauri::AppHandle,
+    record_id: String,
+    file_path: String,
+) -> Result<(), String> {
+    use std::path::Path;
+    let p = file_path.clone();
+    if !Path::new(&p).exists() {
+        return Err(format!("文件不存在: {}", p));
+    }
+
+    let app_clone = app.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        pyramid::build_pyramid(
+            &p,
+            pyramid::PyramidOptions {
+                progress_cb: Some(Box::new(move |current, total| {
+                    let _ = app_clone.emit("pyramid-progress", serde_json::json!({
+                        "record_id": &record_id,
+                        "current": current,
+                        "total": total,
+                    }));
+                })),
+                ..Default::default()
+            },
+        )
+    }).await.map_err(|e| format!("线程异常: {}", e))?;
+
+    let stats = result?;
+
+    // 更新历史记录
+    let manager = HistoryManager::new()?;
+    let mut records = manager.get_all()?;
+    // record_id 在闭包里被 move 了，重新从 event payload 解析不可行
+    // 用 file_path 匹配
+    if let Some(r) = records.iter_mut().find(|r| r.file_path == file_path) {
+        r.has_pyramid = true;
+        r.file_size += stats.size_added_bytes;
+    }
+    manager.save_all(&records)?;
+
+    Ok(())
 }
 
 /// 打开文件所在目录

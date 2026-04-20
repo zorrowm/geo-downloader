@@ -10,6 +10,7 @@ pub mod settings;
 pub mod task;
 pub mod streaming_tiff;
 pub mod streaming_raster;
+pub mod pyramid;
 pub mod tiles3d;
 pub mod wayback;
 pub mod budget;
@@ -72,6 +73,7 @@ pub fn run() {
             commands::add_download_record,
             commands::delete_download_record,
             commands::clear_download_history,
+            commands::build_pyramid_for_file,
             commands::open_file_location,
             commands::open_file,
             // 设置

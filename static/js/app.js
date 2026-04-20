@@ -1383,10 +1383,13 @@ function initConcurrencySlider() {
 function initCompressOption() {
     const formatSelect = document.getElementById('format-select');
     const compressOption = document.getElementById('compress-option');
+    const pyramidOption = document.getElementById('pyramid-option');
     
     function updateCompressVisibility() {
         const format = formatSelect.value;
-        compressOption.style.display = format === 'geotiff' ? '' : 'none';
+        const isGeotiff = format === 'geotiff';
+        compressOption.style.display = isGeotiff ? '' : 'none';
+        pyramidOption.style.display = isGeotiff ? '' : 'none';
     }
     
     updateCompressVisibility();
@@ -1841,6 +1844,7 @@ async function startDownload() {
     const tiandituToken = getTianDiTuToken();
     const concurrency = parseInt(document.getElementById('concurrency-slider').value);
     const compression = format === 'geotiff' ? document.getElementById('compress-select').value : 'none';
+    const buildPyramid = format === 'geotiff' && document.getElementById('pyramid-checkbox').checked;
     
     const request = {
         bounds: currentBounds,
@@ -1853,7 +1857,8 @@ async function startDownload() {
         tianditu_token: tiandituToken || null,
         save_path: savePath || null,
         concurrency: concurrency,
-        compression: compression
+        compression: compression,
+        build_pyramid: buildPyramid
     };
     
     // Tauri 模式：创建下载任务
@@ -2516,11 +2521,14 @@ function renderHistoryCard(record) {
     const logFile = record.log_file || '';
     const isFailed = record.status === 'failed';
     const duration = record.duration_secs != null ? formatDuration(record.duration_secs) : '';
+    const isTiff = record.format === 'geotiff' || (record.file_path && record.file_path.endsWith('.tif'));
+    const pyramidTag = record.has_pyramid ? '<span class="tag tag-pyramid">pyramid</span>' : '';
+    const canBuildPyramid = !isFailed && isTiff && !record.has_pyramid;
     
     return `
         <div class="history-card" data-id="${escapeAttr(record.id)}" data-path="${escapeAttr(record.file_path)}" data-log-file="${escapeAttr(logFile)}">
             <div class="history-card-header">
-                <span class="history-card-title">${escapeHtml(record.name)}</span>
+                <span class="history-card-title">${escapeHtml(record.name)}${pyramidTag}</span>
                 <span class="history-card-status ${statusClass}">${statusIcon}</span>
             </div>
             <div class="history-card-meta">
@@ -2536,6 +2544,7 @@ function renderHistoryCard(record) {
             </div>
             <div class="history-card-actions">
                 ${isFailed ? '' : '<button class="btn btn-outline btn-sm btn-open-folder">打开文件夹</button>'}
+                ${canBuildPyramid ? '<button class="btn btn-outline btn-sm btn-build-pyramid">构建金字塔</button>' : ''}
                 ${logFile ? '<button class="btn btn-outline btn-sm btn-view-log">日志</button>' : ''}
                 <button class="btn btn-outline btn-sm btn-delete-record">删除</button>
             </div>
@@ -2612,6 +2621,28 @@ function initHistoryListEvents() {
                 }
             } else {
                 panel.style.display = 'none';
+            }
+        } else if (e.target.closest('.btn-build-pyramid')) {
+            const btn = e.target.closest('.btn-build-pyramid');
+            const id = card.dataset.id;
+            const filePath = card.dataset.path;
+            btn.disabled = true;
+            btn.textContent = '构建中...';
+            const unlisten = await window.__TAURI__.event.listen('pyramid-progress', (ev) => {
+                const d = ev.payload;
+                if (d.record_id === id) {
+                    btn.textContent = `金字塔 ${d.current + 1}/${d.total}`;
+                }
+            });
+            try {
+                await TifApi.buildPyramidForFile(id, filePath);
+                unlisten();
+                loadDownloadHistory();
+            } catch (error) {
+                unlisten();
+                alert('金字塔构建失败: ' + error.message);
+                btn.disabled = false;
+                btn.textContent = '构建金字塔';
             }
         } else if (e.target.closest('.btn-delete-record')) {
             const id = card.dataset.id;
@@ -2827,6 +2858,7 @@ const TASK_STATUS_TEXT = {
     'processing': '处理中',
     'merging': '拼接中',
     'exporting': '导出中',
+    'building_pyramid': '构建金字塔',
     'completed': '已完成',
     'failed': '失败',
     'cancelled': '已取消'

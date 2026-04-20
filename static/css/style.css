@@ -1808,6 +1808,18 @@ body {
     word-break: break-all;
 }
 
+.tag-pyramid {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-weight: 500;
+    border-radius: 3px;
+    background: var(--primary);
+    color: #fff;
+    vertical-align: middle;
+}
+
 .history-card-status {
     flex-shrink: 0;
 }
