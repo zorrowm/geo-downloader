@@ -118,6 +118,17 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('sponsor-dialog')?.addEventListener('click', (e) => {
         if (e.target.classList.contains('sponsor-overlay')) e.target.style.display = 'none';
     });
+    // 加群/关注公众号
+    document.getElementById('community-open-btn')?.addEventListener('click', () => {
+        const dlg = document.getElementById('community-dialog');
+        if (dlg) dlg.style.display = '';
+    });
+    document.getElementById('community-close-btn')?.addEventListener('click', () => {
+        document.getElementById('community-dialog').style.display = 'none';
+    });
+    document.getElementById('community-dialog')?.addEventListener('click', (e) => {
+        if (e.target.classList.contains('sponsor-overlay')) e.target.style.display = 'none';
+    });
     initSettingsPanel();
     initBatchEvents(); // 批量下载面板事件
     initHistoryListEvents();
