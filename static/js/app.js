@@ -1460,7 +1460,8 @@ async function searchPlace() {
     resultsContainer.innerHTML = '<div class="search-result-item">搜索中...</div>';
     
     try {
-        const results = await TifApi.geocodeSearch(query);
+        const tiandituToken = getTianDiTuToken();
+        const results = await TifApi.geocodeSearch(query, tiandituToken);
         
         if (results.length === 0) {
             resultsContainer.innerHTML = '<div class="search-result-item">未找到结果</div>';
@@ -1478,6 +1479,13 @@ async function searchPlace() {
             el.addEventListener('click', () => {
                 const r = results[parseInt(el.dataset.idx, 10)];
                 if (!r) return;
+                // 行政区结果：直接加载边界
+                if (r.kind === 'admin' && r.admin_code) {
+                    loadAdminBoundaryByCode(r.admin_code, r.name);
+                    document.getElementById('search-results').innerHTML = '';
+                    return;
+                }
+                // POI 结果：仅定位
                 goToLocation(r.lat, r.lng, r.bounds || null, r.address || null);
             });
         });
@@ -1712,6 +1720,41 @@ async function loadSelectedBoundary() {
     }
 }
 
+/// 通过 adminCode 直接加载行政区边界（搜索结果点击时调用）
+async function loadAdminBoundaryByCode(code, name) {
+    try {
+        const geojson = await TifApi.getAdminBoundary(code, true);
+        drawnItems.clearLayers();
+        if (boundaryLayer) {
+            map.removeLayer(boundaryLayer);
+        }
+        boundaryLayer = L.geoJSON(geojson, {
+            style: { color: '#e74c3c', fillColor: '#e74c3c', fillOpacity: 0.2, weight: 2 }
+        }).addTo(map);
+        map.fitBounds(boundaryLayer.getBounds(), { animate: false });
+        map.invalidateSize();
+        setTimeout(() => {
+            map.invalidateSize();
+            map.eachLayer(layer => { if (layer.redraw) layer.redraw(); });
+        }, 200);
+        const bounds = boundaryLayer.getBounds();
+        currentBounds = {
+            north: bounds.getNorth(),
+            south: bounds.getSouth(),
+            east: bounds.getEast(),
+            west: bounds.getWest()
+        };
+        currentPolygon = extractPolygonFromGeoJSON(geojson);
+        updateSelectionInfo();
+        estimateDownload();
+        updateVectorButtons();
+        syncSelectionToCesium();
+    } catch (error) {
+        console.error('加载行政区边界失败:', error);
+        alert(`加载 ${name || code} 边界失败：${error.message || error}`);
+    }
+}
+
 // ============ 选择信息更新 ============
 function updateSelectionInfo() {
     const infoDiv = document.getElementById('selection-info');
@@ -1912,7 +1955,8 @@ async function startDownload() {
             // 跳转到下载中心
             switchToDownloadCenter();
         } catch (error) {
-            alert('创建任务失败: ' + error.message);
+            console.error('创建任务失败:', error);
+            alert('创建任务失败: ' + (error?.message || error || '未知错误'));
         } finally {
             resetDownloadButton(downloadBtn);
         }

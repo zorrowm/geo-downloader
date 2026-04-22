@@ -117,10 +117,10 @@
         return '';
     }
 
-    async function probeTile(sourceKey, zoom, lat, lng, tiandiTuToken, proxy) {
+    async function probeTile(sourceKey, zoom, lat, lng, tiandituToken, proxy) {
         if (checkTauri()) return await invoke('probe_tile', {
             sourceKey, zoom, lat, lng,
-            tiandiTuToken: tiandiTuToken || null,
+            tiandituToken: tiandituToken || null,
             proxy: proxy || null,
         });
         return { has_data: true, status_code: 0, content_length: 0, message: '无法探测' };
@@ -180,8 +180,8 @@
         return res.json();
     }
 
-    async function geocodeSearch(query) {
-        if (checkTauri()) return await invoke('geocode_search', { query });
+    async function geocodeSearch(query, tiandituToken) {
+        if (checkTauri()) return await invoke('geocode_search', { query, tiandituToken: tiandituToken || null });
         const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`);
         if (!res.ok) throw new Error('Failed');
         return res.json();

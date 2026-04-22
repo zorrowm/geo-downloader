@@ -288,6 +288,11 @@ pub struct GeocodeResult {
     pub bounds: Option<GeoBounds>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<serde_json::Value>,
+    /// 若匹配到行政区划，此处为 GB2260 行政区代码（前端可调用 get_admin_boundary 加载边界）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_code: Option<String>,
+    /// 结果类型: "admin" (行政区) 或 "poi" (兴趣点)
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -567,10 +572,13 @@ fn osm_to_geojson(osm_data: serde_json::Value) -> Result<serde_json::Value, Stri
 }
 
 /// 地名搜索：优先使用天地图（中文友好），失败时回退到 Nominatim
-pub async fn geocode_search(query: &str) -> Result<Vec<GeocodeResult>, String> {
-    let token = std::env::var("TIANDITU_TOKEN")
-        .ok()
+pub async fn geocode_search(
+    query: &str,
+    user_token: Option<&str>,
+) -> Result<Vec<GeocodeResult>, String> {
+    let token = user_token
         .filter(|s| !s.is_empty())
+        .map(String::from)
         .unwrap_or_else(|| crate::config::TIANDITU_DEFAULT_TOKEN.to_string());
 
     match geocode_tianditu(query, &token).await {
@@ -586,18 +594,32 @@ pub async fn geocode_search(query: &str) -> Result<Vec<GeocodeResult>, String> {
     }
 }
 
-/// 天地图地名搜索 API
-/// 综合用 queryType=7 (行政区划) + queryType=1 (POI)
+/// 天地图地名搜索：单次 queryType=1 综合搜索
+/// 命中行政区时返回 `area`（带 adminCode），命中 POI 时返回 `pois`
 async fn geocode_tianditu(query: &str, token: &str) -> Result<Vec<GeocodeResult>, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
 
-    // 先试行政区划搜索（返回 area + bound）
+    let results = tianditu_query(&client, query, token, 1).await?;
+    if results.is_empty() {
+        return Err("无结果".to_string());
+    }
+    Ok(results.into_iter().take(10).collect())
+}
+
+/// 调用天地图 search API
+async fn tianditu_query(
+    client: &Client,
+    query: &str,
+    token: &str,
+    query_type: u8,
+) -> Result<Vec<GeocodeResult>, String> {
     let post_str = format!(
-        r#"{{"keyWord":"{}","queryType":"7","start":"0","count":"10","level":"12","mapBound":"-180,-90,180,90"}}"#,
-        query.replace('"', "\\\"")
+        r#"{{"keyWord":"{}","queryType":"{}","start":"0","count":"10","level":"12","mapBound":"73,18,135,54"}}"#,
+        query.replace('"', "\\\""),
+        query_type
     );
     let url = format!(
         "https://api.tianditu.gov.cn/v2/search?postStr={}&type=query&tk={}",
@@ -607,7 +629,7 @@ async fn geocode_tianditu(query: &str, token: &str) -> Result<Vec<GeocodeResult>
 
     let response = client
         .get(&url)
-        .header("User-Agent", "GeoDownloader/1.0")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .header("Referer", "https://map.tianditu.gov.cn/")
         .send()
         .await
@@ -622,80 +644,30 @@ async fn geocode_tianditu(query: &str, token: &str) -> Result<Vec<GeocodeResult>
         .await
         .map_err(|e| format!("天地图响应解析失败: {}", e))?;
 
-    // 检查状态码
     if let Some(infocode) = data.get("status").and_then(|s| s.get("infocode")).and_then(|c| c.as_i64()) {
         if infocode != 1000 {
-            let msg = data.get("status")
-                .and_then(|s| s.get("cndesc"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("未知错误");
-            return Err(format!("天地图错误 {}: {}", infocode, msg));
+            return Err(format!("天地图错误 {}", infocode));
         }
     }
 
     let mut results = Vec::new();
-
-    // resultType: 1=area, 2=poi+area, 3=poi+statistics, 4=statistics, 5=poi
-    // 解析 area (行政区域)
     if let Some(area) = data.get("area") {
-        if let Some(item) = parse_tianditu_area(area) {
-            results.push(item);
-        }
+        if let Some(item) = parse_tianditu_area(area) { results.push(item); }
     }
-    // 解析 areas (多个行政区域)
     if let Some(areas) = data.get("areas").and_then(|a| a.as_array()) {
         for area in areas {
-            if let Some(item) = parse_tianditu_area(area) {
-                results.push(item);
-            }
+            if let Some(item) = parse_tianditu_area(area) { results.push(item); }
         }
     }
-    // 解析 pois
     if let Some(pois) = data.get("pois").and_then(|p| p.as_array()) {
         for poi in pois {
-            if let Some(item) = parse_tianditu_poi(poi) {
-                results.push(item);
-            }
+            if let Some(item) = parse_tianditu_poi(poi) { results.push(item); }
         }
     }
-
-    // 如果还没有结果，再试一次 POI 搜索 (queryType=1)
-    if results.is_empty() {
-        let post_str2 = format!(
-            r#"{{"keyWord":"{}","queryType":"1","start":"0","count":"10","level":"12","mapBound":"73,18,135,54"}}"#,
-            query.replace('"', "\\\"")
-        );
-        let url2 = format!(
-            "https://api.tianditu.gov.cn/v2/search?postStr={}&type=query&tk={}",
-            urlencoding::encode(&post_str2),
-            token
-        );
-        let resp2 = client
-            .get(&url2)
-            .header("User-Agent", "GeoDownloader/1.0")
-            .header("Referer", "https://map.tianditu.gov.cn/")
-            .send()
-            .await
-            .map_err(|e| format!("天地图 POI 请求失败: {}", e))?;
-        if resp2.status().is_success() {
-            let data2: serde_json::Value = resp2.json().await
-                .map_err(|e| format!("天地图 POI 响应解析失败: {}", e))?;
-            if let Some(pois) = data2.get("pois").and_then(|p| p.as_array()) {
-                for poi in pois {
-                    if let Some(item) = parse_tianditu_poi(poi) {
-                        results.push(item);
-                    }
-                }
-            }
-        }
-    }
-
-    // 限制最多 10 条
-    results.truncate(10);
     Ok(results)
 }
 
-/// 解析天地图行政区域
+/// 解析天地图行政区
 fn parse_tianditu_area(area: &serde_json::Value) -> Option<GeocodeResult> {
     let name = area.get("name")?.as_str()?.to_string();
     let lonlat = area.get("lonlat")?.as_str()?;
@@ -704,26 +676,20 @@ fn parse_tianditu_area(area: &serde_json::Value) -> Option<GeocodeResult> {
     let lng: f64 = parts[0].parse().ok()?;
     let lat: f64 = parts[1].parse().ok()?;
 
-    // bound 格式: "x1,y1,x2,y2" (lng_min, lat_min, lng_max, lat_max)
-    let bounds = area.get("bound").and_then(|b| b.as_str()).and_then(|s| {
-        let p: Vec<&str> = s.split(',').collect();
-        if p.len() >= 4 {
-            Some(GeoBounds {
-                west: p[0].parse().ok()?,
-                south: p[1].parse().ok()?,
-                east: p[2].parse().ok()?,
-                north: p[3].parse().ok()?,
-            })
-        } else { None }
-    });
+    // adminCode：天地图返回 156 + GB2260 (例如 156330100)，需去掉 156 国家前缀
+    let admin_code = area.get("adminCode")
+        .and_then(|c| c.as_str().map(String::from).or_else(|| c.as_i64().map(|n| n.to_string())))
+        .map(|s| s.strip_prefix("156").map(String::from).unwrap_or(s));
 
     Some(GeocodeResult {
         name: name.clone(),
-        display_name: name,
+        display_name: format!("[行政区] {}", name),
         lat,
         lng,
-        bounds,
+        bounds: None,
         address: None,
+        admin_code,
+        kind: "admin".to_string(),
     })
 }
 
@@ -736,7 +702,7 @@ fn parse_tianditu_poi(poi: &serde_json::Value) -> Option<GeocodeResult> {
     let lng: f64 = parts[0].parse().ok()?;
     let lat: f64 = parts[1].parse().ok()?;
 
-    let address = poi.get("address").and_then(|a| a.as_str()).unwrap_or("").to_string();
+    let address = poi.get("address").and_then(|a| a.as_str()).unwrap_or("");
     let display_name = if address.is_empty() {
         name.clone()
     } else {
@@ -750,6 +716,8 @@ fn parse_tianditu_poi(poi: &serde_json::Value) -> Option<GeocodeResult> {
         lng,
         bounds: None,
         address: poi.get("address").cloned(),
+        admin_code: None,
+        kind: "poi".to_string(),
     })
 }
 
@@ -812,6 +780,8 @@ async fn geocode_nominatim(query: &str) -> Result<Vec<GeocodeResult>, String> {
                 lng,
                 bounds,
                 address,
+                admin_code: None,
+                kind: "poi".to_string(),
             })
         })
         .collect();

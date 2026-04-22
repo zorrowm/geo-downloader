@@ -1087,8 +1087,11 @@ pub async fn get_admin_boundary(code: String, to_wgs84: Option<bool>) -> Result<
 
 /// 地名搜索
 #[tauri::command]
-pub async fn geocode_search(query: String) -> Result<Vec<GeocodeResult>, String> {
-    admin::geocode_search(&query).await
+pub async fn geocode_search(
+    query: String,
+    tianditu_token: Option<String>,
+) -> Result<Vec<GeocodeResult>, String> {
+    admin::geocode_search(&query, tianditu_token.as_deref()).await
 }
 
 // ============ 历史记录相关命令 ============
