@@ -20,6 +20,17 @@ struct WaybackEntry {
     #[serde(rename = "itemURL")]
     item_url: String,
     layer_identifier: String,
+    #[serde(default)]
+    metadata_layer_url: Option<String>,
+}
+
+/// 对外暴露的 release 原始信息（供 wayback_metadata 模块复用）
+#[derive(Debug, Clone)]
+pub struct WaybackReleaseRaw {
+    pub item_title: String,
+    pub metadata_layer_url: String,
+    #[allow(dead_code)]
+    pub layer_identifier: String,
 }
 
 /// 前端可显示的 Wayback 版本信息
@@ -82,6 +93,52 @@ pub async fn fetch_versions(proxy: Option<&str>) -> Result<Vec<WaybackVersion>, 
     versions.sort_by(|a, b| b.date.cmp(&a.date));
 
     Ok(versions)
+}
+
+/// 获取所有 release 的"原始详细信息"（供元数据扫描复用）
+///
+/// 返回 HashMap<release_id, WaybackReleaseRaw>，过滤掉缺少 metadata_layer_url 的条目。
+pub async fn fetch_releases_raw(
+    proxy: Option<&str>,
+) -> Result<HashMap<String, WaybackReleaseRaw>, String> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15));
+    if let Some(p) = proxy {
+        if !p.is_empty() {
+            builder = builder.proxy(
+                reqwest::Proxy::all(p).map_err(|e| format!("代理配置错误: {}", e))?,
+            );
+        }
+    }
+    let client = builder.build().map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+
+    let resp = client
+        .get(WAYBACK_CONFIG_URL)
+        .send()
+        .await
+        .map_err(|e| format!("获取 Wayback 配置失败: {}", e))?;
+
+    let map: HashMap<String, WaybackEntry> = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析 Wayback 配置失败: {}", e))?;
+
+    let out: HashMap<String, WaybackReleaseRaw> = map
+        .into_iter()
+        .filter_map(|(id, entry)| {
+            entry.metadata_layer_url.as_ref()?;
+            Some((
+                id,
+                WaybackReleaseRaw {
+                    item_title: entry.item_title,
+                    metadata_layer_url: entry.metadata_layer_url.unwrap_or_default(),
+                    layer_identifier: entry.layer_identifier,
+                },
+            ))
+        })
+        .collect();
+
+    Ok(out)
 }
 
 /// 根据选定的 Wayback 版本 ID 构造 TileSource

@@ -13,6 +13,7 @@ pub mod streaming_raster;
 pub mod pyramid;
 pub mod tiles3d;
 pub mod wayback;
+pub mod wayback_metadata;
 pub mod budget;
 
 // Tauri commands
@@ -30,6 +31,7 @@ use tauri::{
 pub fn run() {
     tauri::Builder::default()
         .manage(Arc::new(TaskManager::new()))
+        .manage(wayback_metadata::new_progress_map())
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -93,6 +95,9 @@ pub fn run() {
             commands::get_wayback_versions,
             commands::create_wayback_task,
             commands::probe_wayback_max_zoom,
+            commands::scan_wayback_metadata,
+            commands::get_wayback_scan_progress,
+            commands::download_wayback_incremental,
             // 更新
             commands::download_and_install_update,
         ])

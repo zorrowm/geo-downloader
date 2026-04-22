@@ -2078,3 +2078,176 @@ pub async fn create_wayback_task(
 
     Ok(CreateTaskResult { task_id, tile_count })
 }
+
+// ============================================================
+// Wayback 增量元数据扫描（按拍摄日期去重）
+// ============================================================
+
+/// 触发或读取 Wayback 元数据扫描结果
+///
+/// - 命中缓存（且未过期、未强制刷新）→ 同步返回
+/// - 否则启动后台扫描，返回 scan_id 用于轮询进度，扫完后再次调用此命令拿结果
+#[derive(Debug, Deserialize)]
+pub struct ScanWaybackRequest {
+    pub bbox: [f64; 4],     // [minLon, minLat, maxLon, maxLat]
+    pub zoom_min: u32,
+    pub zoom_max: u32,
+    #[serde(default)]
+    pub force_refresh: bool,
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScanWaybackResponse {
+    /// 直接返回结果（缓存命中或同步完成）
+    Result(crate::wayback_metadata::WaybackScanResult),
+    /// 后台扫描中
+    Scanning { scan_id: String, total: u32 },
+}
+
+#[tauri::command]
+pub async fn scan_wayback_metadata(
+    req: ScanWaybackRequest,
+    progress: State<'_, crate::wayback_metadata::ScanProgressMap>,
+) -> Result<ScanWaybackResponse, String> {
+    // 1. 缓存优先（除非强制刷新）
+    if !req.force_refresh {
+        if let Some(cached) = crate::wayback_metadata::try_load_cache(&req.bbox, req.zoom_min, req.zoom_max) {
+            return Ok(ScanWaybackResponse::Result(cached));
+        }
+    }
+
+    // 2. 启动后台扫描，返回 scan_id
+    let scan_id = uuid::Uuid::new_v4().to_string();
+    let progress_map = progress.inner().clone();
+    let total_estimate = (192u32) * (crate::wayback_metadata::select_layers(req.zoom_min, req.zoom_max).len() as u32);
+
+    let sid = scan_id.clone();
+    tokio::spawn(async move {
+        let _ = crate::wayback_metadata::scan_metadata(
+            req.bbox,
+            req.zoom_min,
+            req.zoom_max,
+            true,
+            req.proxy,
+            progress_map,
+            sid,
+        )
+        .await;
+    });
+
+    Ok(ScanWaybackResponse::Scanning {
+        scan_id,
+        total: total_estimate,
+    })
+}
+
+#[tauri::command]
+pub async fn get_wayback_scan_progress(
+    scan_id: String,
+    progress: State<'_, crate::wayback_metadata::ScanProgressMap>,
+) -> Result<Option<crate::wayback_metadata::WaybackScanProgress>, String> {
+    Ok(crate::wayback_metadata::get_progress(progress.inner(), &scan_id).await)
+}
+
+/// 按勾选的拍摄日期批量发起下载
+///
+/// 每个 footprint 对应一个 release_id，复用现有 `create_wayback_task` 流水线。
+#[derive(Debug, Deserialize)]
+pub struct WaybackIncrementalRequest {
+    pub bounds: Bounds,
+    pub zoom: u8,
+    pub format: String,
+    pub save_path: String,
+    pub footprints: Vec<WaybackFootprintSelect>,
+    #[serde(default)]
+    pub crop_to_shape: bool,
+    #[serde(default)]
+    pub polygon: Option<Vec<PolygonCoord>>,
+    #[serde(default = "default_compression")]
+    pub compression: String,
+    #[serde(default)]
+    pub build_pyramid: bool,
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WaybackFootprintSelect {
+    pub release_id: String,
+    pub release_date: String,
+    pub capture_date_str: String,
+    pub source_name: String,
+    pub resolution_m: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WaybackIncrementalResult {
+    pub task_ids: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn download_wayback_incremental(
+    app: AppHandle,
+    task_manager: State<'_, Arc<TaskManager>>,
+    req: WaybackIncrementalRequest,
+) -> Result<WaybackIncrementalResult, String> {
+    let mut task_ids = Vec::new();
+    for fp in req.footprints {
+        let safe_source = fp.source_name.replace([' ', '/', '\\'], "_");
+        let task_name = format!(
+            "Wayback {} · {} · {:.2}m",
+            fp.capture_date_str, safe_source, fp.resolution_m
+        );
+        // 输出文件按拍摄日期命名，避免多个任务覆盖同一文件
+        let safe_date = fp.capture_date_str.replace('-', "");
+        let task_save_path = format!(
+            "{}_{}_{}m.{}",
+            strip_ext(&req.save_path),
+            safe_date,
+            (fp.resolution_m * 100.0).round() as i64,
+            ext_of(&req.save_path).unwrap_or_else(|| req.format.clone()),
+        );
+        let polygon = req.polygon.as_ref().map(|p| vec![p.clone()]);
+        let download_request = DownloadRequest {
+            bounds: req.bounds.clone(),
+            zoom: req.zoom,
+            source: format!("wayback_{}", fp.release_id),
+            format: req.format.clone(),
+            proxy: req.proxy.clone(),
+            crop_to_shape: req.crop_to_shape,
+            polygon,
+            tianditu_token: None,
+            save_path: Some(task_save_path),
+            concurrency: default_concurrency(),
+            compression: req.compression.clone(),
+            build_pyramid: req.build_pyramid,
+        };
+        let result = create_wayback_task(
+            app.clone(),
+            task_manager.clone(),
+            download_request,
+            fp.release_id.clone(),
+            fp.release_date.clone(),
+            task_name,
+        )
+        .await?;
+        task_ids.push(result.task_id);
+    }
+    Ok(WaybackIncrementalResult { task_ids })
+}
+
+fn strip_ext(path: &str) -> String {
+    match path.rfind('.') {
+        Some(idx) => path[..idx].to_string(),
+        None => path.to_string(),
+    }
+}
+
+fn ext_of(path: &str) -> Option<String> {
+    path.rfind('.').map(|i| path[i + 1..].to_string())
+}
+
+

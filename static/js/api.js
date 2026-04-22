@@ -349,6 +349,27 @@
         throw new Error('历史影像仅支持桌面版');
     }
 
+    async function scanWaybackMetadata(req) {
+        if (checkTauri()) {
+            return await invoke('scan_wayback_metadata', { req });
+        }
+        throw new Error('历史影像仅支持桌面版');
+    }
+
+    async function getWaybackScanProgress(scanId) {
+        if (checkTauri()) {
+            return await invoke('get_wayback_scan_progress', { scanId });
+        }
+        throw new Error('历史影像仅支持桌面版');
+    }
+
+    async function downloadWaybackIncremental(req) {
+        if (checkTauri()) {
+            return await invoke('download_wayback_incremental', { req });
+        }
+        throw new Error('历史影像仅支持桌面版');
+    }
+
     window.TifApi = {
         _checkIsTauri: checkTauri,
         isDesktopApp: checkTauri,
@@ -401,7 +422,10 @@
         // 历史影像
         getWaybackVersions,
         createWaybackTask,
-        probeWaybackMaxZoom
+        probeWaybackMaxZoom,
+        scanWaybackMetadata,
+        getWaybackScanProgress,
+        downloadWaybackIncremental
     };
 
     console.log('[TifApi] Initialized, Tauri available:', checkTauri());

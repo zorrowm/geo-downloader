@@ -4705,8 +4705,293 @@ function initWaybackBatch() {
             const mode = btn.dataset.dlmode;
             document.getElementById('wayback-single-download').style.display = mode === 'single' ? '' : 'none';
             document.getElementById('wayback-batch-download').style.display = mode === 'batch' ? '' : 'none';
+            const incEl = document.getElementById('wayback-incremental-download');
+            if (incEl) incEl.style.display = mode === 'incremental' ? '' : 'none';
         });
     });
+
+    // 增量下载（按拍摄日期）
+    initWaybackIncremental();
+}
+
+// ==================== Wayback 增量下载（按拍摄日期） ====================
+
+let waybackScanFootprints = []; // 上次扫描结果
+
+function initWaybackIncremental() {
+    const scanBtn = document.getElementById('wayback-scan-btn');
+    if (!scanBtn) return;
+    scanBtn.addEventListener('click', startWaybackScan);
+    document.getElementById('wayback-inc-select-all')?.addEventListener('click', () => {
+        document.querySelectorAll('#wayback-incremental-list input[type="checkbox"]').forEach(cb => cb.checked = true);
+        updateIncrementalCount();
+    });
+    document.getElementById('wayback-inc-select-none')?.addEventListener('click', () => {
+        document.querySelectorAll('#wayback-incremental-list input[type="checkbox"]').forEach(cb => cb.checked = false);
+        updateIncrementalCount();
+    });
+    document.getElementById('wayback-coverage-threshold')?.addEventListener('input', renderIncrementalList);
+    document.getElementById('wayback-only-latest-per-year')?.addEventListener('change', renderIncrementalList);
+    document.getElementById('wayback-incremental-download-btn')?.addEventListener('click', startIncrementalDownload);
+}
+
+async function startWaybackScan() {
+    if (!currentBounds) {
+        alert('请先选择下载区域');
+        return;
+    }
+    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    // 简化：用同一 zoom 作为 min/max；后续可加范围选择器
+    const zMin = Math.max(zoom - 1, 1);
+    const zMax = Math.min(zoom + 1, 22);
+
+    const useProxy = document.getElementById('proxy-checkbox')?.checked;
+    const proxyUrl = document.getElementById('proxy-input')?.value?.trim();
+
+    const scanBtn = document.getElementById('wayback-scan-btn');
+    const progressEl = document.getElementById('wayback-scan-progress');
+    const progressBar = document.getElementById('wayback-scan-progress-bar');
+    const progressText = document.getElementById('wayback-scan-progress-text');
+    const progressPct = document.getElementById('wayback-scan-progress-pct');
+    const summaryEl = document.getElementById('wayback-scan-summary');
+
+    scanBtn.disabled = true;
+    scanBtn.textContent = '扫描中…';
+    summaryEl.style.display = 'none';
+    document.getElementById('wayback-incremental-list').style.display = 'none';
+    document.getElementById('wayback-incremental-actions').style.display = 'none';
+    document.getElementById('wayback-incremental-filters').style.display = 'none';
+
+    const bbox = [currentBounds.west, currentBounds.south, currentBounds.east, currentBounds.north];
+
+    try {
+        const res = await TifApi.scanWaybackMetadata({
+            bbox,
+            zoom_min: zMin,
+            zoom_max: zMax,
+            force_refresh: false,
+            proxy: useProxy && proxyUrl ? proxyUrl : null
+        });
+
+        if (res.kind === 'result') {
+            // 缓存命中，直接展示
+            onWaybackScanComplete(res);
+        } else if (res.kind === 'scanning') {
+            // 后台扫描中，轮询进度
+            progressEl.style.display = '';
+            progressBar.style.width = '0%';
+            progressText.textContent = `扫描中（共 ${res.total} 个查询）…`;
+            await pollWaybackScanProgress(res.scan_id, res.total, bbox, zMin, zMax);
+        }
+    } catch (e) {
+        console.error('扫描失败:', e);
+        alert('扫描失败: ' + (e?.message || e || '未知错误'));
+        scanBtn.disabled = false;
+        scanBtn.textContent = '扫描影像清单';
+        progressEl.style.display = 'none';
+    }
+}
+
+async function pollWaybackScanProgress(scanId, total, bbox, zMin, zMax) {
+    const progressBar = document.getElementById('wayback-scan-progress-bar');
+    const progressText = document.getElementById('wayback-scan-progress-text');
+    const progressPct = document.getElementById('wayback-scan-progress-pct');
+    const scanBtn = document.getElementById('wayback-scan-btn');
+
+    // 每 1.5 秒轮询一次进度；扫描结束后再次调用 scan 拿缓存结果
+    while (true) {
+        await new Promise(r => setTimeout(r, 1500));
+        let progress;
+        try {
+            progress = await TifApi.getWaybackScanProgress(scanId);
+        } catch (e) {
+            console.warn('进度查询失败:', e);
+            continue;
+        }
+        if (!progress) {
+            // 扫描已结束（progress 被清理），重新调 scan 拿缓存结果
+            try {
+                const final = await TifApi.scanWaybackMetadata({
+                    bbox, zoom_min: zMin, zoom_max: zMax, force_refresh: false
+                });
+                if (final.kind === 'result') {
+                    onWaybackScanComplete(final);
+                    return;
+                }
+            } catch (e) {
+                console.error('获取最终结果失败:', e);
+                alert('扫描失败: ' + (e?.message || e || '未知错误'));
+            }
+            scanBtn.disabled = false;
+            scanBtn.textContent = '扫描影像清单';
+            return;
+        }
+        const pct = total > 0 ? Math.round(progress.current / total * 100) : 0;
+        progressBar.style.width = pct + '%';
+        progressPct.textContent = pct + '%';
+        progressText.textContent = `${progress.current}/${total} · 已发现 ${progress.footprints_so_far} 个 footprint · ${progress.elapsed_sec}s`;
+    }
+}
+
+function onWaybackScanComplete(res) {
+    const result = res.kind === 'result' ? res : res;
+    waybackScanFootprints = result.footprints || [];
+    const scanBtn = document.getElementById('wayback-scan-btn');
+    const progressEl = document.getElementById('wayback-scan-progress');
+    const summaryEl = document.getElementById('wayback-scan-summary');
+
+    scanBtn.disabled = false;
+    scanBtn.textContent = '重新扫描';
+    progressEl.style.display = 'none';
+
+    // 按拍摄日期独立计数（已经去重过）
+    const dateSet = new Set(waybackScanFootprints.map(f => f.capture_date_str));
+    summaryEl.style.display = '';
+    summaryEl.innerHTML = `扫描了 <strong>${result.releases_scanned}</strong> 个 release，去重后得到 <strong>${dateSet.size}</strong> 个独立拍摄日期，共 <strong>${waybackScanFootprints.length}</strong> 个 footprint。`;
+
+    document.getElementById('wayback-incremental-filters').style.display = '';
+    document.getElementById('wayback-incremental-list').style.display = '';
+    document.getElementById('wayback-incremental-actions').style.display = '';
+    renderIncrementalList();
+}
+
+function renderIncrementalList() {
+    const listEl = document.getElementById('wayback-incremental-list');
+    if (!listEl) return;
+    const threshold = parseFloat(document.getElementById('wayback-coverage-threshold')?.value || '0') / 100;
+    const onlyLatest = document.getElementById('wayback-only-latest-per-year')?.checked;
+
+    let items = waybackScanFootprints.filter(f => f.coverage_ratio >= threshold);
+
+    if (onlyLatest) {
+        const seenYear = new Set();
+        items = items.filter(f => {
+            const year = f.capture_date_str.slice(0, 4);
+            if (seenYear.has(year)) return false;
+            seenYear.add(year);
+            return true;
+        });
+    }
+
+    if (items.length === 0) {
+        listEl.innerHTML = '<div style="padding:12px;text-align:center;color:rgba(255,255,255,0.4);font-size:12px;">无符合条件的影像</div>';
+        updateIncrementalCount();
+        return;
+    }
+
+    listEl.innerHTML = items.map((f, idx) => {
+        const cov = Math.round((f.coverage_ratio || 0) * 100);
+        const sourceColor = f.source_name.includes('Vivid') ? '#4caf50' : f.source_name.includes('Maxar') ? '#2196f3' : '#9e9e9e';
+        return `<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background=''">
+            <input type="checkbox" data-idx="${idx}" class="wayback-inc-cb" checked>
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${sourceColor};flex-shrink:0;"></span>
+            <span style="flex:1;">
+                <strong>${f.capture_date_str}</strong>
+                <span style="color:rgba(255,255,255,0.5);"> · ${f.source_name || '未知源'} · ${f.resolution_m.toFixed(2)}m</span>
+            </span>
+            <span style="color:rgba(255,255,255,0.6);font-size:11px;">覆盖 ${cov}%</span>
+        </label>`;
+    }).join('');
+
+    // 保存当前列表索引→footprint 引用，供下载用
+    listEl.dataset.items = JSON.stringify(items);
+
+    listEl.querySelectorAll('.wayback-inc-cb').forEach(cb => {
+        cb.addEventListener('change', updateIncrementalCount);
+    });
+    updateIncrementalCount();
+}
+
+function updateIncrementalCount() {
+    const checked = document.querySelectorAll('#wayback-incremental-list input:checked').length;
+    document.getElementById('wayback-inc-count').textContent = checked;
+    document.getElementById('wayback-incremental-download-btn').disabled = checked === 0;
+}
+
+async function startIncrementalDownload() {
+    if (!currentBounds) {
+        alert('请先选择下载区域');
+        return;
+    }
+    const listEl = document.getElementById('wayback-incremental-list');
+    const items = JSON.parse(listEl.dataset.items || '[]');
+    const checked = Array.from(document.querySelectorAll('#wayback-incremental-list input:checked'));
+    if (checked.length === 0) return;
+
+    const selectedFootprints = checked.map(cb => {
+        const f = items[parseInt(cb.dataset.idx)];
+        return {
+            release_id: f.release_id,
+            release_date: f.release_date,
+            capture_date_str: f.capture_date_str,
+            source_name: f.source_name,
+            resolution_m: f.resolution_m
+        };
+    });
+
+    const btn = document.getElementById('wayback-incremental-download-btn');
+    btn.disabled = true;
+    btn.textContent = '选择保存目录…';
+
+    let saveDir = null;
+    if (TifApi._checkIsTauri()) {
+        try {
+            saveDir = await window.__TAURI__.dialog.open({
+                directory: true,
+                title: '选择保存目录'
+            });
+        } catch (e) { console.error(e); }
+    }
+    if (!saveDir) {
+        btn.disabled = false;
+        btn.textContent = '下载选中拍摄日期';
+        return;
+    }
+
+    const format = document.getElementById('wayback-format-select').value;
+    const ext = format === 'geotiff' ? 'tif' : format === 'png' ? 'png' : 'jpg';
+    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    const compression = format === 'geotiff' ? document.getElementById('wayback-compress-select').value : 'none';
+    const useProxy = document.getElementById('proxy-checkbox')?.checked;
+    const proxyUrl = document.getElementById('proxy-input')?.value?.trim();
+    const polygon = currentPolygon ? (Array.isArray(currentPolygon[0]) ? currentPolygon[0] : currentPolygon) : null;
+
+    const savePathBase = `${saveDir}\\wayback_inc.${ext}`;
+
+    btn.textContent = `创建 ${selectedFootprints.length} 个任务…`;
+    try {
+        const result = await TifApi.downloadWaybackIncremental({
+            bounds: currentBounds,
+            zoom,
+            format,
+            save_path: savePathBase,
+            footprints: selectedFootprints,
+            crop_to_shape: document.getElementById('wayback-crop-checkbox').checked,
+            polygon,
+            compression,
+            build_pyramid: false,
+            proxy: useProxy && proxyUrl ? proxyUrl : null
+        });
+        for (let i = 0; i < result.task_ids.length; i++) {
+            const tid = result.task_ids[i];
+            const fp = selectedFootprints[i];
+            const safeSrc = (fp.source_name || '').replace(/[\s/\\]/g, '_');
+            const taskName = `Wayback ${fp.capture_date_str} · ${safeSrc} · ${fp.resolution_m.toFixed(2)}m`;
+            addTaskCardToUI(tid, taskName, `Esri Wayback ${fp.release_date}`, zoom, 0);
+            startTaskListener(tid);
+        }
+        btn.textContent = `已创建 ${result.task_ids.length} 个任务`;
+        switchToDownloadCenter();
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.textContent = '下载选中拍摄日期';
+        }, 1500);
+    } catch (e) {
+        console.error('增量下载失败:', e);
+        alert('增量下载失败: ' + (e?.message || e || '未知错误'));
+        btn.disabled = false;
+        btn.textContent = '下载选中拍摄日期';
+    }
 }
 
 async function startBatchWaybackDownload() {

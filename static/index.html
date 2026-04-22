@@ -514,7 +514,8 @@
                         <!-- 下载模式切换 -->
                         <div class="download-mode-toggle" style="display:flex;gap:4px;margin-bottom:10px;">
                             <button type="button" class="btn btn-sm wayback-dl-mode active" data-dlmode="single" style="flex:1;">单个下载</button>
-                            <button type="button" class="btn btn-sm wayback-dl-mode" data-dlmode="batch" style="flex:1;">📦 批量下载</button>
+                            <button type="button" class="btn btn-sm wayback-dl-mode" data-dlmode="batch" style="flex:1;">批量下载</button>
+                            <button type="button" class="btn btn-sm wayback-dl-mode" data-dlmode="incremental" style="flex:1;" title="按影像拍摄日期去重，避免下载冗余底图">按拍摄日期</button>
                         </div>
 
                         <!-- 单个下载 -->
@@ -541,8 +542,51 @@
                                 已选 <span id="wayback-batch-count">0</span> 个版本
                             </div>
                             <button id="wayback-batch-download-btn" class="btn btn-cta btn-block" disabled style="margin-top:8px;">
-                                📦 批量下载选中版本
+                                批量下载选中版本
                             </button>
+                        </div>
+
+                        <!-- 增量下载（按拍摄日期） -->
+                        <div id="wayback-incremental-download" style="display:none;">
+                            <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:8px;line-height:1.5;">
+                                扫描所有 release 的影像元数据，按 <strong>实际拍摄日期</strong> 去重。同一区域同一时期的影像只会下载一次，避免冗余。<br/>
+                                首次扫描约需 5–10 分钟，结果会缓存 7 天。
+                            </div>
+                            <button id="wayback-scan-btn" class="btn btn-primary btn-block" style="margin-bottom:8px;">
+                                扫描影像清单
+                            </button>
+                            <div id="wayback-scan-progress" style="display:none;margin-bottom:8px;">
+                                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+                                    <span id="wayback-scan-progress-text">扫描中…</span>
+                                    <span id="wayback-scan-progress-pct">0%</span>
+                                </div>
+                                <div style="height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;">
+                                    <div id="wayback-scan-progress-bar" style="height:100%;width:0%;background:#4caf50;transition:width 0.3s;"></div>
+                                </div>
+                            </div>
+                            <div id="wayback-scan-summary" style="display:none;font-size:12px;color:rgba(255,255,255,0.7);margin-bottom:8px;"></div>
+                            <div id="wayback-incremental-filters" style="display:none;margin-bottom:8px;font-size:12px;">
+                                <label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;">
+                                    覆盖率 ≥
+                                    <input type="number" id="wayback-coverage-threshold" min="0" max="100" value="0" style="width:50px;padding:2px 4px;font-size:12px;">%
+                                </label>
+                                <label style="display:inline-flex;align-items:center;gap:4px;">
+                                    <input type="checkbox" id="wayback-only-latest-per-year"> 每年仅最新一期
+                                </label>
+                            </div>
+                            <div id="wayback-incremental-list" style="display:none;max-height:280px;overflow-y:auto;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:4px;margin-bottom:8px;"></div>
+                            <div id="wayback-incremental-actions" style="display:none;">
+                                <div style="display:flex;gap:4px;margin-bottom:6px;">
+                                    <button type="button" id="wayback-inc-select-all" class="btn btn-sm" style="flex:1;font-size:12px;padding:2px 8px;">全选</button>
+                                    <button type="button" id="wayback-inc-select-none" class="btn btn-sm" style="flex:1;font-size:12px;padding:2px 8px;">全不选</button>
+                                </div>
+                                <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:6px;">
+                                    已选 <span id="wayback-inc-count">0</span> 期影像
+                                </div>
+                                <button id="wayback-incremental-download-btn" class="btn btn-cta btn-block" disabled>
+                                    下载选中拍摄日期
+                                </button>
+                            </div>
                         </div>
                     </section>
                     </div><!-- /wayback-mode-content -->
