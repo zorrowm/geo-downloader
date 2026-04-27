@@ -2,7 +2,7 @@
 
 日期：2026-04-22
 关联 issue：#6（DEM 高程下载）
-代码提交：（待提交）
+代码提交：`7acb65c feat(dem): add AWS Terrarium DEM download with Float32 BigTIFF export (#6)`
 
 ---
 

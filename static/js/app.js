@@ -409,6 +409,27 @@ function getTianDiTuToken() {
     return appSettings?.tianditu_token || '';
 }
 
+function readZoomRange(sliderId, maxInputId) {
+    const slider = document.getElementById(sliderId);
+    const maxInput = document.getElementById(maxInputId);
+    const zoom = parseInt(slider?.value || '15', 10);
+    const limit = parseInt(slider?.max || '22', 10);
+    let zoomMax = zoom;
+
+    if (maxInput && maxInput.value.trim() !== '') {
+        const raw = parseInt(maxInput.value, 10);
+        if (!Number.isNaN(raw)) {
+            zoomMax = Math.min(Math.max(raw, zoom), limit);
+        }
+    }
+
+    return { zoom, zoomMax, hasRange: zoomMax > zoom };
+}
+
+function formatZoomRangeLabel(zoom, zoomMax) {
+    return zoomMax > zoom ? `z${zoom}-${zoomMax}` : `z${zoom}`;
+}
+
 async function refreshMapLayers() {
     // 记录当前激活的基础图层
     let activeLayerKey = null;
@@ -994,12 +1015,35 @@ async function initAppVersion() {
 initAppVersion();
 
 function compareVersions(a, b) {
-    const pa = a.split('.').map(Number);
-    const pb = b.split('.').map(Number);
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-        const na = pa[i] || 0, nb = pb[i] || 0;
-        if (na > nb) return 1;
-        if (na < nb) return -1;
+    // SemVer 比较：先比 major.minor.patch，再比 prerelease 标签
+    // 规则：无 prerelease > 有 prerelease；prerelease 内部按 . 分段，数字数字比较，字符串字典序
+    const parse = (v) => {
+        const [core, pre] = v.split('-');
+        const main = core.split('.').map(n => parseInt(n, 10) || 0);
+        const preParts = pre ? pre.split('.').map(p => /^\d+$/.test(p) ? parseInt(p, 10) : p) : null;
+        return { main, pre: preParts };
+    };
+    const va = parse(a), vb = parse(b);
+    for (let i = 0; i < 3; i++) {
+        const na = va.main[i] || 0, nb = vb.main[i] || 0;
+        if (na !== nb) return na > nb ? 1 : -1;
+    }
+    // main 段相等，比较 prerelease
+    if (!va.pre && !vb.pre) return 0;
+    if (!va.pre) return 1;   // 稳定版 > prerelease
+    if (!vb.pre) return -1;
+    for (let i = 0; i < Math.max(va.pre.length, vb.pre.length); i++) {
+        const pa = va.pre[i], pb = vb.pre[i];
+        if (pa === undefined) return -1;
+        if (pb === undefined) return 1;
+        if (typeof pa === 'number' && typeof pb === 'number') {
+            if (pa !== pb) return pa > pb ? 1 : -1;
+        } else if (typeof pa === typeof pb) {
+            if (pa !== pb) return pa > pb ? 1 : -1;
+        } else {
+            // 数字 < 字符串
+            return typeof pa === 'number' ? -1 : 1;
+        }
     }
     return 0;
 }
@@ -1109,10 +1153,18 @@ async function checkForUpdates(silent = false) {
     if (btn) btn.disabled = true;
     
     try {
-        const resp = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`);
+        // 已安装的是 prerelease（含 -beta/-rc 等）时，列出全部 release 取第一条（含 prerelease）；
+        // 稳定版用户走 /releases/latest，避免被 beta 推送打扰。
+        const isPrerelease = APP_VERSION.includes('-');
+        const apiUrl = isPrerelease
+            ? `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=5`
+            : `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+        const resp = await fetch(apiUrl);
         if (!resp.ok) throw new Error('获取更新信息失败');
-        
-        const data = await resp.json();
+
+        const payload = await resp.json();
+        const data = Array.isArray(payload) ? payload.find(r => !r.draft) : payload;
+        if (!data) throw new Error('未找到可用的发布版本');
         const latestVersion = data.tag_name.replace(/^v/, '');
         
         if (compareVersions(latestVersion, APP_VERSION) > 0) {
@@ -1390,6 +1442,7 @@ async function saveAllSettings() {
 // ============ 缩放级别滑块 ============
 function initZoomSlider() {
     const slider = document.getElementById('zoom-slider');
+    const maxInput = document.getElementById('zoom-max-input');
 
     refreshZoomBadge();
 
@@ -1399,6 +1452,14 @@ function initZoomSlider() {
             estimateDownload();
         }
     });
+    if (maxInput) {
+        maxInput.addEventListener('input', () => {
+            refreshZoomBadge();
+            if (currentBounds) {
+                estimateDownload();
+            }
+        });
+    }
 }
 
 // 刷新 zoom badge 显示（读取 slider 当前值和 max）
@@ -1407,7 +1468,7 @@ function refreshZoomBadge() {
     const badge = document.getElementById('zoom-badge');
     if (!slider || !badge) return;
 
-    const z = parseInt(slider.value);
+    const { zoom: z, zoomMax } = readZoomRange('zoom-slider', 'zoom-max-input');
     const maxZ = parseInt(slider.max);
     let level = '';
     if (z <= 3) level = '全球';
@@ -1421,7 +1482,8 @@ function refreshZoomBadge() {
     else if (z <= 19) level = '细节';
     else level = '超清';
 
-    badge.textContent = `z${z} · ${level}级 (最高z${maxZ})`;
+    const rangeText = zoomMax > z ? `~z${zoomMax}` : '';
+    badge.textContent = `z${z}${rangeText} · ${level}级 (最高z${maxZ})`;
 }
 
 // 根据图源更新 zoom slider 最大值
@@ -1436,6 +1498,14 @@ function updateZoomSliderMax(sourceKey) {
     }
 
     slider.max = maxZoom;
+
+    const maxInput = document.getElementById('zoom-max-input');
+    if (maxInput) {
+        maxInput.max = maxZoom;
+        if (maxInput.value && parseInt(maxInput.value) > maxZoom) {
+            maxInput.value = maxZoom;
+        }
+    }
 
     // 如果当前值超出新的最大值，钳位到最大值
     if (parseInt(slider.value) > maxZoom) {
@@ -1862,7 +1932,7 @@ async function estimateDownload() {
         estimateWaybackDownload();
     }
 
-    const zoom = parseInt(document.getElementById('zoom-slider').value);
+    const { zoom, zoomMax } = readZoomRange('zoom-slider', 'zoom-max-input');
     const estimateDiv = document.getElementById('estimate-info');
     const downloadBtn = document.getElementById('download-btn');
     
@@ -1873,7 +1943,7 @@ async function estimateDownload() {
     const cropToShape = cropCheckbox ? cropCheckbox.checked : false;
     
     try {
-        const result = await TifApi.estimateDownload(currentBounds, zoom, format, cropToShape);
+        const result = await TifApi.estimateDownload(currentBounds, zoom, format, cropToShape, zoomMax);
         
         if (result.allowed) {
             estimateDiv.className = 'estimate-card';
@@ -1935,10 +2005,11 @@ async function startDownload() {
     
     // 获取文件格式和默认文件名
     const format = document.getElementById('format-select').value;
-    const zoom = document.getElementById('zoom-slider').value;
+    const { zoom, zoomMax, hasRange } = readZoomRange('zoom-slider', 'zoom-max-input');
     const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
     const ext = format === 'geotiff' ? '.tif' : format === 'png' ? '.png' : '.jpg';
-    const defaultFilename = `map_${timestamp}_z${zoom}${ext}`;
+    const zoomLabel = formatZoomRangeLabel(zoom, zoomMax);
+    const defaultFilename = `map_${timestamp}_${zoomLabel}${ext}`;
     
     // 桌面端：先让用户选择保存路径
     let savePath = null;
@@ -1972,7 +2043,8 @@ async function startDownload() {
     const request = {
         bounds: currentBounds,
         polygon: currentPolygon,
-        zoom: parseInt(zoom),
+        zoom: zoom,
+        zoom_max: hasRange ? zoomMax : null,
         source: document.getElementById('source-select').value,
         format: format,
         crop_to_shape: document.getElementById('crop-checkbox').checked,
@@ -1994,7 +2066,7 @@ async function startDownload() {
             const centerLng = (currentBounds.east + currentBounds.west) / 2;
             const probeResult = await TifApi.probeTile(
                 request.source,
-                request.zoom,
+                request.zoom_max || request.zoom,
                 centerLat,
                 centerLng,
                 request.tianditu_token,
@@ -2004,7 +2076,7 @@ async function startDownload() {
             if (!probeResult.has_data) {
                 const maxZoom = tileSourceConfigs[request.source]?.max_zoom || '?';
                 const proceed = await TifApi.showAskDialog(
-                    `探测发现该区域在 z${request.zoom} 可能无数据\n` +
+                    `探测发现该区域在 ${formatZoomRangeLabel(request.zoom, request.zoom_max || request.zoom)} 的最高级别可能无数据\n` +
                     `${probeResult.message}\n\n` +
                     `该图源最高支持 z${maxZoom}，但部分区域实际覆盖可能低于此级别。\n` +
                     `建议降低缩放级别后重试。\n\n` +
@@ -4391,10 +4463,12 @@ function initWaybackPanel() {
 
     // 缩放滑块
     const zoomSlider = document.getElementById('wayback-zoom-slider');
+    const zoomMaxInput = document.getElementById('wayback-zoom-max-input');
     const zoomBadge = document.getElementById('wayback-zoom-badge');
     if (zoomSlider && zoomBadge) {
         function updateWaybackZoomBadge(val) {
             const z = parseInt(val);
+            const { zoomMax } = readZoomRange('wayback-zoom-slider', 'wayback-zoom-max-input');
             let level = '';
             if (z <= 3) level = '全球';
             else if (z <= 5) level = '大洲';
@@ -4405,13 +4479,20 @@ function initWaybackPanel() {
             else if (z <= 15) level = '街道';
             else if (z <= 17) level = '建筑';
             else level = '细节';
-            zoomBadge.textContent = `z${z} · ${level}级`;
+            const rangeText = zoomMax > z ? `~z${zoomMax}` : '';
+            zoomBadge.textContent = `z${z}${rangeText} · ${level}级`;
         }
         updateWaybackZoomBadge(zoomSlider.value);
         zoomSlider.addEventListener('input', e => {
             updateWaybackZoomBadge(e.target.value);
             estimateWaybackDownload();
         });
+        if (zoomMaxInput) {
+            zoomMaxInput.addEventListener('input', () => {
+                updateWaybackZoomBadge(zoomSlider.value);
+                estimateWaybackDownload();
+            });
+        }
     }
 
     // 并发数滑块
@@ -4479,12 +4560,14 @@ async function probeWaybackMaxZoom() {
 async function estimateWaybackDownload() {
     if (!currentBounds || currentMode !== 'wayback') return;
 
-    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    const { zoom, zoomMax } = readZoomRange('wayback-zoom-slider', 'wayback-zoom-max-input');
     const estimateDiv = document.getElementById('wayback-estimate-info');
     const dlBtn = document.getElementById('download-wayback-btn');
 
     try {
-        const result = await TifApi.estimateDownload(currentBounds, zoom);
+        const format = document.getElementById('wayback-format-select')?.value;
+        const cropToShape = document.getElementById('wayback-crop-checkbox')?.checked || false;
+        const result = await TifApi.estimateDownload(currentBounds, zoom, format, cropToShape, zoomMax);
         if (result.allowed) {
             estimateDiv.className = 'estimate-card';
             estimateDiv.innerHTML = `<strong>${result.tile_count.toLocaleString()}</strong> 个瓦片 · 约 <strong>${result.estimated_size_mb.toFixed(1)} MB</strong>`;
@@ -4518,13 +4601,14 @@ async function startWaybackDownload() {
     const versionDate = selectedOpt.dataset.date;
 
     const format = document.getElementById('wayback-format-select').value;
-    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    const { zoom, zoomMax, hasRange } = readZoomRange('wayback-zoom-slider', 'wayback-zoom-max-input');
     const concurrency = parseInt(document.getElementById('wayback-concurrency-slider').value);
     const compression = format === 'geotiff' ? document.getElementById('wayback-compress-select').value : 'none';
 
     const ext = format === 'geotiff' ? '.tif' : format === 'png' ? '.png' : '.jpg';
     const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-    const defaultFilename = `wayback_${versionDate}_z${zoom}_${timestamp}${ext}`;
+    const zoomLabel = formatZoomRangeLabel(zoom, zoomMax);
+    const defaultFilename = `wayback_${versionDate}_${zoomLabel}_${timestamp}${ext}`;
 
     // 选择保存路径
     let savePath = null;
@@ -4546,6 +4630,7 @@ async function startWaybackDownload() {
         bounds: currentBounds,
         polygon: currentPolygon,
         zoom: zoom,
+        zoom_max: hasRange ? zoomMax : null,
         source: 'esri_wayback',
         format: format,
         crop_to_shape: document.getElementById('wayback-crop-checkbox').checked,
@@ -4556,7 +4641,7 @@ async function startWaybackDownload() {
         compression: compression
     };
 
-    const taskName = `Wayback ${versionDate} z${zoom}`;
+    const taskName = `Wayback ${versionDate} ${zoomLabel}`;
 
     try {
         dlBtn.disabled = true;
@@ -4820,7 +4905,7 @@ async function startWaybackScan() {
         alert('请先选择下载区域');
         return;
     }
-    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    const { zoom } = readZoomRange('wayback-zoom-slider', 'wayback-zoom-max-input');
     // 简化：用同一 zoom 作为 min/max；后续可加范围选择器
     const zMin = Math.max(zoom - 1, 1);
     const zMax = Math.min(zoom + 1, 22);
@@ -5066,6 +5151,7 @@ async function startIncrementalDownload() {
         const result = await TifApi.downloadWaybackIncremental({
             bounds: currentBounds,
             zoom,
+            zoom_max: hasRange ? zoomMax : null,
             format,
             save_path: savePathBase,
             footprints: selectedFootprints,
@@ -5080,7 +5166,7 @@ async function startIncrementalDownload() {
             const fp = selectedFootprints[i];
             const safeSrc = (fp.source_name || '').replace(/[\s/\\]/g, '_');
             const taskName = `Wayback ${fp.capture_date_str} · ${safeSrc} · ${fp.resolution_m.toFixed(2)}m`;
-            addTaskCardToUI(tid, taskName, `Esri Wayback ${fp.release_date}`, zoom, 0);
+            addTaskCardToUI(tid, `${taskName} · ${zoomLabel}`, `Esri Wayback ${fp.release_date}`, zoom, 0);
             startTaskListener(tid);
         }
         btn.textContent = `已创建 ${result.task_ids.length} 个任务`;
@@ -5111,7 +5197,8 @@ async function startBatchWaybackDownload() {
     batchBtn.textContent = '创建任务中...';
 
     const format = document.getElementById('wayback-format-select').value;
-    const zoom = parseInt(document.getElementById('wayback-zoom-slider').value);
+    const { zoom, zoomMax, hasRange } = readZoomRange('wayback-zoom-slider', 'wayback-zoom-max-input');
+    const zoomLabel = formatZoomRangeLabel(zoom, zoomMax);
     const concurrency = parseInt(document.getElementById('wayback-concurrency-slider').value);
     const compression = format === 'geotiff' ? document.getElementById('wayback-compress-select').value : 'none';
     const useProxy = document.getElementById('proxy-checkbox')?.checked;
@@ -5137,13 +5224,14 @@ async function startBatchWaybackDownload() {
         const versionId = cb.value;
         const versionDate = cb.dataset.date;
         const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-        const filename = `wayback_${versionDate}_z${zoom}_${timestamp}${ext}`;
+        const filename = `wayback_${versionDate}_${zoomLabel}_${timestamp}${ext}`;
         const savePath = saveDir ? `${saveDir}\\${filename}` : null;
 
         const request = {
             bounds: currentBounds,
             polygon: currentPolygon,
             zoom,
+            zoom_max: hasRange ? zoomMax : null,
             source: 'esri_wayback',
             format,
             crop_to_shape: document.getElementById('wayback-crop-checkbox').checked,
@@ -5154,7 +5242,7 @@ async function startBatchWaybackDownload() {
             compression
         };
 
-        const taskName = `Wayback ${versionDate} z${zoom}`;
+        const taskName = `Wayback ${versionDate} ${zoomLabel}`;
 
         try {
             batchBtn.textContent = `创建中 (${++created}/${checked.length})...`;

@@ -62,6 +62,9 @@ pub struct WaybackScanResult {
     pub bbox: [f64; 4],
     pub zoom_min: u32,
     pub zoom_max: u32,
+    /// 生成该缓存/扫描结果时使用的模式："fast" 或 "fine"
+    #[serde(default = "default_scan_mode")]
+    pub scan_mode: String,
     pub scanned_at: String,
     pub expires_at: String,
     pub releases_scanned: u32,
@@ -139,6 +142,18 @@ pub fn select_layers(z_min: u32, z_max: u32) -> Vec<u32> {
     v
 }
 
+fn default_scan_mode() -> String {
+    "fast".to_string()
+}
+
+/// 规范化前端传入的扫描模式，避免未知值污染缓存键。
+pub fn normalize_scan_mode(scan_mode: Option<&str>) -> String {
+    match scan_mode {
+        Some("fine") => "fine".to_string(),
+        _ => "fast".to_string(),
+    }
+}
+
 // ============================================================
 // 进度跟踪
 // ============================================================
@@ -192,24 +207,25 @@ fn cache_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "无法获取缓存目录".to_string())
 }
 
-/// bbox + zoom 范围的稳定哈希前缀，用作缓存文件名
-fn cache_key(bbox: &[f64; 4], z_min: u32, z_max: u32) -> String {
+/// bbox + zoom 范围 + 扫描模式的稳定哈希前缀，用作缓存文件名
+fn cache_key(bbox: &[f64; 4], z_min: u32, z_max: u32, scan_mode: &str) -> String {
+    let scan_mode = normalize_scan_mode(Some(scan_mode));
     let s = format!(
-        "{:.6},{:.6},{:.6},{:.6}|{}|{}",
-        bbox[0], bbox[1], bbox[2], bbox[3], z_min, z_max
+        "{:.6},{:.6},{:.6},{:.6}|{}|{}|{}",
+        bbox[0], bbox[1], bbox[2], bbox[3], z_min, z_max, scan_mode
     );
     let h = simple_hash64(s.as_bytes());
     format!("{:016x}", h)
 }
 
-fn cache_path(bbox: &[f64; 4], z_min: u32, z_max: u32) -> Result<PathBuf, String> {
+fn cache_path(bbox: &[f64; 4], z_min: u32, z_max: u32, scan_mode: &str) -> Result<PathBuf, String> {
     let dir = cache_dir()?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建缓存目录失败: {}", e))?;
-    Ok(dir.join(format!("{}.json", cache_key(bbox, z_min, z_max))))
+    Ok(dir.join(format!("{}.json", cache_key(bbox, z_min, z_max, scan_mode))))
 }
 
-fn load_cache(bbox: &[f64; 4], z_min: u32, z_max: u32) -> Option<WaybackScanResult> {
-    let path = cache_path(bbox, z_min, z_max).ok()?;
+fn load_cache(bbox: &[f64; 4], z_min: u32, z_max: u32, scan_mode: &str) -> Option<WaybackScanResult> {
+    let path = cache_path(bbox, z_min, z_max, scan_mode).ok()?;
     if !path.exists() {
         return None;
     }
@@ -223,12 +239,12 @@ fn load_cache(bbox: &[f64; 4], z_min: u32, z_max: u32) -> Option<WaybackScanResu
 }
 
 /// 对外暴露的缓存读取入口
-pub fn try_load_cache(bbox: &[f64; 4], z_min: u32, z_max: u32) -> Option<WaybackScanResult> {
-    load_cache(bbox, z_min, z_max)
+pub fn try_load_cache(bbox: &[f64; 4], z_min: u32, z_max: u32, scan_mode: &str) -> Option<WaybackScanResult> {
+    load_cache(bbox, z_min, z_max, scan_mode)
 }
 
 fn save_cache(result: &WaybackScanResult) -> Result<(), String> {
-    let path = cache_path(&result.bbox, result.zoom_min, result.zoom_max)?;
+    let path = cache_path(&result.bbox, result.zoom_min, result.zoom_max, &result.scan_mode)?;
     let json = serde_json::to_vec(result).map_err(|e| format!("序列化缓存失败: {}", e))?;
     std::fs::write(&path, json).map_err(|e| format!("写入缓存失败: {}", e))?;
     prune_cache_lru().ok();
@@ -277,10 +293,13 @@ pub async fn scan_metadata(
     scan_id: String,
     scan_mode: String,
 ) -> Result<WaybackScanResult, String> {
+    let scan_mode = normalize_scan_mode(Some(&scan_mode));
+
     if !force_refresh {
-        if let Some(cached) = load_cache(&bbox, z_min, z_max) {
+        if let Some(cached) = load_cache(&bbox, z_min, z_max, &scan_mode) {
             log::info!(
-                "wayback metadata: 使用缓存 ({} footprints, scanned_at {})",
+                "wayback metadata: 使用缓存 (mode={}, {} footprints, scanned_at {})",
+                cached.scan_mode,
                 cached.footprints.len(),
                 cached.scanned_at
             );
@@ -394,6 +413,7 @@ pub async fn scan_metadata(
         bbox,
         zoom_min: z_min,
         zoom_max: z_max,
+        scan_mode,
         scanned_at: now.to_rfc3339(),
         expires_at: (now + chrono::Duration::seconds(CACHE_TTL_SEC)).to_rfc3339(),
         releases_scanned: release_count as u32,
@@ -824,6 +844,31 @@ fn simple_hash64(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(mul);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_scan_mode_defaults_unknown_values_to_fast() {
+        assert_eq!(normalize_scan_mode(None), "fast");
+        assert_eq!(normalize_scan_mode(Some("fast")), "fast");
+        assert_eq!(normalize_scan_mode(Some("fine")), "fine");
+        assert_eq!(normalize_scan_mode(Some("unexpected")), "fast");
+    }
+
+    #[test]
+    fn cache_key_separates_fast_and_fine_modes() {
+        let bbox = [116.1234567, 39.1234567, 116.7654321, 39.7654321];
+
+        let fast = cache_key(&bbox, 12, 18, "fast");
+        let fine = cache_key(&bbox, 12, 18, "fine");
+        let unknown = cache_key(&bbox, 12, 18, "unexpected");
+
+        assert_ne!(fast, fine);
+        assert_eq!(fast, unknown);
+    }
 }
 
 fn parse_release_date(item_title: &str) -> String {

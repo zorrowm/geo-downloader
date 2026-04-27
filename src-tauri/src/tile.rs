@@ -157,6 +157,20 @@ pub fn estimate_tile_count(bounds: &Bounds, zoom: u8) -> u32 {
     cols.saturating_mul(rows).min(u32::MAX as u64) as u32
 }
 
+/// 估算多个缩放级别区间的瓦片总数（饱和加法防 u32 溢出）
+pub fn estimate_tile_count_range(bounds: &Bounds, zoom_min: u8, zoom_max: u8) -> u32 {
+    let lo = clamp_zoom(zoom_min);
+    let hi = clamp_zoom(zoom_max).max(lo);
+    let mut total: u64 = 0;
+    for z in lo..=hi {
+        total = total.saturating_add(estimate_tile_count(bounds, z) as u64);
+        if total >= u32::MAX as u64 {
+            return u32::MAX;
+        }
+    }
+    total as u32
+}
+
 /// 计算给定纬度和缩放级别的每像素米数
 pub fn meters_per_pixel(lat: f64, zoom: u8) -> f64 {
     const EARTH_CIRCUMFERENCE: f64 = 40075016.686;

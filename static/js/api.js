@@ -28,14 +28,14 @@
         return {};
     }
 
-    async function estimateDownload(bounds, zoom, format, cropToShape) {
+    async function estimateDownload(bounds, zoom, format, cropToShape, zoomMax = null) {
         if (checkTauri()) {
-            return await invoke('estimate_download', { bounds, zoom, format: format || null, crop_to_shape: cropToShape || false });
+            return await invoke('estimate_download', { bounds, zoom, zoom_max: zoomMax, format: format || null, crop_to_shape: cropToShape || false });
         }
         const res = await fetch('/api/estimate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ bounds, zoom })
+            body: JSON.stringify({ bounds, zoom, zoom_max: zoomMax })
         });
         if (!res.ok) throw new Error('Failed to estimate');
         return res.json();

@@ -25,6 +25,10 @@ use tauri::{AppHandle, Emitter, State};
 pub struct DownloadRequest {
     pub bounds: Bounds,
     pub zoom: u8,
+    /// 多级别下载的最大缩放级别（None 时退化为单级 = zoom）
+    /// 当 zoom_max > zoom 时，按 zoom..=zoom_max 逐级下载，输出到 <save_path 父目录>/z<N>/<文件名>
+    #[serde(default)]
+    pub zoom_max: Option<u8>,
     pub source: String,
     pub format: String,
     #[serde(default)]
@@ -146,14 +150,20 @@ pub fn get_system_memory() -> Option<budget::SystemMemoryInfo> {
 
 /// 估算下载大小
 #[tauri::command]
-pub fn estimate_download(bounds: Bounds, zoom: u8, format: Option<String>, crop_to_shape: Option<bool>) -> EstimateResult {
-    let (_x_min, _y_min, _x_max, _y_max, cols, rows) = tile::get_tile_matrix_size(&bounds, zoom);
-    let tile_count = cols * rows;
+pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format: Option<String>, crop_to_shape: Option<bool>) -> EstimateResult {
+    let z_min = zoom;
+    let z_max = zoom_max.unwrap_or(zoom).max(zoom);
+    let multi_zoom = z_max > z_min;
+
+    // 当前级（z_max）的矩阵作为预算/警告基准（最高级别瓦片数最多，也是单文件最大尺寸）
+    let (_x_min, _y_min, _x_max, _y_max, cols, rows) = tile::get_tile_matrix_size(&bounds, z_max);
+    // 跨级总瓦片数
+    let tile_count = tile::estimate_tile_count_range(&bounds, z_min, z_max);
     let avg_tile_size_kb = 20.0;
     let estimated_size_mb = (tile_count as f64 * avg_tile_size_kb) / 1024.0;
-    
+
     let max_tiles = 500_000u32;
-    
+
     if tile_count > max_tiles {
         return EstimateResult {
             tile_count,
@@ -161,7 +171,12 @@ pub fn estimate_download(bounds: Bounds, zoom: u8, format: Option<String>, crop_
             rows,
             estimated_size_mb,
             allowed: false,
-            warning: Some(format!("区域过大（{} 个瓦片），超过 {} 个上限。请缩小区域或降低缩放级别。", tile_count, max_tiles)),
+            warning: Some(format!(
+                "区域过大（{} 个瓦片{}），超过 {} 个上限。请缩小区域或降低缩放级别。",
+                tile_count,
+                if multi_zoom { format!("，跨 z{}~z{} 共 {} 级", z_min, z_max, z_max - z_min + 1) } else { String::new() },
+                max_tiles
+            )),
             budget_check: None,
             raw_size_mb: None,
             size_note: None,
@@ -205,15 +220,24 @@ pub fn estimate_download(bounds: Bounds, zoom: u8, format: Option<String>, crop_
 
     // GeoTIFF 预估未压缩原始大小 + 说明
     let (raw_size_mb, size_note) = if is_geotiff {
-        let raw = cols as f64 * rows as f64 * 256.0 * 256.0 * 3.0 / (1024.0 * 1024.0);
-        let note = if raw > 100.0 {
-            Some("卫星影像 LZW 压缩效率低，实际文件接近未压缩大小；矢量地图可压缩至 1/5~1/10".to_string())
+        // 多 zoom 时是各级文件之和；单 zoom 时即单文件大小
+        let raw = tile_count as f64 * 256.0 * 256.0 * 3.0 / (1024.0 * 1024.0);
+        let mut notes: Vec<String> = Vec::new();
+        if raw > 100.0 {
+            notes.push("卫星影像 LZW 压缩效率低，实际文件接近未压缩大小；矢量地图可压缩至 1/5~1/10".to_string());
+        }
+        if multi_zoom {
+            notes.push(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", z_max - z_min + 1, z_min, z_max));
+        }
+        let note = if notes.is_empty() { None } else { Some(notes.join("；")) };
+        (Some(raw), note)
+    } else {
+        let note = if multi_zoom {
+            Some(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", z_max - z_min + 1, z_min, z_max))
         } else {
             None
         };
-        (Some(raw), note)
-    } else {
-        (None, None)
+        (None, note)
     };
 
     EstimateResult {
@@ -253,8 +277,10 @@ pub async fn create_download_task(
     let source = sources.get(&request.source)
         .ok_or_else(|| format!("未知图源: {}", request.source))?.clone();
     
-    // 估算瓦片数
-    let tile_count = tile::estimate_tile_count(&request.bounds, request.zoom);
+    // 估算瓦片数（跨级求和；单级时退化为 estimate_tile_count）
+    let z_min = request.zoom;
+    let z_max = request.zoom_max.unwrap_or(z_min).max(z_min);
+    let tile_count = tile::estimate_tile_count_range(&request.bounds, z_min, z_max);
     
     // 生成任务 ID
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -370,46 +396,43 @@ fn task_log(app: &AppHandle, tm: &Arc<TaskManager>, task_id: &str, level: &str, 
     }
 }
 
-/// 执行下载任务的核心逻辑
-async fn execute_download_task(
+/// 单级别下载结果（execute_zoom_level 返回值）
+struct ZoomLevelResult {
+    file_size: u64,
+    actual_count: u32,
+    failed_count: u32,
+    no_data: u32,
+    pyramid_built: bool,
+}
+
+/// 执行单个 zoom 级别的下载（核心逻辑，被 execute_download_task 循环调用）
+async fn execute_zoom_level(
     app: &AppHandle,
     tm: &Arc<TaskManager>,
     task_id: &str,
     cancel_token: &tokio_util::sync::CancellationToken,
     pause_control: &PauseControl,
-    mut request: DownloadRequest,
+    request: &DownloadRequest,
     source: TileSource,
+    current_zoom: u8,
     save_path: String,
-    _tile_count: u32,
-    task_name: &str,
-    source_name: &str,
-) -> Result<(), String> {
+    temp_dir: std::path::PathBuf,
+    progress_offset: f64,
+    progress_span: f64,
+    completed_offset: u32,
+    failed_offset: u32,
+    total_tiles: u32,
+) -> Result<ZoomLevelResult, String> {
     let event_name = format!("task-progress-{}", task_id);
-    let start_time = std::time::Instant::now();
+    let level_start = std::time::Instant::now();
+    let prog_off = progress_offset;
+    let prog_span = progress_span;
+    let map_progress = |p: f64| -> f64 { prog_off + p * prog_span / 100.0 };
 
-    // 矩形裁剪：用户画矩形时 polygon 为空，自动从 bounds 生成矩形多边形
-    if request.crop_to_shape && request.polygon.is_none() {
-        let b = &request.bounds;
-        request.polygon = Some(vec![vec![
-            PolygonCoord { lat: b.north, lng: b.west },
-            PolygonCoord { lat: b.north, lng: b.east },
-            PolygonCoord { lat: b.south, lng: b.east },
-            PolygonCoord { lat: b.south, lng: b.west },
-        ]]);
-    }
-    
-    // 记录任务参数
-    task_log(app, tm, task_id, "INFO", &format!("=== 任务开始: {} ===", task_name));
-    task_log(app, tm, task_id, "INFO", &format!("图源: {} ({})", source_name, request.source));
-    task_log(app, tm, task_id, "INFO", &format!("缩放级别: z{}", request.zoom));
-    task_log(app, tm, task_id, "INFO", &format!("输出格式: {}", request.format));
+    task_log(app, tm, task_id, "INFO", &format!("--- 级别 z{} 开始 ---", current_zoom));
     task_log(app, tm, task_id, "INFO", &format!("保存路径: {}", save_path));
-    task_log(app, tm, task_id, "INFO", &format!("并发数: {}", request.concurrency));
     if request.crop_to_shape {
         task_log(app, tm, task_id, "INFO", "启用边界裁剪");
-    }
-    if request.compression != "none" {
-        task_log(app, tm, task_id, "INFO", &format!("启用 {} 压缩", request.compression.to_uppercase()));
     }
     
     // 记录原始 bounds 坐标（便于问题诊断）
@@ -442,9 +465,9 @@ async fn execute_download_task(
     }
     
     // 获取瓦片列表
-    let tiles = tile::get_tiles_in_bounds(&request.bounds, request.zoom);
+    let tiles = tile::get_tiles_in_bounds(&request.bounds, current_zoom);
     let actual_count = tiles.len() as u32;
-    let (x_min, y_min, x_max, y_max, cols, rows) = tile::get_tile_matrix_size(&request.bounds, request.zoom);
+    let (x_min, y_min, x_max, y_max, cols, rows) = tile::get_tile_matrix_size(&request.bounds, current_zoom);
     task_log(app, tm, task_id, "INFO", &format!(
         "瓦片数量: {}，矩阵: {}列×{}行，范围: x[{}-{}] y[{}-{}]",
         actual_count, cols, rows, x_min, x_max, y_min, y_max
@@ -460,8 +483,7 @@ async fn execute_download_task(
         }
     }
     
-    // 创建临时目录
-    let temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task_id));
+    // 临时目录由调用方传入并已创建（多 zoom 时按 zoom 区分子目录）
     std::fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("创建临时目录失败: {}", e))?;
     task_log(app, tm, task_id, "INFO", &format!("瓦片临时目录: {}", temp_dir.display()));
@@ -471,7 +493,7 @@ async fn execute_download_task(
     
     // 更新状态: 下载中
     task_log(app, tm, task_id, "INFO", "开始下载瓦片...");
-    tm.update_progress(task_id, TaskStatus::Downloading, 0.0, 0, 0, Some("开始下载...".to_string()));
+    tm.update_progress(task_id, TaskStatus::Downloading, progress_offset, completed_offset, failed_offset, Some("开始下载...".to_string()));
     
     let app_c = app.clone();
     let en = event_name.clone();
@@ -484,11 +506,14 @@ async fn execute_download_task(
     let no_data_tracker = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let no_data_tracker_c = no_data_tracker.clone();
     
+    let prog_off_dl = prog_off;
+    let prog_span_dl = prog_span;
     let tile_files = downloader.download_tiles(tiles, concurrency, &temp_dir, Some(cancel_token), Some(pause_control), move |progress| {
         no_data_tracker_c.store(progress.no_data, std::sync::atomic::Ordering::Relaxed);
         let p = progress.percent();
-        // 映射到 0-85% 范围
-        let mapped = p * 0.85;
+        // 映射到本级 0-85% 范围，再映射到全局
+        let local_mapped = p * 0.85;
+        let mapped = prog_off_dl + local_mapped * prog_span_dl / 100.0;
         
         // 检测重试状态变化，记录日志
         let is_terminal = progress.status == "completed" || progress.status == "completed_with_errors" || progress.status == "completed_with_no_data";
@@ -512,13 +537,15 @@ async fn execute_download_task(
             format!("{} ({}/{})", progress.status, progress.completed, progress.total)
         };
         
-        tm_c.update_progress(&tid, TaskStatus::Downloading, mapped, progress.completed, progress.failed, Some(display_msg.clone()));
+        let completed_global = completed_offset.saturating_add(progress.completed);
+        let failed_global = failed_offset.saturating_add(progress.failed);
+        tm_c.update_progress(&tid, TaskStatus::Downloading, mapped, completed_global, failed_global, Some(display_msg.clone()));
         let _ = app_c.emit(&en, TaskProgressPayload {
             task_id: tid.clone(),
             status: "downloading".to_string(),
             progress: mapped,
-            completed: progress.completed,
-            total: progress.total,
+            completed: completed_global,
+            total: total_tiles,
             message: Some(display_msg),
         });
         // 每10%记录一次日志
@@ -538,7 +565,9 @@ async fn execute_download_task(
     let failed_count = actual_count - tile_files.len() as u32;
     let no_data_final = no_data_tracker.load(std::sync::atomic::Ordering::Relaxed);
     let real_failed = if failed_count > no_data_final { failed_count - no_data_final } else { 0 };
-    let download_elapsed = start_time.elapsed();
+    let download_elapsed = level_start.elapsed();
+    let completed_after_download = completed_offset.saturating_add(actual_count.saturating_sub(failed_count));
+    let failed_after_download = failed_offset.saturating_add(failed_count);
     
     let mut summary_parts = vec![format!("成功 {} 张", tile_files.len())];
     if no_data_final > 0 {
@@ -586,17 +615,18 @@ async fn execute_download_task(
             actual_count,
             if has_crop { "，含多边形裁剪" } else { "" }
         ));
-        tm.update_progress(task_id, TaskStatus::Exporting, 88.0, actual_count - failed_count, failed_count, Some(format!("流式导出 {}...", format_label)));
+        let p_export = map_progress(88.0);
+        tm.update_progress(task_id, TaskStatus::Exporting, p_export, completed_after_download, failed_after_download, Some(format!("流式导出 {}...", format_label)));
         let _ = app.emit(&event_name, TaskProgressPayload {
             task_id: task_id.to_string(),
             status: "exporting".to_string(),
-            progress: 88.0,
-            completed: actual_count - failed_count,
-            total: actual_count,
+            progress: p_export,
+            completed: completed_after_download,
+            total: total_tiles,
             message: Some(format!("流式导出 {}...", format_label)),
         });
         
-        let merged_bounds = tile::get_merged_bounds(x_min, y_min, x_max, y_max, request.zoom);
+        let merged_bounds = tile::get_merged_bounds(x_min, y_min, x_max, y_max, current_zoom);
         let sp = save_path.clone();
         let compression = request.compression.clone();
 
@@ -651,13 +681,14 @@ async fn execute_download_task(
 
         task_log(app, tm, task_id, "INFO", "使用常规内存拼接路径");
         task_log(app, tm, task_id, "INFO", "开始拼接瓦片...");
-        tm.update_progress(task_id, TaskStatus::Merging, 88.0, actual_count - failed_count, failed_count, Some("拼接中...".to_string()));
+        let p_merge = map_progress(88.0);
+        tm.update_progress(task_id, TaskStatus::Merging, p_merge, completed_after_download, failed_after_download, Some("拼接中...".to_string()));
         let _ = app.emit(&event_name, TaskProgressPayload {
             task_id: task_id.to_string(),
             status: "merging".to_string(),
-            progress: 88.0,
-            completed: actual_count - failed_count,
-            total: actual_count,
+            progress: p_merge,
+            completed: completed_after_download,
+            total: total_tiles,
             message: Some("拼接瓦片...".to_string()),
         });
         
@@ -670,17 +701,18 @@ async fn execute_download_task(
         }
         
         task_log(app, tm, task_id, "INFO", &format!("拼接完成，开始导出 {}...", request.format.to_uppercase()));
-        tm.update_progress(task_id, TaskStatus::Exporting, 93.0, actual_count - failed_count, failed_count, Some("导出中...".to_string()));
+        let p_export = map_progress(93.0);
+        tm.update_progress(task_id, TaskStatus::Exporting, p_export, completed_after_download, failed_after_download, Some("导出中...".to_string()));
         let _ = app.emit(&event_name, TaskProgressPayload {
             task_id: task_id.to_string(),
             status: "exporting".to_string(),
-            progress: 93.0,
-            completed: actual_count - failed_count,
-            total: actual_count,
+            progress: p_export,
+            completed: completed_after_download,
+            total: total_tiles,
             message: Some(format!("导出 {}...", request.format.to_uppercase())),
         });
         
-        let merged_bounds = tile::get_merged_bounds(x_min, y_min, x_max, y_max, request.zoom);
+        let merged_bounds = tile::get_merged_bounds(x_min, y_min, x_max, y_max, current_zoom);
         let format = ExportFormat::from_str(&request.format);
         let crop_to_shape = request.crop_to_shape;
         let polygon_opt = request.polygon.clone();
@@ -708,13 +740,14 @@ async fn execute_download_task(
     let mut pyramid_built = false;
     if request.build_pyramid && is_geotiff {
         task_log(app, tm, task_id, "INFO", "开始构建影像金字塔...");
-        tm.update_progress(task_id, TaskStatus::Exporting, 95.0, actual_count - failed_count, failed_count, Some("构建金字塔...".to_string()));
+        let p_pyr = map_progress(95.0);
+        tm.update_progress(task_id, TaskStatus::Exporting, p_pyr, completed_after_download, failed_after_download, Some("构建金字塔...".to_string()));
         let _ = app.emit(&event_name, TaskProgressPayload {
             task_id: task_id.to_string(),
             status: "building_pyramid".to_string(),
-            progress: 95.0,
-            completed: actual_count - failed_count,
-            total: actual_count,
+            progress: p_pyr,
+            completed: completed_after_download,
+            total: total_tiles,
             message: Some("构建金字塔...".to_string()),
         });
 
@@ -722,21 +755,26 @@ async fn execute_download_task(
         let pyramid_compression = request.compression.clone();
         let app_clone = app.clone();
         let event_clone = event_name.clone();
-        let total_tiles = actual_count;
-        let failed_tiles = failed_count;
+        let pyramid_task_id = task_id.to_string();
+        let pyramid_completed = completed_after_download;
+        let pyramid_total = total_tiles;
 
+        let pyr_off = prog_off;
+        let pyr_span = prog_span;
         let pyramid_result = tokio::task::spawn_blocking(move || {
             pyramid::build_pyramid(
                 &pyramid_path,
                 pyramid::PyramidOptions {
                     compression: pyramid_compression,
                     progress_cb: Some(Box::new(move |current, total| {
+                        let local_p = 95.0 + (current as f64 / total as f64) * 4.0;
+                        let mapped_p = pyr_off + local_p * pyr_span / 100.0;
                         let _ = app_clone.emit(&event_clone, TaskProgressPayload {
-                            task_id: String::new(),
+                            task_id: pyramid_task_id.clone(),
                             status: "building_pyramid".to_string(),
-                            progress: 95.0 + (current as f64 / total as f64) * 4.0,
-                            completed: total_tiles - failed_tiles,
-                            total: total_tiles,
+                            progress: mapped_p,
+                            completed: pyramid_completed,
+                            total: pyramid_total,
                             message: Some(format!("构建金字塔 {}/{}...", current + 1, total)),
                         });
                     })),
@@ -765,23 +803,206 @@ async fn execute_download_task(
         }
     }
 
-    // 标记完成，清理临时文件和持久化任务
-    let total_elapsed = start_time.elapsed();
     let size_mb = file_size as f64 / 1024.0 / 1024.0;
-    task_log(app, tm, task_id, "INFO", &format!("=== 任务完成 === 文件大小: {:.1} MB，总耗时: {:.1}s", size_mb, total_elapsed.as_secs_f64()));
+    task_log(app, tm, task_id, "INFO", &format!(
+        "--- 级别 z{} 完成 --- 文件大小: {:.1} MB，耗时: {:.1}s",
+        current_zoom,
+        size_mb,
+        level_start.elapsed().as_secs_f64()
+    ));
+
+    Ok(ZoomLevelResult {
+        file_size,
+        actual_count,
+        failed_count,
+        no_data: no_data_final,
+        pyramid_built,
+    })
+}
+
+fn zoom_level_save_path(save_path: &str, zoom: u8, multi_zoom: bool) -> Result<String, String> {
+    if !multi_zoom {
+        return Ok(save_path.to_string());
+    }
+
+    let original = Path::new(save_path);
+    let parent = original
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let zoom_dir = parent.join(format!("z{}", zoom));
+    std::fs::create_dir_all(&zoom_dir)
+        .map_err(|e| format!("创建级别输出目录失败: {}", e))?;
+
+    let stem = original
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("map");
+    let file_name = match original.extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.is_empty() => format!("{}_z{}.{}", stem, zoom, ext),
+        _ => format!("{}_z{}", stem, zoom),
+    };
+
+    Ok(zoom_dir.join(file_name).to_string_lossy().to_string())
+}
+
+/// 执行完整下载任务。
+///
+/// 单级别任务直接调用 `execute_zoom_level`；多级别任务按 zoom 递增串行执行，
+/// 级别内仍复用现有并发下载器。成功后统一清理持久化任务并写入历史记录。
+async fn execute_download_task(
+    app: &AppHandle,
+    tm: &Arc<TaskManager>,
+    task_id: &str,
+    cancel_token: &tokio_util::sync::CancellationToken,
+    pause_control: &PauseControl,
+    request: DownloadRequest,
+    source: TileSource,
+    save_path: String,
+    tile_count: u32,
+    task_name: &str,
+    source_name: &str,
+) -> Result<(), String> {
+    let event_name = format!("task-progress-{}", task_id);
+    let start_time = std::time::Instant::now();
+    let z_min = request.zoom;
+    let z_max = request.zoom_max.unwrap_or(z_min).max(z_min);
+    let multi_zoom = z_max > z_min;
+    let zooms: Vec<u8> = (z_min..=z_max).collect();
+    let per_level_counts: Vec<u32> = zooms
+        .iter()
+        .map(|z| tile::estimate_tile_count(&request.bounds, *z))
+        .collect();
+    let total_tiles = per_level_counts
+        .iter()
+        .fold(0u32, |acc, n| acc.saturating_add(*n))
+        .max(tile_count);
+    let total_for_progress = total_tiles.max(1);
+
+    task_log(app, tm, task_id, "INFO", "=== 任务开始 ===");
+    task_log(app, tm, task_id, "INFO", &format!("任务名称: {}", task_name));
+    task_log(app, tm, task_id, "INFO", &format!("图源: {}", source_name));
+    task_log(app, tm, task_id, "INFO", &format!(
+        "缩放级别: {}{}，预计瓦片: {}",
+        z_min,
+        if multi_zoom { format!("~{}", z_max) } else { String::new() },
+        total_tiles
+    ));
+    if multi_zoom {
+        task_log(app, tm, task_id, "INFO", &format!(
+            "多级别下载将按 z{}~z{} 串行执行，输出到同级目录下的 z<N> 子目录",
+            z_min, z_max
+        ));
+    }
+
+    let base_temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task_id));
+    std::fs::create_dir_all(&base_temp_dir)
+        .map_err(|e| format!("创建临时目录失败: {}", e))?;
+
+    let mut progress_offset = 0.0;
+    let mut completed_offset = 0u32;
+    let mut failed_offset = 0u32;
+    let mut total_file_size = 0u64;
+    let mut actual_total = 0u32;
+    let mut failed_total = 0u32;
+    let mut no_data_total = 0u32;
+    let mut pyramid_built = false;
+
+    for (idx, zoom) in zooms.iter().enumerate() {
+        if cancel_token.is_cancelled() {
+            return Err("任务已取消".to_string());
+        }
+
+        let level_count = per_level_counts.get(idx).copied().unwrap_or(0);
+        let progress_span = if idx == zooms.len() - 1 {
+            (100.0_f64 - progress_offset).max(0.0)
+        } else {
+            (level_count as f64 / total_for_progress as f64) * 100.0
+        };
+        let level_save_path = zoom_level_save_path(&save_path, *zoom, multi_zoom)?;
+        let level_temp_dir = if multi_zoom {
+            base_temp_dir.join(format!("z{}", zoom))
+        } else {
+            base_temp_dir.clone()
+        };
+
+        if multi_zoom {
+            let msg = format!("正在处理 z{}（{}/{}）", zoom, idx + 1, zooms.len());
+            tm.update_progress(task_id, TaskStatus::Downloading, progress_offset, completed_offset, failed_offset, Some(msg.clone()));
+            let _ = app.emit(&event_name, TaskProgressPayload {
+                task_id: task_id.to_string(),
+                status: "downloading".to_string(),
+                progress: progress_offset,
+                completed: completed_offset,
+                total: total_tiles,
+                message: Some(msg),
+            });
+        }
+
+        let result = execute_zoom_level(
+            app,
+            tm,
+            task_id,
+            cancel_token,
+            pause_control,
+            &request,
+            source.clone(),
+            *zoom,
+            level_save_path,
+            level_temp_dir,
+            progress_offset,
+            progress_span,
+            completed_offset,
+            failed_offset,
+            total_tiles,
+        ).await?;
+
+        total_file_size = total_file_size.saturating_add(result.file_size);
+        actual_total = actual_total.saturating_add(result.actual_count);
+        failed_total = failed_total.saturating_add(result.failed_count);
+        no_data_total = no_data_total.saturating_add(result.no_data);
+        pyramid_built |= result.pyramid_built;
+        completed_offset = completed_offset.saturating_add(result.actual_count.saturating_sub(result.failed_count));
+        failed_offset = failed_offset.saturating_add(result.failed_count);
+        progress_offset = (progress_offset + progress_span).min(100.0);
+
+        if multi_zoom {
+            let msg = format!("z{} 完成（成功 {} 张，失败 {} 张）", zoom, result.actual_count.saturating_sub(result.failed_count), result.failed_count);
+            tm.update_progress(task_id, TaskStatus::Downloading, progress_offset.min(99.0), completed_offset, failed_offset, Some(msg.clone()));
+            let _ = app.emit(&event_name, TaskProgressPayload {
+                task_id: task_id.to_string(),
+                status: "downloading".to_string(),
+                progress: progress_offset.min(99.0),
+                completed: completed_offset,
+                total: total_tiles,
+                message: Some(msg),
+            });
+        }
+    }
+
+    let total_elapsed = start_time.elapsed();
+    let size_mb = total_file_size as f64 / 1024.0 / 1024.0;
+    let mut done_msg = format!("=== 任务完成 === 文件大小: {:.1} MB，总耗时: {:.1}s", size_mb, total_elapsed.as_secs_f64());
+    if multi_zoom {
+        done_msg.push_str(&format!("，级别: z{}~z{}", z_min, z_max));
+    }
+    if no_data_total > 0 {
+        done_msg.push_str(&format!("，无数据瓦片: {}", no_data_total));
+    }
+    task_log(app, tm, task_id, "INFO", &done_msg);
+
     crate::task::remove_task_file(task_id);
     crate::task::cleanup_temp_dir(task_id);
-    tm.complete_task(task_id, file_size);
+    tm.complete_task(task_id, total_file_size);
     let _ = app.emit(&event_name, TaskProgressPayload {
         task_id: task_id.to_string(),
         status: "completed".to_string(),
         progress: 100.0,
-        completed: actual_count - failed_count,
-        total: actual_count,
+        completed: actual_total.saturating_sub(failed_total),
+        total: actual_total,
         message: Some("完成!".to_string()),
     });
-    
-    // 自动添加历史记录
+
     let log_file_path = tm.get_log_file_path(task_id);
     let record = DownloadRecord::new(
         task_name.to_string(),
@@ -790,17 +1011,17 @@ async fn execute_download_task(
         request.zoom,
         request.format.clone(),
         save_path,
-        file_size,
-        actual_count,
-        failed_count,
-        if failed_count == 0 { DownloadStatus::Completed } else { DownloadStatus::Completed },
+        total_file_size,
+        actual_total,
+        failed_total,
+        DownloadStatus::Completed,
     ).with_log_file(log_file_path)
      .with_duration(total_elapsed.as_secs())
      .with_pyramid(pyramid_built);
     if let Ok(manager) = HistoryManager::new() {
         let _ = manager.add(record);
     }
-    
+
     Ok(())
 }
 
@@ -2015,7 +2236,11 @@ pub async fn create_wayback_task(
     let save_path = request.save_path.clone()
         .ok_or_else(|| "未指定保存路径".to_string())?;
 
-    let tile_count = tile::estimate_tile_count(&request.bounds, request.zoom);
+    let tile_count = tile::estimate_tile_count_range(
+        &request.bounds,
+        request.zoom,
+        request.zoom_max.unwrap_or(request.zoom).max(request.zoom),
+    );
     let task_id = uuid::Uuid::new_v4().to_string();
 
     // 持久化任务
@@ -2123,9 +2348,11 @@ pub async fn scan_wayback_metadata(
     req: ScanWaybackRequest,
     progress: State<'_, crate::wayback_metadata::ScanProgressMap>,
 ) -> Result<ScanWaybackResponse, String> {
+    let scan_mode = crate::wayback_metadata::normalize_scan_mode(req.scan_mode.as_deref());
+
     // 1. 缓存优先（除非强制刷新）
     if !req.force_refresh {
-        if let Some(cached) = crate::wayback_metadata::try_load_cache(&req.bbox, req.zoom_min, req.zoom_max) {
+        if let Some(cached) = crate::wayback_metadata::try_load_cache(&req.bbox, req.zoom_min, req.zoom_max, &scan_mode) {
             return Ok(ScanWaybackResponse::Result(cached));
         }
     }
@@ -2133,7 +2360,6 @@ pub async fn scan_wayback_metadata(
     // 2. 启动后台扫描，返回 scan_id
     let scan_id = uuid::Uuid::new_v4().to_string();
     let progress_map = progress.inner().clone();
-    let scan_mode = req.scan_mode.clone().unwrap_or_else(|| "fast".to_string());
     let layer_count = if scan_mode == "fine" {
         crate::wayback_metadata::select_layers(req.zoom_min, req.zoom_max).len() as u32
     } else {
@@ -2180,6 +2406,8 @@ pub async fn get_wayback_scan_progress(
 pub struct WaybackIncrementalRequest {
     pub bounds: Bounds,
     pub zoom: u8,
+    #[serde(default)]
+    pub zoom_max: Option<u8>,
     pub format: String,
     pub save_path: String,
     pub footprints: Vec<WaybackFootprintSelect>,
@@ -2235,6 +2463,7 @@ pub async fn download_wayback_incremental(
         let download_request = DownloadRequest {
             bounds: req.bounds.clone(),
             zoom: req.zoom,
+            zoom_max: req.zoom_max,
             source: format!("wayback_{}", fp.release_id),
             format: req.format.clone(),
             proxy: req.proxy.clone(),
