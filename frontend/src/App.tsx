@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AboutDialog } from '@/features/about/about-dialog'
 import { SettingsDialog } from '@/features/settings/settings-dialog'
+import { SourcesDialog } from '@/features/sources/sources-dialog'
 import { useAppStore, type AppMode } from '@/store/app-store'
 
 interface ModeMeta {
@@ -108,6 +109,7 @@ function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <SourcesDialog />
             <SettingsDialog />
             <AboutDialog />
           </div>
