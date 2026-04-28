@@ -27,17 +27,46 @@ export interface TileSource {
 }
 
 export interface AppSettings {
+  /** 天地图 Token */
   tianditu_token?: Nullable<string>
+  /** 是否启用代理 */
   proxy_enabled?: boolean
-  proxy_url?: Nullable<string>
+  /** 代理地址 */
+  proxy_url?: string
+  /** 默认并发数 */
   default_concurrency?: number
+  /** 默认缩放级别 */
   default_zoom?: number
+  /** 默认输出格式 */
   default_format?: OutputFormat
+  /** 默认图源 ID */
   default_source?: string
+  /** 自定义图源列表 */
+  custom_sources?: CustomTileSource[]
+  /** 内置图源覆盖配置（用户修改后的内置图源） */
+  source_overrides?: CustomTileSource[]
+  /** Cesium Ion Access Token */
+  cesium_ion_token?: Nullable<string>
+  /** 调试模式：保留临时瓦片目录 */
+  debug_mode?: boolean
+  /** 内存预算 (MB)，512 - 16384 */
   memory_budget_mb?: number
-  custom_sources?: Record<string, TileSource>
-  builtin_sources?: Record<string, TileSource>
-  [key: string]: unknown
+  /** 允许无效 HTTPS 证书（默认 false，安全风险） */
+  allow_invalid_certs?: boolean
+}
+
+/** 自定义瓦片图源（与 Rust CustomTileSource 对齐） */
+export interface CustomTileSource {
+  /** 图源 ID（自动生成，前缀 custom_） */
+  id: string
+  /** 显示名称 */
+  name: string
+  /** URL 模板，支持 {x}/{y}/{z}/{s} 占位符 */
+  url: string
+  /** 子域名，逗号分隔 */
+  subdomains?: string
+  /** 最大缩放级别（默认 18） */
+  max_zoom?: number
 }
 
 export interface SystemMemoryInfo {
