@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AboutDialog } from '@/features/about/about-dialog'
+import { SettingsDialog } from '@/features/settings/settings-dialog'
 import { useAppStore, type AppMode } from '@/store/app-store'
 
 interface ModeMeta {
@@ -106,7 +107,10 @@ function App() {
               </p>
             </div>
           </div>
-          <AboutDialog />
+          <div className="flex items-center gap-2">
+            <SettingsDialog />
+            <AboutDialog />
+          </div>
         </header>
 
         <Tabs
