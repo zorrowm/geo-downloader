@@ -1,6 +1,7 @@
 import { invokeCommand } from '@/lib/tauri'
 import type {
   Bounds,
+  CreateTaskResult,
   DownloadEstimate,
   DownloadRequest,
   DownloadResult,
@@ -29,8 +30,16 @@ export function downloadTiles(request: DownloadRequest) {
   return invokeCommand<DownloadResult>('download_tiles', { request })
 }
 
-export function createDownloadTask(request: DownloadRequest, taskName: string, sourceName: string) {
-  return invokeCommand<string>('create_download_task', { request, taskName, sourceName })
+export function createDownloadTask(
+  request: DownloadRequest,
+  taskName: string,
+  sourceName: string,
+) {
+  return invokeCommand<CreateTaskResult>('create_download_task', {
+    request,
+    taskName,
+    sourceName,
+  })
 }
 
 export function probeTile(

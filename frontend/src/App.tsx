@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AboutDialog } from '@/features/about/about-dialog'
+import { ImageryPage } from '@/features/imagery/imagery-page'
 import { SettingsDialog } from '@/features/settings/settings-dialog'
 import { SourcesDialog } from '@/features/sources/sources-dialog'
 import { useAppStore, type AppMode } from '@/store/app-store'
@@ -137,7 +138,7 @@ function App() {
           <div className="flex-1 p-5">
             {MODES.map((m) => (
               <TabsContent key={m.value} value={m.value} className="mt-0">
-                <ModePlaceholder mode={m} />
+                {m.value === 'imagery' ? <ImageryPage /> : <ModePlaceholder mode={m} />}
               </TabsContent>
             ))}
           </div>

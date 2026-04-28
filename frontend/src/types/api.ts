@@ -92,14 +92,34 @@ export interface DownloadRequest {
   [key: string]: unknown
 }
 
+export interface BudgetCheckResult {
+  allowed: boolean
+  message?: string
+  estimated_mb?: number
+  budget_mb?: number
+  [key: string]: unknown
+}
+
 export interface DownloadEstimate {
   tile_count: number
+  cols?: number
+  rows?: number
   estimated_size_mb?: number
   estimated_size?: string
+  allowed?: boolean
+  warning?: Nullable<string>
+  budget_check?: Nullable<BudgetCheckResult>
+  raw_size_mb?: Nullable<number>
+  size_note?: Nullable<string>
   zoom?: number
   zoom_max?: Nullable<number>
   levels?: Array<{ zoom: number; tile_count: number; estimated_size_mb?: number }>
   [key: string]: unknown
+}
+
+export interface CreateTaskResult {
+  task_id: string
+  tile_count: number
 }
 
 export interface DownloadResult {
