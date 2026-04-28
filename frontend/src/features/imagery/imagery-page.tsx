@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { createDownloadTask, estimateDownload } from '@/features/download/download-api'
+import { MapPicker, type MapPickerValue } from '@/features/imagery/map-picker'
 import { getSettings } from '@/features/settings/settings-api'
 import { getTileSourcesMerged } from '@/features/sources/sources-api'
 import type { DownloadEstimate, DownloadRequest, OutputFormat } from '@/types/api'
@@ -135,8 +136,25 @@ export function ImageryPage() {
   const source = useWatch({ control, name: 'source' })
   const format = useWatch({ control, name: 'format' })
   const zoomMaxEnabled = useWatch({ control, name: 'zoom_max_enabled' })
+  const north = useWatch({ control, name: 'north' })
+  const south = useWatch({ control, name: 'south' })
+  const east = useWatch({ control, name: 'east' })
+  const west = useWatch({ control, name: 'west' })
 
   const [estimate, setEstimate] = useState<DownloadEstimate | null>(null)
+  const [polygon, setPolygon] = useState<MapPickerValue['polygon']>(null)
+  const [cropToShape, setCropToShape] = useState(false)
+
+  const handleMapChange = (v: MapPickerValue) => {
+    if (v.bounds) {
+      setValue('north', Number(v.bounds.north.toFixed(6)), { shouldValidate: true })
+      setValue('south', Number(v.bounds.south.toFixed(6)), { shouldValidate: true })
+      setValue('east', Number(v.bounds.east.toFixed(6)), { shouldValidate: true })
+      setValue('west', Number(v.bounds.west.toFixed(6)), { shouldValidate: true })
+    }
+    setPolygon(v.polygon)
+    if (!v.polygon) setCropToShape(false)
+  }
 
   const estimateMutation = useMutation({
     mutationFn: (values: DownloadFormValues) =>
@@ -144,7 +162,7 @@ export function ImageryPage() {
         { north: values.north, south: values.south, east: values.east, west: values.west },
         values.zoom,
         values.format,
-        false,
+        cropToShape && polygon != null,
         values.zoom_max_enabled ? values.zoom_max : null,
       ),
     onSuccess: (data) => {
@@ -178,7 +196,8 @@ export function ImageryPage() {
           settingsQuery.data?.proxy_enabled && settingsQuery.data.proxy_url
             ? settingsQuery.data.proxy_url
             : null,
-        crop_to_shape: false,
+        crop_to_shape: cropToShape && polygon != null,
+        polygon: cropToShape && polygon ? polygon : null,
       }
       return createDownloadTask(
         request,
@@ -206,11 +225,38 @@ export function ImageryPage() {
         <CardHeader>
           <CardTitle>影像下载</CardTitle>
           <CardDescription>
-            填写下载范围、图源与缩放级别。S4a 阶段使用经纬度数字输入，地图选区将在后续切片接入。
+            在地图上绘制矩形/多边形或导入 Shapefile 来选取范围；也可以直接编辑下方经纬度数字框。
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-6">
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold">选区</h3>
+              <MapPicker
+                value={{
+                  bounds:
+                    Number.isFinite(north) && Number.isFinite(south)
+                      ? { north, south, east, west }
+                      : null,
+                  polygon,
+                }}
+                onChange={handleMapChange}
+              />
+              {polygon && (
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={cropToShape}
+                    onChange={(e) => setCropToShape(e.target.checked)}
+                    className="size-4"
+                  />
+                  按多边形精确裁剪（crop_to_shape）
+                </label>
+              )}
+            </section>
+
+            <Separator />
+
             <section className="space-y-3">
               <h3 className="text-sm font-semibold">范围（经纬度，WGS-84）</h3>
               <div className="grid gap-3 sm:grid-cols-4">
@@ -382,7 +428,7 @@ export function ImageryPage() {
                   <p className="text-xs text-destructive">{errors.save_path.message}</p>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  S4a 阶段需手动填写完整路径；目录选择器将在 S4b 接入。
+                  S4a 阶段需手动填写完整路径；目录选择器将在后续切片接入。
                 </p>
               </div>
             </section>

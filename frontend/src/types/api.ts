@@ -10,7 +10,12 @@ export interface Bounds {
 }
 
 export type Position = [number, number]
-export type Polygon = Position[] | Position[][] | Record<string, unknown>
+export interface PolygonCoord {
+  lat: number
+  lng: number
+}
+/** 后端 DownloadRequest.polygon 类型为 Vec<Vec<PolygonCoord>>（多环） */
+export type Polygon = PolygonCoord[][]
 
 export interface TileSource {
   id?: string
