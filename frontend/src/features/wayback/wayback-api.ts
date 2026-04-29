@@ -1,8 +1,11 @@
 import { invokeCommand } from '@/lib/tauri'
 import type {
+  CreateTaskResult,
   DownloadRequest,
   Nullable,
+  ScanWaybackResponse,
   WaybackIncrementalRequest,
+  WaybackIncrementalResult,
   WaybackScanProgress,
   WaybackScanRequest,
   WaybackVersion,
@@ -18,7 +21,12 @@ export function createWaybackTask(
   versionDate: string,
   taskName: string,
 ) {
-  return invokeCommand<string>('create_wayback_task', { request, versionId, versionDate, taskName })
+  return invokeCommand<CreateTaskResult>('create_wayback_task', {
+    request,
+    versionId,
+    versionDate,
+    taskName,
+  })
 }
 
 export function probeWaybackMaxZoom(
@@ -31,13 +39,14 @@ export function probeWaybackMaxZoom(
 }
 
 export function scanWaybackMetadata(req: WaybackScanRequest) {
-  return invokeCommand<WaybackScanProgress>('scan_wayback_metadata', { req })
+  return invokeCommand<ScanWaybackResponse>('scan_wayback_metadata', { req })
 }
 
 export function getWaybackScanProgress(scanId: string) {
-  return invokeCommand<WaybackScanProgress>('get_wayback_scan_progress', { scanId })
+  return invokeCommand<WaybackScanProgress | null>('get_wayback_scan_progress', { scanId })
 }
 
 export function downloadWaybackIncremental(req: WaybackIncrementalRequest) {
-  return invokeCommand<unknown>('download_wayback_incremental', { req })
+  return invokeCommand<WaybackIncrementalResult>('download_wayback_incremental', { req })
 }
+

@@ -94,6 +94,10 @@ export interface DownloadRequest {
   crop_to_shape?: boolean
   source_name?: string
   tianditu_token?: Nullable<string>
+  /** TIFF 压缩方式: 'none' | 'lzw' | 'deflate'，默认 lzw */
+  compression?: string
+  /** 是否构建影像金字塔（仅 GeoTIFF） */
+  build_pyramid?: boolean
   [key: string]: unknown
 }
 
@@ -152,6 +156,7 @@ export type TaskStatus =
   | 'merging'
   | 'processing'
   | 'exporting'
+  | 'building_pyramid'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -179,6 +184,16 @@ export interface TaskLog {
   timestamp: string
   level: string
   message: string
+}
+
+/** 持久化任务（断点续传列表项） */
+export interface PersistedTask {
+  task_id: string
+  task_name: string
+  source_name: string
+  request: DownloadRequest
+  tile_count: number
+  created_at: string
 }
 
 export interface TaskProgressPayload {
@@ -213,55 +228,118 @@ export interface AdminDivision {
 }
 
 export interface WaybackVersion {
-  id?: string
-  version_id?: string
-  name?: string
-  date?: string
-  release_date?: string
+  id: string
+  date: string
+  title: string
+  layer_id: string
   [key: string]: unknown
 }
 
 export interface WaybackScanRequest {
-  bounds: Bounds
-  zoom_min?: number
-  zoom_max?: number
-  start_date?: Nullable<string>
-  end_date?: Nullable<string>
-  release_ids?: string[]
-  scan_mode?: 'fast' | 'fine' | string
-  proxy?: Nullable<string>
+  bbox: [number, number, number, number]
+  zoom_min: number
+  zoom_max: number
   force_refresh?: boolean
+  proxy?: Nullable<string>
+  scan_mode?: 'fast' | 'fine'
   [key: string]: unknown
 }
 
 export interface WaybackScanProgress {
   scan_id: string
-  status: string
-  progress: number
-  message?: string
-  result?: unknown
-  [key: string]: unknown
+  current: number
+  total: number
+  elapsed_sec: number
+  footprints_so_far: number
+}
+
+export interface WaybackReleaseCapture {
+  capture_date_str: string
+  ratio: number
+  source_name: string
+  resolution_m: number
+}
+
+export interface WaybackReleaseSummary {
+  release_id: string
+  release_date: string
+  release_num: number
+  dominant_capture_date: string
+  dominant_ratio: number
+  coverage_ratio: number
+  source_name: string
+  resolution_m: number
+  captures: WaybackReleaseCapture[]
+}
+
+export interface WaybackScanResult {
+  bbox: [number, number, number, number]
+  zoom_min: number
+  zoom_max: number
+  scan_mode: string
+  scanned_at: string
+  expires_at: string
+  releases_scanned: number
+  releases: WaybackReleaseSummary[]
+  footprints?: unknown[]
+}
+
+export type ScanWaybackResponse =
+  | { kind: 'result'; bbox: [number, number, number, number]; releases_scanned: number; releases: WaybackReleaseSummary[]; [key: string]: unknown }
+  | { kind: 'scanning'; scan_id: string; total: number }
+
+export interface WaybackFootprintSelect {
+  release_id: string
+  release_date: string
+  capture_date_str: string
+  source_name: string
+  resolution_m: number
 }
 
 export interface WaybackIncrementalRequest {
-  scan_id?: string
-  groups?: unknown[]
-  output_dir?: string
-  format?: OutputFormat
-  [key: string]: unknown
+  bounds: Bounds
+  zoom: number
+  zoom_max?: Nullable<number>
+  format: OutputFormat
+  save_path: string
+  footprints: WaybackFootprintSelect[]
+  crop_to_shape?: boolean
+  polygon?: Nullable<PolygonCoord[]>
+  compression?: string
+  build_pyramid?: boolean
+  proxy?: Nullable<string>
 }
 
-export interface Tiles3dSource {
-  url?: string
-  path?: string
-  headers?: Record<string, string>
-  [key: string]: unknown
+export interface WaybackIncrementalResult {
+  task_ids: string[]
+}
+
+export type Tiles3dSource =
+  | { type: 'cesium_ion'; asset_id: number; access_token: string }
+  | { type: 'url'; tileset_url: string; headers?: Record<string, string> }
+
+export interface TilesetSummary {
+  version: string
+  extent?: Nullable<[number, number, number, number]>
+  total_tiles: number
+  content_tiles: number
+  max_depth: number
+  levels: number
+  has_external_tilesets: boolean
+}
+
+export interface Tiles3dEstimate {
+  total_tiles: number
+  filtered_tiles: number
+  content_tiles: number
 }
 
 export interface Tiles3dTaskRequest {
   source: Tiles3dSource
-  output_dir?: string
-  polygon?: Nullable<Polygon>
+  /** [[lng, lat], ...] WGS-84 度环 */
+  polygon?: Nullable<number[][]>
+  save_path: string
+  concurrency?: number
   proxy?: Nullable<string>
-  [key: string]: unknown
 }
+

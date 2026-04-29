@@ -1,5 +1,5 @@
 import { invokeCommand } from '@/lib/tauri'
-import type { TaskInfo, TaskLog } from '@/types/api'
+import type { CreateTaskResult, PersistedTask, TaskInfo, TaskLog } from '@/types/api'
 
 export function getActiveTasks() {
   return invokeCommand<TaskInfo[]>('get_active_tasks')
@@ -22,7 +22,7 @@ export function getTaskLogs(taskId: string) {
 }
 
 export function readLogFile(filePath: string) {
-  return invokeCommand<string[]>('read_log_file', { filePath })
+  return invokeCommand<TaskLog[]>('read_log_file', { filePath })
 }
 
 export function getLogDir() {
@@ -30,11 +30,11 @@ export function getLogDir() {
 }
 
 export function getResumableTasks() {
-  return invokeCommand<TaskInfo[]>('get_resumable_tasks')
+  return invokeCommand<PersistedTask[]>('get_resumable_tasks')
 }
 
 export function resumeTask(taskId: string) {
-  return invokeCommand<unknown>('resume_task', { taskId })
+  return invokeCommand<CreateTaskResult>('resume_task', { taskId })
 }
 
 export function discardResumableTask(taskId: string) {

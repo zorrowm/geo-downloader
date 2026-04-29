@@ -1,16 +1,24 @@
-import { Boxes, CalendarClock, Image as ImageIcon, Map, Mountain, Shapes } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Boxes, CalendarClock, Image as ImageIcon, ListChecks, Mountain, Settings, Shapes } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 
 import { AppShell } from '@/components/layout/app-shell'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { AboutDialog } from '@/features/about/about-dialog'
+import { BatchDialog } from '@/features/batch/batch-dialog'
+import { UpdateDialog } from '@/features/update/update-dialog'
+import { checkForUpdates } from '@/features/update/update-api'
 import { ImageryPage } from '@/features/imagery/imagery-page'
-import { SettingsDialog } from '@/features/settings/settings-dialog'
-import { SourcesDialog } from '@/features/sources/sources-dialog'
-import { TasksDialog } from '@/features/tasks/tasks-dialog'
-import { useAppStore, type AppMode } from '@/store/app-store'
+import { Tiles3dPage } from '@/features/tiles3d/tiles3d-page'
+import { WaybackPage } from '@/features/wayback/wayback-page'
+import { VectorPage } from '@/features/vector/vector-page'
+import { MapCanvas } from '@/features/map/map-canvas'
+import { CesiumCanvas } from '@/features/map/cesium-canvas'
+import { WaybackTimeline } from '@/features/wayback/wayback-timeline'
+import { SettingsPanel } from '@/features/settings/settings-panel'
+import { TasksPanel } from '@/features/tasks/tasks-panel'
+import { HistoryPanel } from '@/features/history/history-panel'
+import { cn } from '@/lib/utils'
+import { useAppStore, type AppMode, type SidebarTab } from '@/store/app-store'
 
 interface ModeMeta {
   value: AppMode
@@ -24,7 +32,7 @@ const MODES: ModeMeta[] = [
   {
     value: 'imagery',
     label: '影像下载',
-    short: '影像',
+    short: 'GeoTIFF',
     description: '单级别 / 多级别瓦片下载，支持自定义图源与断点续传。',
     icon: ImageIcon,
   },
@@ -58,30 +66,36 @@ const MODES: ModeMeta[] = [
   },
 ]
 
+type SidebarTabMeta = {
+  value: SidebarTab
+  label: string
+  icon: ComponentType<SVGProps<SVGSVGElement>>
+}
+
+const SIDEBAR_TABS: SidebarTabMeta[] = [
+  { value: 'download', label: '资源下载', icon: ImageIcon },
+  { value: 'history', label: '下载中心', icon: ListChecks },
+  { value: 'settings', label: '设置', icon: Settings },
+]
+
 function ModePlaceholder({ mode }: { mode: ModeMeta }) {
   const Icon = mode.icon
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
         <div className="flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Icon className="size-5" />
+          <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Icon className="size-4" />
           </div>
           <div>
-            <CardTitle>{mode.label}</CardTitle>
-            <CardDescription>{mode.description}</CardDescription>
+            <CardTitle className="text-base">{mode.label}</CardTitle>
+            <CardDescription className="text-xs">{mode.description}</CardDescription>
           </div>
         </div>
       </CardHeader>
       <CardContent>
-        <div className="grid min-h-[420px] place-items-center rounded-xl border border-dashed bg-muted/40 text-center">
-          <div>
-            <Icon className="mx-auto mb-4 size-10 text-muted-foreground" />
-            <p className="text-sm font-medium">该模块尚未迁移到 React 版</p>
-            <p className="mt-2 max-w-md text-sm text-muted-foreground">
-              当前生产入口仍为旧版 static 前端，React 版按规划文档逐步切片。
-            </p>
-          </div>
+        <div className="rounded-lg border border-dashed bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+          该模块尚未迁移到 React 版
         </div>
       </CardContent>
     </Card>
@@ -91,61 +105,174 @@ function ModePlaceholder({ mode }: { mode: ModeMeta }) {
 function App() {
   const mode = useAppStore((s) => s.mode)
   const setMode = useAppStore((s) => s.setMode)
+  const tab = useAppStore((s) => s.tab)
+  const setTab = useAppStore((s) => s.setTab)
+
+  // 侧边栏拖拽宽度
+  const [sidebarWidth, setSidebarWidth] = useState(380)
+  const draggingRef = useRef(false)
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return
+      const w = Math.max(280, Math.min(600, e.clientX))
+      setSidebarWidth(w)
+    }
+    const onUp = () => {
+      draggingRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
+
+  // 启动后静默检查一次更新
+  useEffect(() => {
+    void checkForUpdates(true)
+  }, [])
+
+  const currentMode = MODES.find((m) => m.value === mode) ?? MODES[0]
 
   return (
-    <AppShell>
-      <section className="flex min-h-[calc(100vh-3rem)] flex-col bg-muted/30">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b bg-background/80 px-6 py-4 backdrop-blur">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <Map className="size-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-semibold leading-none">GeoDownloader</h1>
-                <Badge variant="secondary">Phase 1 · 骨架</Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                React + Vite + shadcn 渐进迁移工作台
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <TasksDialog />
-            <SourcesDialog />
-            <SettingsDialog />
-            <AboutDialog />
-          </div>
-        </header>
-
-        <Tabs
-          value={mode}
-          onValueChange={(value) => setMode(value as AppMode)}
-          className="flex flex-1 flex-col"
+    <AppShell
+      modeSlot={
+        <div className="flex items-center gap-0.5 rounded-lg border border-border/60 bg-muted/40 p-1 shadow-inner">
+          {MODES.map((m) => {
+            const Icon = m.icon
+            const active = m.value === mode
+            return (
+              <button
+                key={m.value}
+                type="button"
+                onClick={() => setMode(m.value)}
+                title={m.description}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+                  active
+                    ? 'bg-background text-foreground shadow-sm ring-1 ring-border/50'
+                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground',
+                )}
+              >
+                <Icon className={cn('size-3.5 transition-colors', active && 'text-primary')} />
+                {m.short}
+              </button>
+            )
+          })}
+        </div>
+      }
+    >
+      <div className="flex h-[calc(100vh-3rem)] w-screen overflow-hidden">
+        {/* 左侧控制面板 */}
+        <aside
+          className="flex h-full shrink-0 flex-col border-r bg-background"
+          style={{ width: sidebarWidth }}
         >
-          <div className="border-b bg-background px-6 py-3">
-            <TabsList>
-              {MODES.map((m) => {
-                const Icon = m.icon
-                return (
-                  <TabsTrigger key={m.value} value={m.value}>
-                    <Icon className="size-4" />
-                    {m.short}
-                  </TabsTrigger>
-                )
-              })}
-            </TabsList>
+          {/* Tab 头 */}
+          <div className="flex shrink-0 items-stretch border-b border-border/60 bg-muted/30">
+            {SIDEBAR_TABS.map((t) => {
+              const Icon = t.icon
+              const active = t.value === tab
+              return (
+                <button
+                  key={t.value}
+                  type="button"
+                  onClick={() => setTab(t.value)}
+                  className={cn(
+                    'relative flex flex-1 items-center justify-center gap-1.5 px-2 py-2.5 text-xs font-medium transition-colors',
+                    active
+                      ? 'bg-background text-foreground'
+                      : 'text-muted-foreground hover:bg-background/40 hover:text-foreground',
+                  )}
+                >
+                  <Icon className={cn('size-3.5', active && 'text-primary')} />
+                  {t.label}
+                  {active && (
+                    <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-t bg-primary" />
+                  )}
+                </button>
+              )
+            })}
           </div>
 
-          <div className="flex-1 p-5">
-            {MODES.map((m) => (
-              <TabsContent key={m.value} value={m.value} className="mt-0">
-                {m.value === 'imagery' ? <ImageryPage /> : <ModePlaceholder mode={m} />}
-              </TabsContent>
-            ))}
+          {/* Tab 内容 */}
+          <div className="flex-1 overflow-y-auto">
+            {tab === 'download' && (
+              <div className="p-3">
+                {mode === 'imagery' ? (
+                  <ImageryPage mode="imagery" />
+                ) : mode === 'dem' ? (
+                  <ImageryPage mode="dem" />
+                ) : mode === 'wayback' ? (
+                  <WaybackPage />
+                ) : mode === 'tiles3d' ? (
+                  <Tiles3dPage />
+                ) : mode === 'vector' ? (
+                  <VectorPage />
+                ) : (
+                  <ModePlaceholder mode={currentMode} />
+                )}
+              </div>
+            )}
+            {tab === 'history' && (
+              <div className="space-y-4 p-3">
+                <section>
+                  <h3 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    任务
+                  </h3>
+                  <TasksPanel />
+                </section>
+                <section>
+                  <h3 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    历史记录
+                  </h3>
+                  <HistoryPanel />
+                </section>
+              </div>
+            )}
+            {tab === 'settings' && (
+              <div className="p-3">
+                <SettingsPanel />
+              </div>
+            )}
           </div>
-        </Tabs>
-      </section>
+        </aside>
+
+        {/* 全局：批量下载对话框 */}
+        <BatchDialog />
+        {/* 全局：检查更新对话框 */}
+        <UpdateDialog />
+
+        {/* 拖拽条 */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          className="group relative h-full w-1 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-primary"
+          onMouseDown={() => {
+            draggingRef.current = true
+            document.body.style.cursor = 'col-resize'
+            document.body.style.userSelect = 'none'
+          }}
+        >
+          <div className="absolute inset-y-0 -left-1 -right-1" />
+        </div>
+
+        {/* 右侧地图：Leaflet（默认）与 Cesium（3D Tiles 模式）同时挂载，按 mode CSS 切换显隐 */}
+        <main className="relative h-full flex-1">
+          <div
+            className="absolute inset-0"
+            style={{ display: mode === 'tiles3d' ? 'none' : 'block' }}
+            aria-hidden={mode === 'tiles3d'}
+          >
+            <MapCanvas />
+            <WaybackTimeline />
+          </div>
+          <CesiumCanvas />
+        </main>
+      </div>
     </AppShell>
   )
 }

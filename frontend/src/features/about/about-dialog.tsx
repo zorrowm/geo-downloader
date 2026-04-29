@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { Info } from 'lucide-react'
+import { useState } from 'react'
+import { Info, RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -12,6 +13,8 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { isTauriRuntime } from '@/lib/tauri'
+import { checkForUpdates } from '@/features/update/update-api'
+import { useUpdateStore } from '@/features/update/update-store'
 
 async function loadAppVersion(): Promise<string> {
   if (!isTauriRuntime()) return 'web 预览'
@@ -31,6 +34,24 @@ export function AboutDialog() {
     queryKey: ['app', 'tauri-version'],
     queryFn: loadTauriVersion,
   })
+  const updateStatus = useUpdateStore((s) => s.status)
+  const [checking, setChecking] = useState(false)
+
+  const handleCheckUpdate = async () => {
+    setChecking(true)
+    try {
+      await checkForUpdates(false)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const statusText = (() => {
+    if (checking || updateStatus.kind === 'checking') return '正在检查更新…'
+    if (updateStatus.kind === 'latest') return updateStatus.message
+    if (updateStatus.kind === 'error') return updateStatus.message
+    return ''
+  })()
 
   return (
     <Dialog>
@@ -69,7 +90,47 @@ export function AboutDialog() {
           <dd className="font-medium">{isTauriRuntime() ? 'Tauri WebView2' : '浏览器预览'}</dd>
         </dl>
 
+        <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-muted-foreground">
+          <a
+            className="inline-flex items-center gap-1 text-primary hover:underline"
+            href="https://geodownloader.pages.dev/"
+            target="_blank"
+            rel="noreferrer"
+          >
+            官方网站
+          </a>
+          <a
+            className="inline-flex items-center gap-1 text-primary hover:underline"
+            href="https://geodownloader.pages.dev/disclaimer.html"
+            target="_blank"
+            rel="noreferrer"
+          >
+            使用条款 / 免责声明
+          </a>
+          <a
+            className="inline-flex items-center gap-1 text-primary hover:underline"
+            href="https://github.com/gaopengbin/geo-downloader/issues"
+            target="_blank"
+            rel="noreferrer"
+          >
+            反馈与建议
+          </a>
+        </div>
+
         <DialogFooter>
+          <div className="mr-auto text-xs text-muted-foreground">{statusText}</div>
+          <Button
+            variant="outline"
+            onClick={handleCheckUpdate}
+            disabled={!isTauriRuntime() || checking || updateStatus.kind === 'checking'}
+          >
+            <RefreshCw
+              className={
+                'size-4 ' + (checking || updateStatus.kind === 'checking' ? 'animate-spin' : '')
+              }
+            />
+            检查更新
+          </Button>
           <Button asChild variant="outline">
             <a href="https://github.com/gaopengbin/geo-downloader" target="_blank" rel="noreferrer">
               GitHub 仓库

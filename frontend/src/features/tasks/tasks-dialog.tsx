@@ -272,7 +272,7 @@ export function TasksDialog() {
           {activeCount > 0 && (
             <Badge
               variant="default"
-              className="ml-1.5 h-5 min-w-[1.25rem] px-1.5 text-[10px]"
+              className="ml-1.5 h-5 min-w-[1.25rem] px-1.5 text-xs"
             >
               {activeCount}
             </Badge>

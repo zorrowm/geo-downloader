@@ -1,0 +1,351 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { Box, Download, Globe, Key, Loader2, Search } from 'lucide-react'
+import { toast } from 'sonner'
+
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Slider } from '@/components/ui/slider'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+
+import { isTauriRuntime } from '@/lib/tauri'
+import { RegionSelector } from '@/features/region/region-selector'
+import { getSettings, saveSettings } from '@/features/settings/settings-api'
+import { useSelectionStore } from '@/store/selection-store'
+import { useAppStore } from '@/store/app-store'
+
+import {
+  analyze3dTiles,
+  create3dTilesTask,
+  estimate3dTiles,
+} from './tiles3d-api'
+import type {
+  Tiles3dEstimate,
+  Tiles3dSource,
+  TilesetSummary,
+} from '@/types/api'
+
+type SourceMode = 'url' | 'ion'
+
+function timestampNow() {
+  return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+}
+
+function buildPolygonCoords(): number[][] | null {
+  const { bounds, polygon } = useSelectionStore.getState()
+  if (polygon && polygon.length > 0) {
+    return polygon[0].map((p) => [p.lng, p.lat])
+  }
+  if (bounds) {
+    return [
+      [bounds.west, bounds.south],
+      [bounds.west, bounds.north],
+      [bounds.east, bounds.north],
+      [bounds.east, bounds.south],
+      [bounds.west, bounds.south],
+    ]
+  }
+  return null
+}
+
+export function Tiles3dPage() {
+  const inTauri = isTauriRuntime()
+  const qc = useQueryClient()
+
+  const bounds = useSelectionStore((s) => s.bounds)
+  const polygon = useSelectionStore((s) => s.polygon)
+
+  const [sourceMode, setSourceMode] = useState<SourceMode>('url')
+  const [tilesetUrl, setTilesetUrl] = useState('')
+  const [referer, setReferer] = useState('')
+  const [assetId, setAssetId] = useState<string>('')
+  const [ionToken, setIonToken] = useState('')
+  const [concurrency, setConcurrency] = useState(50)
+  const [summary, setSummary] = useState<TilesetSummary | null>(null)
+  const [estimate, setEstimate] = useState<Tiles3dEstimate | null>(null)
+
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: getSettings,
+    enabled: inTauri,
+  })
+
+  // 初始化 Ion token 从 settings
+  useEffect(() => {
+    const t = settingsQuery.data?.cesium_ion_token
+    if (typeof t === 'string' && t && !ionToken) {
+      setIonToken(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsQuery.data])
+
+  const proxy =
+    settingsQuery.data?.proxy_enabled && settingsQuery.data.proxy_url
+      ? settingsQuery.data.proxy_url
+      : null
+
+  const source: Tiles3dSource | null = useMemo(() => {
+    if (sourceMode === 'ion') {
+      const id = Number(assetId)
+      if (!id || !ionToken.trim()) return null
+      return { type: 'cesium_ion', asset_id: id, access_token: ionToken.trim() }
+    }
+    const url = tilesetUrl.trim()
+    if (!url) return null
+    const headers: Record<string, string> = {}
+    if (referer.trim()) headers['Referer'] = referer.trim()
+    return { type: 'url', tileset_url: url, headers }
+  }, [sourceMode, tilesetUrl, referer, assetId, ionToken])
+
+  const persistIonToken = async () => {
+    if (!settingsQuery.data) return
+    const trimmed = ionToken.trim()
+    if (settingsQuery.data.cesium_ion_token === trimmed) return
+    try {
+      await saveSettings({ ...settingsQuery.data, cesium_ion_token: trimmed || null })
+      qc.invalidateQueries({ queryKey: ['settings'] })
+    } catch (e) {
+      console.warn('Cesium Ion token 保存失败', e)
+    }
+  }
+
+  // 解析
+  const analyzeMutation = useMutation({
+    mutationFn: async () => {
+      if (!source) throw new Error('请填写完整的数据源信息')
+      setSummary(null)
+      setEstimate(null)
+      return analyze3dTiles(source, proxy)
+    },
+    onSuccess: async (s) => {
+      setSummary(s)
+      // 自动估算
+      const coords = buildPolygonCoords()
+      if (coords && coords.length >= 3 && source) {
+        try {
+          const est = await estimate3dTiles(source, coords, proxy)
+          setEstimate(est)
+        } catch (e) {
+          console.warn('自动估算失败', e)
+        }
+      }
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`解析失败：${msg}`)
+    },
+  })
+
+  // 手动估算（已改为自动，仅保留 “刷新” 能力） - 移除后不再需要
+
+  // 下载
+  const downloadMutation = useMutation({
+    mutationFn: async () => {
+      if (!source) throw new Error('请填写完整的数据源信息')
+      const dir = await openDialog({
+        directory: true,
+        title: '选择 3D Tiles 保存目录',
+      })
+      if (!dir) throw new Error('__user_cancelled__')
+      const coords = buildPolygonCoords()
+      const taskName = `3dtiles_${timestampNow()}`
+      const result = await create3dTilesTask(
+        {
+          source,
+          polygon: coords && coords.length >= 3 ? coords : null,
+          save_path: dir as string,
+          concurrency,
+          proxy,
+        },
+        taskName,
+      )
+      return result
+    },
+    onSuccess: () => {
+      toast.success('3D Tiles 下载任务已创建')
+      useAppStore.getState().setTab('history')
+      qc.invalidateQueries({ queryKey: ['active-tasks'] })
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg === '__user_cancelled__') return
+      toast.error(`创建任务失败：${msg}`)
+    },
+  })
+
+  const hasSelection = bounds != null || (polygon != null && polygon.length > 0)
+
+  // 自动估算：解析完成后，bounds / polygon 变化 400ms 后触发
+  useEffect(() => {
+    if (!summary || !source || !hasSelection) return
+    const handle = window.setTimeout(() => {
+      const coords = buildPolygonCoords()
+      if (!coords || coords.length < 3) return
+      estimate3dTiles(source, coords, proxy)
+        .then((e) => setEstimate(e))
+        .catch((e) => console.warn('自动估算失败', e))
+    }, 400)
+    return () => window.clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summary, bounds, polygon, hasSelection])
+
+  return (
+    <div className="space-y-4">
+      <RegionSelector />
+
+      <div className="space-y-3 rounded-md border bg-card/40 p-3">
+        <div className="flex items-center gap-2">
+          <Box className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-medium">3D Tiles 数据源</h3>
+        </div>
+
+        <Tabs value={sourceMode} onValueChange={(v) => setSourceMode(v as SourceMode)}>
+          <TabsList className="grid h-8 w-full grid-cols-2">
+            <TabsTrigger value="url" className="text-xs">
+              <Globe className="mr-1 size-3.5" />
+              URL
+            </TabsTrigger>
+            <TabsTrigger value="ion" className="text-xs">
+              <Key className="mr-1 size-3.5" />
+              Cesium Ion
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="url" className="mt-3 space-y-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs">tileset.json URL</Label>
+              <Input
+                value={tilesetUrl}
+                onChange={(e) => setTilesetUrl(e.target.value)}
+                placeholder="https://example.com/path/tileset.json"
+                className="h-8 text-xs"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Referer（可选，针对 OSS/CDN 防盗链）</Label>
+              <Input
+                value={referer}
+                onChange={(e) => setReferer(e.target.value)}
+                placeholder="https://referer-host"
+                className="h-8 text-xs"
+              />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="ion" className="mt-3 space-y-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Asset ID</Label>
+              <Input
+                type="number"
+                value={assetId}
+                onChange={(e) => setAssetId(e.target.value)}
+                placeholder="例如 96188"
+                className="h-8 text-xs"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Access Token</Label>
+              <Input
+                value={ionToken}
+                onChange={(e) => setIonToken(e.target.value)}
+                onBlur={() => persistIonToken()}
+                placeholder="Cesium Ion access token"
+                className="h-8 text-xs"
+                type="password"
+              />
+            </div>
+          </TabsContent>
+        </Tabs>
+
+        <div className="space-y-1.5">
+          <Label className="text-xs">下载并发：{concurrency}</Label>
+          <Slider
+            min={1}
+            max={100}
+            step={1}
+            value={[concurrency]}
+            onValueChange={(v) => setConcurrency(v[0] ?? concurrency)}
+          />
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => analyzeMutation.mutate()}
+            disabled={analyzeMutation.isPending || !source}
+          >
+            {analyzeMutation.isPending ? (
+              <Loader2 className="mr-1 size-3.5 animate-spin" />
+            ) : (
+              <Search className="mr-1 size-3.5" />
+            )}
+            解析数据源
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => downloadMutation.mutate()}
+            disabled={downloadMutation.isPending || !summary}
+          >
+            {downloadMutation.isPending ? (
+              <Loader2 className="mr-1 size-3.5 animate-spin" />
+            ) : (
+              <Download className="mr-1 size-3.5" />
+            )}
+            下载模型
+          </Button>
+        </div>
+
+        {summary && (
+          <div className="space-y-1 rounded border bg-muted/20 p-2 text-xs">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">瓦片总数</span>
+              <strong>{summary.total_tiles.toLocaleString()}</strong>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">含内容瓦片</span>
+              <strong>{summary.content_tiles.toLocaleString()}</strong>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">最大深度 / 层级</span>
+              <strong>
+                {summary.max_depth} / {summary.levels}
+              </strong>
+            </div>
+            {summary.has_external_tilesets && (
+              <div className="text-amber-600 dark:text-amber-400">
+                含外部 tileset 引用，以上仅为根级统计
+              </div>
+            )}
+            {summary.extent && (
+              <div className="text-muted-foreground">
+                范围：{summary.extent.map((n) => n.toFixed(4)).join(', ')}
+              </div>
+            )}
+          </div>
+        )}
+
+        {estimate && (
+          <div className="space-y-1 rounded border bg-muted/20 p-2 text-xs">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">选区内瓦片</span>
+              <strong>{estimate.filtered_tiles.toLocaleString()}</strong>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">需下载内容</span>
+              <strong>{estimate.content_tiles.toLocaleString()}</strong>
+            </div>
+          </div>
+        )}
+
+        <p className="text-[11px] text-muted-foreground">
+          提示：3D Tiles 预览（Cesium）尚未在新版界面提供，下载后可在文件管理器中打开 tileset.json 用其它查看器加载。
+        </p>
+      </div>
+    </div>
+  )
+}

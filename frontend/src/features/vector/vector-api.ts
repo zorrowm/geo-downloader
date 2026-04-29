@@ -1,15 +1,15 @@
 import { invokeCommand } from '@/lib/tauri'
-import type { Bounds, Nullable, Polygon } from '@/types/api'
+import type { Bounds, CreateTaskResult, Nullable, PolygonCoord } from '@/types/api'
 
 export function createOsmDownloadTask(
   bounds: Bounds,
   featureType: string,
   savePath: string,
   proxy: Nullable<string>,
-  polygon: Nullable<Polygon>,
+  polygon: Nullable<PolygonCoord[]>,
   taskName: string,
 ) {
-  return invokeCommand<string>('create_osm_download_task', {
+  return invokeCommand<CreateTaskResult>('create_osm_download_task', {
     bounds,
     featureType,
     savePath,
@@ -24,7 +24,7 @@ export function downloadOsmData(
   featureType: string,
   savePath: string,
   proxy: Nullable<string>,
-  polygon: Nullable<Polygon>,
+  polygon: Nullable<PolygonCoord[]>,
 ) {
   return invokeCommand<unknown>('download_osm_data', {
     bounds,
