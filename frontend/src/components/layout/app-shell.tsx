@@ -6,6 +6,7 @@ import { ThemeSwitcher } from '@/components/theme/theme-switcher'
 import { StarButton } from '@/features/promo/star-button'
 import { SponsorDialog } from '@/features/promo/sponsor-dialog'
 import { CommunityDialog } from '@/features/promo/community-dialog'
+import { ResumableTasksButton } from '@/features/tasks/resumable-tasks-button'
 import { isTauriRuntime } from '@/lib/tauri'
 
 async function withCurrentWindow(action: 'minimize' | 'toggleMaximize' | 'close') {
@@ -68,6 +69,7 @@ export function AppShell({ children, modeSlot }: AppShellProps) {
           </div>
         )}
         <div className="flex items-center gap-1">
+          <ResumableTasksButton />
           <ThemeSwitcher />
           <Button aria-label="最小化" size="icon" variant="ghost" onClick={() => void withCurrentWindow('minimize')}>
             <Minus className="size-4" />

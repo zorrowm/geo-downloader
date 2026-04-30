@@ -90,6 +90,21 @@
 }
 
 /* 主色覆盖：通过 [data-accent] 切换 */
+:root[data-accent='zinc'] {
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --ring: 240 5.9% 10%;
+}
+.dark[data-accent='zinc'] {
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --accent: 240 3.7% 18%;
+  --accent-foreground: 0 0% 98%;
+  --ring: 240 4.9% 83.9%;
+}
+
 :root[data-accent='blue'] {
   --primary: 221.2 83.2% 53.3%;
   --primary-foreground: 210 40% 98%;
@@ -192,5 +207,99 @@ body {
      用 isolation 创建独立堆叠上下文，把 Leaflet 全部 z-index 限制在容器内部。*/
   .leaflet-container {
     isolation: isolate;
+    background: hsl(var(--muted));
   }
+}
+
+/* === Leaflet 控件主题化（独立于 @layer base，确保压过 leaflet 自带 css） === */
+.leaflet-bar,
+.leaflet-control-layers {
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: calc(var(--radius) - 2px) !important;
+  box-shadow: var(--shadow-soft) !important;
+  background-clip: padding-box;
+  overflow: hidden;
+  background-color: hsl(var(--card)) !important;
+}
+
+/* 统一控件按钮尺寸：30 × 30 + 主题色 */
+.leaflet-bar a,
+.leaflet-touch .leaflet-bar a,
+.leaflet-control-layers-toggle,
+.leaflet-touch .leaflet-control-layers-toggle {
+  display: block !important;
+  box-sizing: border-box !important;
+  width: 30px !important;
+  height: 30px !important;
+  line-height: 30px !important;
+  font-size: 18px !important;
+  background-color: hsl(var(--card)) !important;
+  color: hsl(var(--card-foreground)) !important;
+  border-bottom: 1px solid hsl(var(--border)) !important;
+  transition: background-color 120ms;
+}
+.leaflet-bar a:last-child,
+.leaflet-bar a:only-child {
+  border-bottom: 0 !important;
+}
+.leaflet-bar a:hover {
+  background-color: hsl(var(--accent)) !important;
+  color: hsl(var(--accent-foreground)) !important;
+}
+.leaflet-bar a.leaflet-disabled {
+  background-color: hsl(var(--muted)) !important;
+  color: hsl(var(--muted-foreground)) !important;
+  cursor: not-allowed;
+}
+
+/* 控件之间的间距统一为 6px */
+.leaflet-top.leaflet-left .leaflet-control {
+  margin-bottom: 6px !important;
+}
+
+.leaflet-control-layers-expanded {
+  background-color: hsl(var(--popover)) !important;
+  color: hsl(var(--popover-foreground)) !important;
+  padding: 8px 10px !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: calc(var(--radius) - 2px) !important;
+}
+.leaflet-control-layers-separator {
+  border-top: 1px solid hsl(var(--border)) !important;
+}
+.leaflet-control-layers label {
+  font-size: 12px;
+  line-height: 1.6;
+  color: hsl(var(--popover-foreground));
+}
+
+/* leaflet-draw / 图层 toggle 在暗色模式下用 invert 反色图标，
+   但 filter 会把背景色一起反转——所以反过来：把 bg 预设为白色，
+   filter 反转后正好得到深色背景，与 --card 视觉接近。
+   contrast() 把灰阶图标推到接近纯白，使所有图标视觉一致。 */
+.dark .leaflet-draw-toolbar a,
+.dark .leaflet-control-layers-toggle {
+  filter: invert(1) hue-rotate(180deg) contrast(1.4) brightness(1.1);
+  background-color: #ffffff !important;
+}
+.dark .leaflet-draw-toolbar a:hover,
+.dark .leaflet-control-layers-toggle:hover {
+  background-color: #d8dde5 !important; /* 反相后约 --accent，hover 高亮 */
+}
+.dark .leaflet-draw-toolbar a.leaflet-disabled {
+  filter: invert(1) hue-rotate(180deg) contrast(1.1) brightness(0.9);
+  background-color: #e5e5e5 !important; /* 反相后约 --muted */
+}
+
+/* 比例尺 / 归属 */
+.leaflet-control-attribution,
+.leaflet-control-scale-line {
+  background: hsl(var(--card) / 0.85) !important;
+  color: hsl(var(--muted-foreground)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 4px !important;
+  padding: 1px 6px !important;
+}
+.leaflet-control-attribution a {
+  color: hsl(var(--primary)) !important;
 }

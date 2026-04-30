@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Download, FolderOpen, Info, Loader2 } from 'lucide-react'
+import { AlertTriangle, Download, FolderOpen, Info, Loader2, Map as MapIcon, Layers, SlidersHorizontal } from 'lucide-react'
 import { ask as askDialog, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { toast } from 'sonner'
 import { z } from 'zod'
@@ -18,7 +18,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
 import { createDownloadTask, estimateDownload, probeTile } from '@/features/download/download-api'
 import { RegionSelector } from '@/features/region/region-selector'
@@ -28,6 +27,8 @@ import { useSelectionStore, type MapBounds } from '@/store/selection-store'
 import { useAppStore } from '@/store/app-store'
 import { useImageryParamsStore } from '@/store/imagery-params-store'
 import type { DownloadEstimate, DownloadRequest, OutputFormat } from '@/types/api'
+import { StatCard } from '@/components/layout/stat-card'
+import { PanelSection } from '@/components/layout/panel-section'
 
 const FORMAT_OPTIONS = [
   { value: 'geotiff', label: 'GeoTIFF (.tif)' },
@@ -435,49 +436,51 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
   return (
     <div className="space-y-3">
       <RegionSelector />
-      <BoundsInputs />
 
-      {bounds && (
-        <div className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs">
-          <span className="flex items-center gap-1.5 text-muted-foreground">
-            <Info className="size-3.5" /> 选区面积
-          </span>
-          <span className="font-mono">
-            <span className="font-semibold text-foreground">{areaKm2.toFixed(2)}</span>
-            <span className="ml-0.5 text-muted-foreground">km²</span>
-            {polygon && polygon.length > 0 && (
-              <span className="ml-2 text-muted-foreground">
-                · {polygon[0]?.length ?? 0} 顶点
-              </span>
-            )}
-          </span>
-        </div>
-      )}
+      <PanelSection icon={MapIcon} title="下载选区" description="WGS-84 经纬度 / 多边形裁剪">
+        <BoundsInputs />
 
-      {showGcj02 && (
-        <div className="flex gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
-          <AlertTriangle className="size-3.5 shrink-0" />
-          <span>该图源中国区域使用 GCJ-02 坐标系，与行政边界存在偏移</span>
-        </div>
-      )}
+        {bounds && (
+          <div className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs">
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <Info className="size-3.5" /> 选区面积
+            </span>
+            <span className="font-mono">
+              <span className="font-semibold text-foreground">{areaKm2.toFixed(2)}</span>
+              <span className="ml-0.5 text-muted-foreground">km²</span>
+              {polygon && polygon.length > 0 && (
+                <span className="ml-2 text-muted-foreground">
+                  · {polygon[0]?.length ?? 0} 顶点
+                </span>
+              )}
+            </span>
+          </div>
+        )}
 
-      {polygon && (
-        <label className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs">
-          <input
-            type="checkbox"
-            checked={cropToShape}
-            onChange={(e) => setCropToShape(e.target.checked)}
-            className="size-3.5 accent-primary"
-          />
-          按多边形精确裁剪 (crop_to_shape)
-        </label>
-      )}
+        {showGcj02 && (
+          <div className="flex gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="size-3.5 shrink-0" />
+            <span>该图源中国区域使用 GCJ-02 坐标系，与行政边界存在偏移</span>
+          </div>
+        )}
 
-      <Separator className="bg-border/60" />
+        {polygon && (
+          <label className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs">
+            <input
+              type="checkbox"
+              checked={cropToShape}
+              onChange={(e) => setCropToShape(e.target.checked)}
+              className="size-3.5 accent-primary"
+            />
+            按多边形精确裁剪 (crop_to_shape)
+          </label>
+        )}
+      </PanelSection>
 
       <form className="space-y-3">
-        <div className="space-y-1.5">
-          <Label className="text-xs uppercase tracking-wider text-muted-foreground">图源</Label>
+        <PanelSection icon={Layers} title="图源 / 缩放级别" description="选择瓦片源与下载级别">
+          <div className="space-y-1.5">
+            <Label className="text-xs uppercase tracking-wider text-muted-foreground">图源</Label>
           <Select
             value={source}
             onValueChange={(v) => setValue('source', v, { shouldValidate: true })}
@@ -550,7 +553,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
 
         {/* 自动估算结果 — 紧跟缩放级别 */}
         {bounds && (
-          <div className="rounded-md border bg-muted/20 p-2 text-xs">
+          <StatCard>
             {estimate ? (
               <>
                 <div className="grid grid-cols-2 gap-y-1">
@@ -587,9 +590,11 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
             ) : (
               <span className="text-muted-foreground">估算中…</span>
             )}
-          </div>
+          </StatCard>
         )}
+        </PanelSection>
 
+        <PanelSection icon={SlidersHorizontal} title="输出参数" description="格式 / 并发 / 压缩 / 路径">
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1.5">
             <Label className="text-xs">输出格式</Label>
@@ -706,6 +711,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
             <p className="text-xs text-destructive">{errors.save_path.message}</p>
           )}
         </div>
+        </PanelSection>
 
         <div className="sticky bottom-0 -mx-3 -mb-3 mt-2 flex items-center gap-2 border-t border-border/60 bg-background/95 px-3 py-2.5 backdrop-blur">
           <Button

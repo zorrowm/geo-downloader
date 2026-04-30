@@ -82,15 +82,16 @@ cd frontend; npm run build
 
 ### 阶段 S8：UI 美化继续（优先级高）
 
-- [ ] 把 `PanelSection` 应用到 wayback / tiles3d / vector / settings 各面板
-- [ ] 统一 estimate / summary 卡片视觉层级（border + bg-muted/30 + shadow-soft）
+- [x] 把 `PanelSection` 应用到 wayback / tiles3d / vector / settings 各面板（2026-04-30）
+- [x] imagery 下载页拆成 `下载选区 / 图源 / 输出参数` 三段卡片，`RegionSelector` 也用 `PanelSection`（2026-04-30）
+- [x] 统一 estimate / summary 卡片视觉层级（新增 `StatCard` + `StatRow`，应用到 imagery / wayback / tiles3d）（2026-04-30）
 - [ ] 表单分组节奏化（gap、Label 字号、Section 间距统一）
-- [ ] 历史面板 / 任务面板视觉对齐
+- [x] 历史面板 / 任务面板视觉对齐（用 `PanelSection` 替换裸 `<section>` + h3 模板）（2026-04-30）
 - [ ] dark 模式全量回归
 
 ### 阶段 S9：功能补齐
 
-- [ ] 可恢复任务（titlebar + 任务面板入口）
+- [x] 可恢复任务标题栏入口（`ResumableTasksButton`：徽标 + 点击跳到任务面板，5 秒轮询）（2026-04-30）
 - [ ] 批量下载流程在 React 版本对齐（旧版的全部能力）
 - [ ] DEM 下载（如有遗漏）
 - [ ] 3D Tiles 离线预览本地服务接入

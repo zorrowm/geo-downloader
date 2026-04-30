@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { PanelSection } from '@/components/layout/panel-section'
 
 import { useSelectionStore } from '@/store/selection-store'
 import { useAppStore } from '@/store/app-store'
@@ -164,12 +165,7 @@ export function VectorPanel() {
   }
 
   return (
-    <div className="space-y-3 rounded-md border bg-card/40 p-3">
-      <div className="flex items-center gap-2">
-        <Download className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">矢量数据</h3>
-      </div>
-
+    <PanelSection icon={Download} title="矢量数据" description="OSM / 边界 / 本地导入">
       <div className="space-y-1.5">
         <Label className="text-xs uppercase tracking-wider text-muted-foreground">OSM 要素类型</Label>
         <Select value={featureType} onValueChange={(v) => setFeatureType(v as FeatureType)}>
@@ -273,6 +269,6 @@ export function VectorPanel() {
           e.target.value = ''
         }}
       />
-    </div>
+    </PanelSection>
   )
 }

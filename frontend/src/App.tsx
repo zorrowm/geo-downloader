@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Boxes, CalendarClock, Image as ImageIcon, ListChecks, Mountain, Settings, Shapes } from 'lucide-react'
+import { Boxes, CalendarClock, ClipboardList, History as HistoryIcon, Image as ImageIcon, ListChecks, Mountain, Settings, Shapes } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 
 import { AppShell } from '@/components/layout/app-shell'
@@ -17,6 +17,7 @@ import { WaybackTimeline } from '@/features/wayback/wayback-timeline'
 import { SettingsPanel } from '@/features/settings/settings-panel'
 import { TasksPanel } from '@/features/tasks/tasks-panel'
 import { HistoryPanel } from '@/features/history/history-panel'
+import { PanelSection } from '@/components/layout/panel-section'
 import { cn } from '@/lib/utils'
 import { useAppStore, type AppMode, type SidebarTab } from '@/store/app-store'
 
@@ -218,19 +219,13 @@ function App() {
               </div>
             )}
             {tab === 'history' && (
-              <div className="space-y-4 p-3">
-                <section>
-                  <h3 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    任务
-                  </h3>
+              <div className="space-y-3 p-3">
+                <PanelSection icon={ClipboardList} title="任务" description="进行中 / 暂停 / 可恢复">
                   <TasksPanel />
-                </section>
-                <section>
-                  <h3 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    历史记录
-                  </h3>
+                </PanelSection>
+                <PanelSection icon={HistoryIcon} title="历史记录" description="已完成 / 失败 / 已删除">
                   <HistoryPanel />
-                </section>
+                </PanelSection>
               </div>
             )}
             {tab === 'settings' && (

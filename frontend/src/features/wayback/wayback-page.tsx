@@ -19,6 +19,8 @@ import { Slider } from '@/components/ui/slider'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import { isTauriRuntime } from '@/lib/tauri'
+import { PanelSection } from '@/components/layout/panel-section'
+import { StatCard } from '@/components/layout/stat-card'
 import { RegionSelector } from '@/features/region/region-selector'
 import { getSettings } from '@/features/settings/settings-api'
 import { estimateDownload } from '@/features/download/download-api'
@@ -456,15 +458,16 @@ export function WaybackPage() {
     <div className="space-y-4">
       <RegionSelector />
 
-      <div className="space-y-2 rounded-md border bg-card/40 p-3">
-        <div className="flex items-center gap-2">
-          <History className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-medium">Esri Wayback 历史影像</h3>
+      <PanelSection
+        icon={History}
+        title="Esri Wayback 历史影像"
+        description="按时间轴访问 Esri 全球历史影像"
+        action={
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            className="ml-auto size-7"
+            className="size-7"
             title="刷新版本列表"
             onClick={() => versionsQuery.refetch()}
             disabled={versionsQuery.isFetching}
@@ -475,8 +478,8 @@ export function WaybackPage() {
               <RefreshCw className="size-3.5" />
             )}
           </Button>
-        </div>
-
+        }
+      >
         {/* 版本下拉 */}
         <div className="space-y-1.5">
           <Label className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -544,7 +547,7 @@ export function WaybackPage() {
 
         {/* 自动估算结果 */}
         {wbMode === 'single' && bounds && (
-          <div className="rounded border bg-muted/20 px-2 py-1.5 text-xs">
+          <StatCard variant="compact">
             {estimating ? (
               <span className="inline-flex items-center gap-1.5 text-muted-foreground">
                 <Loader2 className="size-3 animate-spin" />
@@ -564,7 +567,7 @@ export function WaybackPage() {
             ) : (
               <span className="text-muted-foreground">等待估算…</span>
             )}
-          </div>
+          </StatCard>
         )}
 
         {/* 格式 + 压缩 + 并发 */}
@@ -895,7 +898,7 @@ export function WaybackPage() {
             )}
           </TabsContent>
         </Tabs>
-      </div>
+      </PanelSection>
     </div>
   )
 }

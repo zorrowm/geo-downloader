@@ -4,7 +4,10 @@
   "version": "3.4.0-beta.1",
   "identifier": "dev.geo-downloader",
   "build": {
-    "frontendDist": "../static"
+    "beforeDevCommand": "npm run dev --prefix frontend",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build --prefix frontend",
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "withGlobalTauri": true,

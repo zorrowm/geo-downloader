@@ -11,6 +11,8 @@ import { Slider } from '@/components/ui/slider'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import { isTauriRuntime } from '@/lib/tauri'
+import { PanelSection } from '@/components/layout/panel-section'
+import { StatCard, StatRow } from '@/components/layout/stat-card'
 import { RegionSelector } from '@/features/region/region-selector'
 import { getSettings, saveSettings } from '@/features/settings/settings-api'
 import { useSelectionStore } from '@/store/selection-store'
@@ -195,12 +197,11 @@ export function Tiles3dPage() {
     <div className="space-y-4">
       <RegionSelector />
 
-      <div className="space-y-3 rounded-md border bg-card/40 p-3">
-        <div className="flex items-center gap-2">
-          <Box className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-medium">3D Tiles 数据源</h3>
-        </div>
-
+      <PanelSection
+        icon={Box}
+        title="3D Tiles 数据源"
+        description="URL 或 Cesium Ion，自动估算选区瓦片"
+      >
         <Tabs value={sourceMode} onValueChange={(v) => setSourceMode(v as SourceMode)}>
           <TabsList className="grid h-8 w-full grid-cols-2">
             <TabsTrigger value="url" className="text-xs">
@@ -301,21 +302,13 @@ export function Tiles3dPage() {
         </div>
 
         {summary && (
-          <div className="space-y-1 rounded border bg-muted/20 p-2 text-xs">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">瓦片总数</span>
-              <strong>{summary.total_tiles.toLocaleString()}</strong>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">含内容瓦片</span>
-              <strong>{summary.content_tiles.toLocaleString()}</strong>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">最大深度 / 层级</span>
-              <strong>
-                {summary.max_depth} / {summary.levels}
-              </strong>
-            </div>
+          <StatCard>
+            <StatRow label="瓦片总数" value={summary.total_tiles.toLocaleString()} />
+            <StatRow label="含内容瓦片" value={summary.content_tiles.toLocaleString()} />
+            <StatRow
+              label="最大深度 / 层级"
+              value={`${summary.max_depth} / ${summary.levels}`}
+            />
             {summary.has_external_tilesets && (
               <div className="text-amber-600 dark:text-amber-400">
                 含外部 tileset 引用，以上仅为根级统计
@@ -326,26 +319,20 @@ export function Tiles3dPage() {
                 范围：{summary.extent.map((n) => n.toFixed(4)).join(', ')}
               </div>
             )}
-          </div>
+          </StatCard>
         )}
 
         {estimate && (
-          <div className="space-y-1 rounded border bg-muted/20 p-2 text-xs">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">选区内瓦片</span>
-              <strong>{estimate.filtered_tiles.toLocaleString()}</strong>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">需下载内容</span>
-              <strong>{estimate.content_tiles.toLocaleString()}</strong>
-            </div>
-          </div>
+          <StatCard>
+            <StatRow label="选区内瓦片" value={estimate.filtered_tiles.toLocaleString()} />
+            <StatRow label="需下载内容" value={estimate.content_tiles.toLocaleString()} />
+          </StatCard>
         )}
 
         <p className="text-[11px] text-muted-foreground">
           提示：3D Tiles 预览（Cesium）尚未在新版界面提供，下载后可在文件管理器中打开 tileset.json 用其它查看器加载。
         </p>
-      </div>
+      </PanelSection>
     </div>
   )
 }

@@ -2,14 +2,13 @@ import { useEffect } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Loader2 } from 'lucide-react'
+import { AlertTriangle, KeyRound, LayoutGrid, Loader2, SlidersHorizontal, Wifi, Wrench } from 'lucide-react'
 import { toast } from 'sonner'
 import { z } from 'zod'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Separator } from '@/components/ui/separator'
 import {
   Select,
   SelectContent,
@@ -18,6 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { PanelSection } from '@/components/layout/panel-section'
 import { SourcesDialog } from '@/features/sources/sources-dialog'
 import { AboutDialog } from '@/features/about/about-dialog'
 import { getSettings, getSystemMemory, saveSettings } from './settings-api'
@@ -160,11 +160,8 @@ export function SettingsPanel() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-5">
-      <section className="space-y-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          访问令牌
-        </h3>
+    <form onSubmit={onSubmit} className="space-y-3">
+      <PanelSection icon={KeyRound} title="访问令牌" description="天地图 / Cesium Ion">
         <div className="space-y-1.5">
           <Label htmlFor="tianditu_token">天地图 Token</Label>
           <Input
@@ -183,20 +180,19 @@ export function SettingsPanel() {
             {...register('cesium_ion_token')}
           />
         </div>
-      </section>
+      </PanelSection>
 
-      <Separator />
-
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            网络代理
-          </h3>
+      <PanelSection
+        icon={Wifi}
+        title="网络代理"
+        description="仅代理下载请求"
+        action={
           <Switch
             checked={proxyEnabled}
             onCheckedChange={(v) => setValue('proxy_enabled', v, { shouldDirty: true })}
           />
-        </div>
+        }
+      >
         <div className="space-y-1.5">
           <Label htmlFor="proxy_url">代理地址</Label>
           <Input
@@ -207,14 +203,13 @@ export function SettingsPanel() {
             {...register('proxy_url')}
           />
         </div>
-      </section>
+      </PanelSection>
 
-      <Separator />
-
-      <section className="space-y-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          默认下载参数
-        </h3>
+      <PanelSection
+        icon={SlidersHorizontal}
+        title="默认下载参数"
+        description="并发 / 缩放 / 格式 / 内存预算"
+      >
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="default_concurrency">默认并发 (1-100)</Label>
@@ -282,14 +277,9 @@ export function SettingsPanel() {
             )}
           </div>
         </div>
-      </section>
+      </PanelSection>
 
-      <Separator />
-
-      <section className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          高级
-        </h3>
+      <PanelSection icon={Wrench} title="高级" description="调试 / 证书校验">
         <div className="flex items-center justify-between rounded-md border p-2.5">
           <div className="min-w-0 pr-2">
             <Label className="text-sm">调试模式</Label>
@@ -316,7 +306,7 @@ export function SettingsPanel() {
             <span>已禁用 HTTPS 证书校验，确认你信任目标服务器。</span>
           </div>
         )}
-      </section>
+      </PanelSection>
 
       <div className="sticky bottom-0 -mx-3 flex justify-end gap-2 border-t bg-background/95 px-3 py-2 backdrop-blur">
         <Button type="submit" size="sm" disabled={!isDirty || mutation.isPending}>
@@ -325,17 +315,12 @@ export function SettingsPanel() {
         </Button>
       </div>
 
-      <Separator />
-
-      <section className="space-y-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          其他
-        </h3>
+      <PanelSection icon={LayoutGrid} title="其他" description="图源管理 / 关于">
         <div className="flex flex-wrap gap-2">
           <SourcesDialog />
           <AboutDialog />
         </div>
-      </section>
+      </PanelSection>
     </form>
   )
 }

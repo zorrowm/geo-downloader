@@ -312,10 +312,14 @@ export function MapCanvas() {
       if (layer) baseMaps[(sources[key] as { name?: string }).name || key] = layer
     }
     layerControlRef.current = L.control
-      .layers(baseMaps, {
-        '天地图 影像标注': ciaLayer,
-        '天地图 矢量标注': cvaLayer,
-      })
+      .layers(
+        baseMaps,
+        {
+          '天地图 影像标注': ciaLayer,
+          '天地图 矢量标注': cvaLayer,
+        },
+        { position: 'topleft', collapsed: true },
+      )
       .addTo(map)
   }, [sourcesQuery.data, tdtToken])
 

@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { isTauriRuntime } from '@/lib/tauri'
+import { PanelSection } from '@/components/layout/panel-section'
 import {
   geocodeSearch,
   getAdminBoundary,
@@ -256,14 +257,7 @@ export function RegionSelector() {
   }
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-2">
-        <MapPin className="size-3.5 text-muted-foreground" />
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          区域选择
-        </h3>
-      </div>
-
+    <PanelSection icon={MapPin} title="区域选择" description="地名搜索 / 行政区划 / 上传边界">
       {/* 地名搜索 */}
       <div className="space-y-1.5">
         <div className="flex gap-1.5">
@@ -395,6 +389,6 @@ export function RegionSelector() {
         className="hidden"
         onChange={(e) => void onPickFiles(e.target.files)}
       />
-    </section>
+    </PanelSection>
   )
 }
