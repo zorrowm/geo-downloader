@@ -58,7 +58,19 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci
+        shell: bash
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "::group::npm ci attempt $i"
+            npm ci && [ -d node_modules ] && [ -x node_modules/.bin/vite ] && { echo "::endgroup::"; exit 0; }
+            echo "::endgroup::"
+            echo "npm ci attempt $i failed or produced empty node_modules, retrying..."
+            rm -rf node_modules
+            sleep 5
+          done
+          echo "npm ci failed after 3 attempts"
+          exit 1
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
