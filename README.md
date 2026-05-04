@@ -16,6 +16,8 @@
 ![Downloads](https://img.shields.io/github/downloads/gaopengbin/geo-downloader/total?color=brightgreen&label=downloads)
 ![Latest Downloads](https://img.shields.io/github/downloads/gaopengbin/geo-downloader/latest/total?label=latest%20downloads)
 
+> 💬 **使用问题、功能建议、案例分享** 欢迎来 [Discussions](https://github.com/gaopengbin/geo-downloader/discussions)，bug 报告请走 [Issues](https://github.com/gaopengbin/geo-downloader/issues)。
+
 ## 🎉 v3.2.x — 压缩与稳定性
 
 ### 新增
