@@ -14,13 +14,13 @@
   <meta property="og:url" content="https://geodownloader.pages.dev/">
   <meta property="og:title" content="GeoDownloader — 高性能地理空间数据下载工具">
   <meta property="og:description" content="开源免费桌面工具，支持 2D 瓦片 / 3D Tiles / 历史影像下载，导出 GeoTIFF。Rust + Tauri 构建，安装包仅 10MB。">
-  <meta property="og:image" content="https://geodownloader.pages.dev/images/geotiff.png">
+  <meta property="og:image" content="https://geodownloader.pages.dev/images/og-cover.png">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="GeoDownloader — 高性能地理空间数据下载工具">
   <meta name="twitter:description" content="开源免费桌面工具，支持 2D 瓦片 / 3D Tiles / 历史影像下载，导出 GeoTIFF。">
-  <meta name="twitter:image" content="https://geodownloader.pages.dev/images/geotiff.png">
+  <meta name="twitter:image" content="https://geodownloader.pages.dev/images/og-cover.png">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
@@ -174,14 +174,22 @@
   <section id="screenshots" class="py-20">
     <div class="max-w-6xl mx-auto px-6">
       <h2 class="text-3xl font-bold text-center mb-4">界面预览</h2>
-      <p class="text-center text-gray-500 mb-14">三大核心模块，一个桌面工具搞定</p>
-      <div class="grid md:grid-cols-3 gap-6">
+      <p class="text-center text-gray-500 mb-14">五大核心模块，一个桌面工具搞定</p>
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
 
         <div class="screenshot-card rounded-2xl overflow-hidden shadow-md border border-gray-100">
           <img src="./images/geotiff.png" alt="GeoTIFF 地图下载" class="w-full" loading="lazy">
           <div class="p-4">
             <h3 class="font-semibold">GeoTIFF 下载</h3>
             <p class="text-sm text-gray-500 mt-1">多图源 + 区域选择 + 压缩导出</p>
+          </div>
+        </div>
+
+        <div class="screenshot-card rounded-2xl overflow-hidden shadow-md border border-gray-100">
+          <img src="./images/dem.png" alt="DEM 高程下载" class="w-full" loading="lazy">
+          <div class="p-4">
+            <h3 class="font-semibold">DEM 高程</h3>
+            <p class="text-sm text-gray-500 mt-1">SRTM · ASTER · ALOS 多源高程裁剪</p>
           </div>
         </div>
 
@@ -198,6 +206,14 @@
           <div class="p-4">
             <h3 class="font-semibold">Wayback 历史影像</h3>
             <p class="text-sm text-gray-500 mt-1">时间轴回溯 · 任意日期卫星影像</p>
+          </div>
+        </div>
+
+        <div class="screenshot-card rounded-2xl overflow-hidden shadow-md border border-gray-100">
+          <img src="./images/vector.png" alt="矢量瓦片下载" class="w-full" loading="lazy">
+          <div class="p-4">
+            <h3 class="font-semibold">矢量瓦片</h3>
+            <p class="text-sm text-gray-500 mt-1">MVT/PBF 区域裁剪 · 导出 GeoJSON / Shapefile</p>
           </div>
         </div>
 
@@ -458,7 +474,7 @@
     "softwareVersion": "3.4.1",
     "author": { "@type": "Person", "name": "gaopengbin", "url": "https://github.com/gaopengbin" },
     "license": "https://opensource.org/licenses/MIT",
-    "screenshot": "https://geodownloader.pages.dev/images/geotiff.png"
+    "screenshot": "https://geodownloader.pages.dev/images/og-cover.png"
   }
   </script>
 
