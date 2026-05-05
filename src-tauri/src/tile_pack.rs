@@ -1,0 +1,592 @@
+//! 把瓦片打包成 MBTiles / GPKG 文件。
+//!
+//! 设计参考 `docs/browse-as-cache-design.md`。
+//!
+//! - MBTiles 1.3：tiles(zoom_level, tile_column, tile_row, tile_data)，行号为 TMS（左下原点）
+//! - GeoPackage 1.3 raster：tiles(id, zoom_level, tile_column, tile_row, tile_data)，行号为 XYZ（左上原点）
+
+use rusqlite::{params, Connection};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use crate::tile::TileBounds;
+use crate::tile_cache::xyz_to_tms_row;
+
+/// 单个瓦片输入：XYZ 坐标 + 字节
+pub struct PackTile {
+    pub z: u8,
+    pub x: u32,
+    pub y: u32,
+    pub bytes: Vec<u8>,
+}
+
+/// 公共元信息
+pub struct PackMetadata {
+    pub name: String,
+    pub format: String, // "png" | "jpg" | "webp"
+    pub bounds: TileBounds,
+    pub min_zoom: u8,
+    pub max_zoom: u8,
+    pub attribution: Option<String>,
+    pub description: Option<String>,
+}
+
+fn read_tile_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("读取瓦片失败 {}: {}", path.display(), e))
+}
+
+fn detect_format(bytes: &[u8]) -> &'static str {
+    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        "jpg"
+    } else if bytes.len() >= 4 && bytes[0] == 0x89 && bytes[1] == 0x50 {
+        "png"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else {
+        "png"
+    }
+}
+
+// ===== MBTiles =====
+
+fn open_mbtiles(path: &Path, init_meta: Option<&PackMetadata>) -> Result<Connection, String> {
+    let exists = path.exists();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let conn = Connection::open(path).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=DELETE;
+         PRAGMA synchronous=NORMAL;
+         CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value TEXT);
+         CREATE TABLE IF NOT EXISTS tiles (
+             zoom_level INTEGER NOT NULL,
+             tile_column INTEGER NOT NULL,
+             tile_row INTEGER NOT NULL,
+             tile_data BLOB,
+             PRIMARY KEY (zoom_level, tile_column, tile_row)
+         );",
+    )
+    .map_err(|e| e.to_string())?;
+
+    if !exists {
+        if let Some(meta) = init_meta {
+            let bounds_str = format!(
+                "{:.7},{:.7},{:.7},{:.7}",
+                meta.bounds.west, meta.bounds.south, meta.bounds.east, meta.bounds.north
+            );
+            let center_str = format!(
+                "{:.7},{:.7},{}",
+                (meta.bounds.east + meta.bounds.west) / 2.0,
+                (meta.bounds.north + meta.bounds.south) / 2.0,
+                meta.min_zoom
+            );
+            let entries: Vec<(&str, String)> = vec![
+                ("name", meta.name.clone()),
+                ("type", "baselayer".to_string()),
+                ("version", "1.0".to_string()),
+                ("description", meta.description.clone().unwrap_or_default()),
+                ("format", meta.format.clone()),
+                ("bounds", bounds_str),
+                ("center", center_str),
+                ("minzoom", meta.min_zoom.to_string()),
+                ("maxzoom", meta.max_zoom.to_string()),
+                ("attribution", meta.attribution.clone().unwrap_or_default()),
+            ];
+            for (k, v) in entries {
+                conn.execute(
+                    "INSERT OR REPLACE INTO metadata (name, value) VALUES (?1, ?2)",
+                    params![k, v],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(conn)
+}
+
+/// 写入指定 zoom 的所有瓦片到 mbtiles。文件不存在时按 init_meta 初始化。
+/// `tile_files` key 为 (x, y) XYZ 坐标。
+pub fn append_zoom_to_mbtiles(
+    output: &Path,
+    zoom: u8,
+    tile_files: &HashMap<(u32, u32), PathBuf>,
+    init_meta: Option<&PackMetadata>,
+) -> Result<u64, String> {
+    let mut conn = open_mbtiles(output, init_meta)?;
+    // 更新 minzoom/maxzoom
+    {
+        let cur_min: Option<i64> = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE name='minzoom'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let cur_max: Option<i64> = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE name='maxzoom'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let new_min = cur_min.map(|c| c.min(zoom as i64)).unwrap_or(zoom as i64);
+        let new_max = cur_max.map(|c| c.max(zoom as i64)).unwrap_or(zoom as i64);
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (name, value) VALUES ('minzoom', ?1)",
+            params![new_min.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (name, value) VALUES ('maxzoom', ?1)",
+            params![new_max.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT OR REPLACE INTO tiles (zoom_level, tile_column, tile_row, tile_data) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .map_err(|e| e.to_string())?;
+        for ((x, y), path) in tile_files {
+            let bytes = match read_tile_bytes(path) {
+                Ok(b) if !b.is_empty() => b,
+                _ => continue,
+            };
+            let tms_row = xyz_to_tms_row(zoom, *y);
+            stmt.execute(params![zoom as i64, *x as i64, tms_row as i64, bytes])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+    Ok(size)
+}
+
+// ===== GeoPackage Raster =====
+
+fn open_gpkg(path: &Path, init_meta: Option<&PackMetadata>) -> Result<Connection, String> {
+    let exists = path.exists();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let conn = Connection::open(path).map_err(|e| e.to_string())?;
+
+    // GeoPackage 应用 ID + 用户版本（PRAGMA application_id = 'GPKG' = 0x47504B47, user_version = 10300）
+    conn.execute_batch("PRAGMA application_id = 1196444487; PRAGMA user_version = 10300;")
+        .map_err(|e| e.to_string())?;
+
+    // 核心表
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS gpkg_spatial_ref_sys (
+            srs_name TEXT NOT NULL,
+            srs_id INTEGER NOT NULL PRIMARY KEY,
+            organization TEXT NOT NULL,
+            organization_coordsys_id INTEGER NOT NULL,
+            definition TEXT NOT NULL,
+            description TEXT
+         );
+         CREATE TABLE IF NOT EXISTS gpkg_contents (
+            table_name TEXT NOT NULL PRIMARY KEY,
+            data_type TEXT NOT NULL,
+            identifier TEXT UNIQUE,
+            description TEXT DEFAULT '',
+            last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            min_x DOUBLE,
+            min_y DOUBLE,
+            max_x DOUBLE,
+            max_y DOUBLE,
+            srs_id INTEGER,
+            CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id)
+         );
+         CREATE TABLE IF NOT EXISTS gpkg_tile_matrix_set (
+            table_name TEXT NOT NULL PRIMARY KEY,
+            srs_id INTEGER NOT NULL,
+            min_x DOUBLE NOT NULL,
+            min_y DOUBLE NOT NULL,
+            max_x DOUBLE NOT NULL,
+            max_y DOUBLE NOT NULL,
+            CONSTRAINT fk_gtms_table_name FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name),
+            CONSTRAINT fk_gtms_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id)
+         );
+         CREATE TABLE IF NOT EXISTS gpkg_tile_matrix (
+            table_name TEXT NOT NULL,
+            zoom_level INTEGER NOT NULL,
+            matrix_width INTEGER NOT NULL,
+            matrix_height INTEGER NOT NULL,
+            tile_width INTEGER NOT NULL,
+            tile_height INTEGER NOT NULL,
+            pixel_x_size DOUBLE NOT NULL,
+            pixel_y_size DOUBLE NOT NULL,
+            CONSTRAINT pk_ttm PRIMARY KEY (table_name, zoom_level),
+            CONSTRAINT fk_tmm_table_name FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name)
+         );",
+    )
+    .map_err(|e| e.to_string())?;
+
+    if !exists {
+        // 必须的 srs 行
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO gpkg_spatial_ref_sys VALUES \
+             ('Undefined cartesian SRS', -1, 'NONE', -1, 'undefined', NULL);
+             INSERT OR IGNORE INTO gpkg_spatial_ref_sys VALUES \
+             ('Undefined geographic SRS', 0, 'NONE', 0, 'undefined', NULL);
+             INSERT OR IGNORE INTO gpkg_spatial_ref_sys VALUES \
+             ('WGS 84 / Pseudo-Mercator', 3857, 'EPSG', 3857, \
+              'PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1]]', \
+              NULL);",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    if !exists {
+        if let Some(meta) = init_meta {
+            // Web Mercator 整球范围
+            let extent_m = 20037508.342789244;
+            let (min_x, min_y, max_x, max_y) = lonlat_bbox_to_mercator(&meta.bounds);
+            conn.execute(
+                "INSERT OR REPLACE INTO gpkg_contents \
+                 (table_name, data_type, identifier, description, min_x, min_y, max_x, max_y, srs_id) \
+                 VALUES ('tiles', 'tiles', ?1, ?2, ?3, ?4, ?5, ?6, 3857)",
+                params![
+                    meta.name,
+                    meta.description.clone().unwrap_or_default(),
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT OR REPLACE INTO gpkg_tile_matrix_set \
+                 (table_name, srs_id, min_x, min_y, max_x, max_y) \
+                 VALUES ('tiles', 3857, ?1, ?2, ?3, ?4)",
+                params![-extent_m, -extent_m, extent_m, extent_m],
+            )
+            .map_err(|e| e.to_string())?;
+
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS tiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    zoom_level INTEGER NOT NULL,
+                    tile_column INTEGER NOT NULL,
+                    tile_row INTEGER NOT NULL,
+                    tile_data BLOB NOT NULL,
+                    UNIQUE (zoom_level, tile_column, tile_row)
+                 )",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(conn)
+}
+
+fn lonlat_bbox_to_mercator(b: &TileBounds) -> (f64, f64, f64, f64) {
+    let to_merc = |lon: f64, lat: f64| -> (f64, f64) {
+        let r = 6378137.0_f64;
+        let x = lon.to_radians() * r;
+        let y = ((std::f64::consts::FRAC_PI_4 + lat.to_radians() / 2.0).tan()).ln() * r;
+        (x, y)
+    };
+    let (min_x, min_y) = to_merc(b.west, b.south);
+    let (max_x, max_y) = to_merc(b.east, b.north);
+    (min_x, min_y, max_x, max_y)
+}
+
+/// 写入指定 zoom 的所有瓦片到 GPKG。
+pub fn append_zoom_to_gpkg(
+    output: &Path,
+    zoom: u8,
+    tile_files: &HashMap<(u32, u32), PathBuf>,
+    init_meta: Option<&PackMetadata>,
+) -> Result<u64, String> {
+    let mut conn = open_gpkg(output, init_meta)?;
+
+    // tile_matrix 行（每 zoom 一行）
+    let extent_m = 20037508.342789244_f64;
+    let matrix_size: u64 = 1u64 << zoom;
+    let pixel_size = (extent_m * 2.0) / (matrix_size as f64) / 256.0;
+    conn.execute(
+        "INSERT OR REPLACE INTO gpkg_tile_matrix \
+         (table_name, zoom_level, matrix_width, matrix_height, tile_width, tile_height, pixel_x_size, pixel_y_size) \
+         VALUES ('tiles', ?1, ?2, ?2, 256, 256, ?3, ?3)",
+        params![zoom as i64, matrix_size as i64, pixel_size],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT OR REPLACE INTO tiles (zoom_level, tile_column, tile_row, tile_data) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .map_err(|e| e.to_string())?;
+        for ((x, y), path) in tile_files {
+            let bytes = match read_tile_bytes(path) {
+                Ok(b) if !b.is_empty() => b,
+                _ => continue,
+            };
+            // GeoPackage 行号采用 XYZ（左上原点）
+            stmt.execute(params![zoom as i64, *x as i64, *y as i64, bytes])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+    Ok(size)
+}
+
+/// 推断瓦片文件实际格式（基于第一个非空文件的魔数）
+pub fn detect_tile_format(tile_files: &HashMap<(u32, u32), PathBuf>) -> String {
+    for path in tile_files.values() {
+        if let Ok(bytes) = std::fs::read(path) {
+            if !bytes.is_empty() {
+                return detect_format(&bytes).to_string();
+            }
+        }
+    }
+    "png".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// 写入一个最小 PNG 字节串到文件，用于打包测试
+    fn write_png(path: &Path) -> Vec<u8> {
+        // 1x1 透明 PNG（标准最小 PNG）
+        let bytes = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        fs::write(path, &bytes).expect("write png");
+        bytes
+    }
+
+    fn sample_metadata() -> PackMetadata {
+        PackMetadata {
+            name: "test_source".to_string(),
+            format: "png".to_string(),
+            bounds: TileBounds {
+                west: -180.0,
+                south: -85.0,
+                east: 180.0,
+                north: 85.0,
+            },
+            min_zoom: 0,
+            max_zoom: 2,
+            attribution: Some("test".to_string()),
+            description: Some("desc".to_string()),
+        }
+    }
+
+    #[test]
+    fn mbtiles_writes_metadata_and_tiles_with_tms_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let png_path = tmp.path().join("tile.png");
+        write_png(&png_path);
+
+        let mut tiles: HashMap<(u32, u32), PathBuf> = HashMap::new();
+        // z=2, y=0 (top in XYZ) → TMS row = 3
+        tiles.insert((1, 0), png_path.clone());
+
+        let mbtiles_path = tmp.path().join("out.mbtiles");
+        let mut meta = sample_metadata();
+        meta.min_zoom = 2;
+        meta.max_zoom = 2;
+        let size = append_zoom_to_mbtiles(&mbtiles_path, 2, &tiles, Some(&meta)).unwrap();
+        assert!(size > 0);
+
+        let conn = Connection::open(&mbtiles_path).unwrap();
+        // metadata
+        let name: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE name='name'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "test_source");
+        let minz: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE name='minzoom'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let maxz: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE name='maxzoom'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(minz, "2");
+        assert_eq!(maxz, "2");
+
+        // tile_row 必须为 TMS（XYZ y=0 在 z=2 应转换成 row=3）
+        let tile_row: i64 = conn
+            .query_row(
+                "SELECT tile_row FROM tiles WHERE zoom_level=2 AND tile_column=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tile_row, 3);
+
+        // 数据完整性
+        let blob: Vec<u8> = conn
+            .query_row(
+                "SELECT tile_data FROM tiles WHERE zoom_level=2 AND tile_column=1 AND tile_row=3",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(blob.starts_with(&[0x89, 0x50, 0x4E, 0x47]));
+    }
+
+    #[test]
+    fn mbtiles_appending_zoom_updates_min_max() {
+        let tmp = tempfile::tempdir().unwrap();
+        let png_path = tmp.path().join("tile.png");
+        write_png(&png_path);
+        let mut tiles: HashMap<(u32, u32), PathBuf> = HashMap::new();
+        tiles.insert((0, 0), png_path.clone());
+
+        let mbtiles_path = tmp.path().join("out.mbtiles");
+        let mut meta = sample_metadata();
+        meta.min_zoom = 5;
+        meta.max_zoom = 5;
+        // zoom 5
+        append_zoom_to_mbtiles(&mbtiles_path, 5, &tiles, Some(&meta)).unwrap();
+        // zoom 8（不传 init_meta，模拟二次追加）
+        append_zoom_to_mbtiles(&mbtiles_path, 8, &tiles, None).unwrap();
+
+        let conn = Connection::open(&mbtiles_path).unwrap();
+        let minz: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE name='minzoom'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let maxz: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE name='maxzoom'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(minz, "5");
+        assert_eq!(maxz, "8");
+    }
+
+    #[test]
+    fn gpkg_creates_required_tables_and_xyz_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let png_path = tmp.path().join("tile.png");
+        write_png(&png_path);
+        let mut tiles: HashMap<(u32, u32), PathBuf> = HashMap::new();
+        // z=2, x=1, y=0 (XYZ, top edge)
+        tiles.insert((1, 0), png_path.clone());
+
+        let gpkg_path = tmp.path().join("out.gpkg");
+        let meta = sample_metadata();
+        let size = append_zoom_to_gpkg(&gpkg_path, 2, &tiles, Some(&meta)).unwrap();
+        assert!(size > 0);
+
+        let conn = Connection::open(&gpkg_path).unwrap();
+        // application_id 必须为 GPKG 魔数
+        let app_id: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0)).unwrap();
+        assert_eq!(app_id, 1196444487);
+        let user_v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(user_v, 10300);
+
+        // 必备 SRS 行
+        let srs_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM gpkg_spatial_ref_sys WHERE srs_id IN (-1,0,3857)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(srs_count, 3);
+
+        // gpkg_tile_matrix 行：matrix_size = 1<<2 = 4
+        let mw: i64 = conn
+            .query_row(
+                "SELECT matrix_width FROM gpkg_tile_matrix WHERE table_name='tiles' AND zoom_level=2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mw, 4);
+
+        // tile_row 必须按 XYZ 直接存（y=0），不做 TMS 反转
+        let tile_row: i64 = conn
+            .query_row(
+                "SELECT tile_row FROM tiles WHERE zoom_level=2 AND tile_column=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tile_row, 0);
+    }
+
+    #[test]
+    fn detect_tile_format_recognizes_png_jpg_webp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let png = tmp.path().join("a.bin");
+        write_png(&png);
+        let mut tiles: HashMap<(u32, u32), PathBuf> = HashMap::new();
+        tiles.insert((0, 0), png);
+        assert_eq!(detect_tile_format(&tiles), "png");
+
+        // jpg 魔数
+        let jpg = tmp.path().join("b.bin");
+        fs::write(&jpg, &[0xFF, 0xD8, 0xFF, 0xE0, 0x00]).unwrap();
+        let mut t2: HashMap<(u32, u32), PathBuf> = HashMap::new();
+        t2.insert((0, 0), jpg);
+        assert_eq!(detect_tile_format(&t2), "jpg");
+
+        // webp 魔数
+        let webp = tmp.path().join("c.bin");
+        let mut buf = b"RIFF".to_vec();
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(b"WEBP");
+        fs::write(&webp, &buf).unwrap();
+        let mut t3: HashMap<(u32, u32), PathBuf> = HashMap::new();
+        t3.insert((0, 0), webp);
+        assert_eq!(detect_tile_format(&t3), "webp");
+    }
+
+    #[test]
+    fn lonlat_bbox_to_mercator_global() {
+        let b = TileBounds {
+            west: -180.0,
+            south: -85.0511287798066,
+            east: 180.0,
+            north: 85.0511287798066,
+        };
+        let (min_x, min_y, max_x, max_y) = lonlat_bbox_to_mercator(&b);
+        let extent = 20037508.342789244_f64;
+        assert!((min_x + extent).abs() < 1e-3);
+        assert!((max_x - extent).abs() < 1e-3);
+        assert!((min_y + extent).abs() < 1.0);
+        assert!((max_y - extent).abs() < 1.0);
+    }
+}

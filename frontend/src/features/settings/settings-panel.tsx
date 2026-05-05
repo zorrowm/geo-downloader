@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, KeyRound, LayoutGrid, Loader2, SlidersHorizontal, Wifi, Wrench } from 'lucide-react'
+import { AlertTriangle, Database, KeyRound, LayoutGrid, Loader2, SlidersHorizontal, Wifi, Wrench } from 'lucide-react'
 import { toast } from 'sonner'
 import { z } from 'zod'
 
@@ -21,6 +21,7 @@ import { PanelSection } from '@/components/layout/panel-section'
 import { SourcesDialog } from '@/features/sources/sources-dialog'
 import { AboutDialog } from '@/features/about/about-dialog'
 import { getSettings, getSystemMemory, saveSettings } from './settings-api'
+import { TileCacheSection } from './tile-cache-section'
 import type { AppSettings } from '@/types/api'
 
 const FORMAT_OPTIONS = [
@@ -41,6 +42,9 @@ const settingsSchema = z.object({
   memory_budget_mb: z.number().int().min(512).max(16384),
   debug_mode: z.boolean(),
   allow_invalid_certs: z.boolean(),
+  tile_cache_enabled: z.boolean(),
+  tile_cache_max_size_mb: z.number().int().min(0).max(1024 * 1024),
+  tile_cache_dir: z.string().trim(),
 })
 
 type SettingsFormValues = z.infer<typeof settingsSchema>
@@ -56,6 +60,9 @@ const DEFAULT_VALUES: SettingsFormValues = {
   memory_budget_mb: 2048,
   debug_mode: false,
   allow_invalid_certs: false,
+  tile_cache_enabled: true,
+  tile_cache_max_size_mb: 5120,
+  tile_cache_dir: '',
 }
 
 function fromAppSettings(s: AppSettings | undefined): SettingsFormValues {
@@ -75,6 +82,9 @@ function fromAppSettings(s: AppSettings | undefined): SettingsFormValues {
     memory_budget_mb: s.memory_budget_mb ?? 2048,
     debug_mode: s.debug_mode ?? false,
     allow_invalid_certs: s.allow_invalid_certs ?? false,
+    tile_cache_enabled: s.tile_cache_enabled ?? true,
+    tile_cache_max_size_mb: s.tile_cache_max_size_mb ?? 5120,
+    tile_cache_dir: s.tile_cache_dir ?? '',
   }
 }
 
@@ -91,6 +101,9 @@ function toAppSettings(values: SettingsFormValues, base: AppSettings | undefined
     memory_budget_mb: values.memory_budget_mb,
     debug_mode: values.debug_mode,
     allow_invalid_certs: values.allow_invalid_certs,
+    tile_cache_enabled: values.tile_cache_enabled,
+    tile_cache_max_size_mb: values.tile_cache_max_size_mb,
+    tile_cache_dir: values.tile_cache_dir.trim() || null,
   }
 }
 
@@ -122,6 +135,9 @@ export function SettingsPanel() {
   const debugMode = useWatch({ control, name: 'debug_mode' })
   const allowInvalidCerts = useWatch({ control, name: 'allow_invalid_certs' })
   const defaultFormat = useWatch({ control, name: 'default_format' })
+  const tileCacheEnabled = useWatch({ control, name: 'tile_cache_enabled' })
+  const tileCacheMaxSizeMb = useWatch({ control, name: 'tile_cache_max_size_mb' })
+  const tileCacheDir = useWatch({ control, name: 'tile_cache_dir' })
 
   const mutation = useMutation({
     mutationFn: (values: SettingsFormValues) =>
@@ -308,8 +324,19 @@ export function SettingsPanel() {
         )}
       </PanelSection>
 
-      <div className="sticky bottom-0 -mx-3 flex justify-end gap-2 border-t bg-background/95 px-3 py-2 backdrop-blur">
-        <Button type="submit" size="sm" disabled={!isDirty || mutation.isPending}>
+      <PanelSection icon={Database} title="瓦片缓存" description="浏览即缓存 / 离线复用">
+        <TileCacheSection
+          enabled={tileCacheEnabled}
+          maxSizeMb={tileCacheMaxSizeMb}
+          dir={tileCacheDir}
+          onEnabledChange={(v) => setValue('tile_cache_enabled', v, { shouldDirty: true })}
+          onMaxSizeMbChange={(v) => setValue('tile_cache_max_size_mb', v, { shouldDirty: true })}
+          onDirChange={(v) => setValue('tile_cache_dir', v, { shouldDirty: true })}
+        />
+      </PanelSection>
+
+      <div className="sticky bottom-0 -mx-3 border-t bg-background/95 px-3 py-2 backdrop-blur">
+        <Button type="submit" className="w-full" disabled={!isDirty || mutation.isPending}>
           {mutation.isPending && <Loader2 className="mr-1 size-3.5 animate-spin" />}
           保存
         </Button>

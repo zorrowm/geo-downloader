@@ -5,6 +5,13 @@ import type { ComponentType, SVGProps } from 'react'
 import { AppShell } from '@/components/layout/app-shell'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { BatchDialog } from '@/features/batch/batch-dialog'
+import { HelpButton } from '@/features/onboarding/help-button'
+import { useOnboardingTour } from '@/features/onboarding/use-onboarding-tour'
+import {
+  IMAGERY_TOUR_STEPS,
+  TILES3D_TOUR_STEPS,
+  WAYBACK_TOUR_STEPS,
+} from '@/features/onboarding/tour-config'
 import { UpdateDialog } from '@/features/update/update-dialog'
 import { checkForUpdates } from '@/features/update/update-api'
 import { ImageryPage } from '@/features/imagery/imagery-page'
@@ -136,12 +143,45 @@ function App() {
     void checkForUpdates(true)
   }, [])
 
+  // 首次打开主界面的新手引导
+  const mainTour = useOnboardingTour({ id: 'main-v1' })
+  // 三个模式的详细引导（手动启动，不自动弹出）
+  const imageryTour = useOnboardingTour({
+    id: 'imagery-v1',
+    steps: IMAGERY_TOUR_STEPS,
+    autoStartOnFirstVisit: false,
+  })
+  const tiles3dTour = useOnboardingTour({
+    id: 'tiles3d-v1',
+    steps: TILES3D_TOUR_STEPS,
+    autoStartOnFirstVisit: false,
+  })
+  const waybackTour = useOnboardingTour({
+    id: 'wayback-v1',
+    steps: WAYBACK_TOUR_STEPS,
+    autoStartOnFirstVisit: false,
+  })
+
+  // 切换模式后等待 DOM 挂载再启动对应引导
+  const startTourForMode = (target: AppMode, runner: () => void) => {
+    if (mode !== target) {
+      setMode(target)
+      // 错开一个 tick，让面板完成重渲染
+      window.setTimeout(runner, 200)
+    } else {
+      runner()
+    }
+  }
+
   const currentMode = MODES.find((m) => m.value === mode) ?? MODES[0]
 
   return (
     <AppShell
       modeSlot={
-        <div className="flex items-center gap-0.5 rounded-lg border border-border/60 bg-muted/40 p-1 shadow-inner">
+        <div
+          data-tour="mode-tabs"
+          className="flex items-center gap-0.5 rounded-lg border border-border/60 bg-muted/40 p-1 shadow-inner"
+        >
           {MODES.map((m) => {
             const Icon = m.icon
             const active = m.value === mode
@@ -165,6 +205,14 @@ function App() {
           })}
         </div>
       }
+      headerExtras={
+        <HelpButton
+          onStartMain={mainTour.start}
+          onStartImagery={() => startTourForMode('imagery', imageryTour.start)}
+          onStartTiles3d={() => startTourForMode('tiles3d', tiles3dTour.start)}
+          onStartWayback={() => startTourForMode('wayback', waybackTour.start)}
+        />
+      }
     >
       <div className="flex h-[calc(100vh-3rem)] w-screen overflow-hidden">
         {/* 左侧控制面板 */}
@@ -173,7 +221,10 @@ function App() {
           style={{ width: sidebarWidth }}
         >
           {/* Tab 头 */}
-          <div className="flex shrink-0 items-stretch border-b border-border/60 bg-muted/30">
+          <div
+            data-tour="sidebar-tabs"
+            className="flex shrink-0 items-stretch border-b border-border/60 bg-muted/30"
+          >
             {SIDEBAR_TABS.map((t) => {
               const Icon = t.icon
               const active = t.value === tab
@@ -182,6 +233,7 @@ function App() {
                   key={t.value}
                   type="button"
                   onClick={() => setTab(t.value)}
+                  data-tour={t.value === 'settings' ? 'settings-tab' : undefined}
                   className={cn(
                     'relative flex flex-1 items-center justify-center gap-1.5 px-2 py-2.5 text-xs font-medium transition-colors',
                     active
@@ -199,40 +251,34 @@ function App() {
             })}
           </div>
 
-          {/* Tab 内容 */}
-          <div className="flex-1 overflow-y-auto">
-            {tab === 'download' && (
-              <div className="p-3">
-                {mode === 'imagery' ? (
-                  <ImageryPage key="imagery" mode="imagery" />
-                ) : mode === 'dem' ? (
-                  <ImageryPage key="dem" mode="dem" />
-                ) : mode === 'wayback' ? (
-                  <WaybackPage />
-                ) : mode === 'tiles3d' ? (
-                  <Tiles3dPage />
-                ) : mode === 'vector' ? (
-                  <VectorPage />
-                ) : (
-                  <ModePlaceholder mode={currentMode} />
-                )}
-              </div>
-            )}
-            {tab === 'history' && (
-              <div className="space-y-3 p-3">
-                <PanelSection icon={ClipboardList} title="任务" description="进行中 / 暂停 / 可恢复">
-                  <TasksPanel />
-                </PanelSection>
-                <PanelSection icon={HistoryIcon} title="历史记录" description="已完成 / 失败 / 已删除">
-                  <HistoryPanel />
-                </PanelSection>
-              </div>
-            )}
-            {tab === 'settings' && (
-              <div className="p-3">
-                <SettingsPanel />
-              </div>
-            )}
+          {/* Tab 内容（保持挂载，仅切换显隐，避免重置表单状态） */}
+          <div className="flex-1 overflow-y-auto" data-tour="download-panel">
+            <div className={tab === 'download' ? 'p-3' : 'hidden'}>
+              {mode === 'imagery' ? (
+                <ImageryPage key="imagery" mode="imagery" />
+              ) : mode === 'dem' ? (
+                <ImageryPage key="dem" mode="dem" />
+              ) : mode === 'wayback' ? (
+                <WaybackPage />
+              ) : mode === 'tiles3d' ? (
+                <Tiles3dPage />
+              ) : mode === 'vector' ? (
+                <VectorPage />
+              ) : (
+                <ModePlaceholder mode={currentMode} />
+              )}
+            </div>
+            <div className={tab === 'history' ? 'space-y-3 p-3' : 'hidden'}>
+              <PanelSection icon={ClipboardList} title="任务" description="进行中 / 暂停 / 可恢复">
+                <TasksPanel />
+              </PanelSection>
+              <PanelSection icon={HistoryIcon} title="历史记录" description="已完成 / 失败 / 已删除">
+                <HistoryPanel />
+              </PanelSection>
+            </div>
+            <div className={tab === 'settings' ? 'p-3' : 'hidden'}>
+              <SettingsPanel />
+            </div>
           </div>
         </aside>
 
@@ -256,7 +302,7 @@ function App() {
         </div>
 
         {/* 右侧地图：Leaflet（默认）与 Cesium（3D Tiles 模式）同时挂载，按 mode CSS 切换显隐 */}
-        <main className="relative h-full flex-1">
+        <main className="relative h-full flex-1" data-tour="map-canvas">
           <div
             className="absolute inset-0"
             style={{ display: mode === 'tiles3d' ? 'none' : 'block' }}

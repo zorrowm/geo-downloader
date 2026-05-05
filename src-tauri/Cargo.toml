@@ -72,9 +72,18 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Directories
 dirs = "5"
 
+# Embedded SQLite (MBTiles)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Base64 (used for tile_cache JS bridge)
+base64 = "0.22"
+
 # Shell commands
 open = "5"
 
 [features]
 default = []
 geotiff = ["gdal"]
+
+[dev-dependencies]
+tempfile = "3"

@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { Download, FolderOpen, Loader2, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import shp from 'shpjs'
 import type { GeoJsonObject } from 'geojson'
 
 import { Button } from '@/components/ui/button'
@@ -23,6 +22,11 @@ import { useAppStore } from '@/store/app-store'
 import { useVectorLayersStore } from '@/store/vector-layers-store'
 import { isTauriRuntime } from '@/lib/tauri'
 import { getSettings } from '@/features/settings/settings-api'
+import {
+  parseRegionFile,
+  REGION_FILE_ACCEPT_ATTR,
+  UnsupportedRegionFileError,
+} from '@/lib/geo-import'
 import { createOsmDownloadTask } from './vector-api'
 import { downloadAdminBoundaryFile } from '@/features/admin/admin-api'
 
@@ -140,18 +144,16 @@ export function VectorPanel() {
     if (!files || files.length === 0) return
     let added = 0
     for (const file of Array.from(files)) {
-      const name = file.name.toLowerCase()
       try {
         let geojson: GeoJsonObject
-        if (name.endsWith('.geojson') || name.endsWith('.json')) {
-          const text = await file.text()
-          geojson = JSON.parse(text) as GeoJsonObject
-        } else if (name.endsWith('.zip') || name.endsWith('.shp')) {
-          const buf = await file.arrayBuffer()
-          geojson = (await shp(buf)) as GeoJsonObject
-        } else {
-          toast.error(`不支持的格式：${file.name}`)
-          continue
+        try {
+          geojson = await parseRegionFile(file)
+        } catch (e) {
+          if (e instanceof UnsupportedRegionFileError) {
+            toast.error(e.message)
+            continue
+          }
+          throw e
         }
         const featureCount = countFeatures(geojson)
         addLayer({ filename: file.name, geojson, featureCount })
@@ -261,7 +263,7 @@ export function VectorPanel() {
       <input
         ref={fileRef}
         type="file"
-        accept=".geojson,.json,.shp,.zip"
+        accept={REGION_FILE_ACCEPT_ATTR}
         multiple
         className="hidden"
         onChange={(e) => {

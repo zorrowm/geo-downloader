@@ -3,11 +3,15 @@
 use crate::config::{self, TileSource, USER_AGENTS};
 use crate::task::PauseControl;
 use crate::tile::TileCoord;
+use crate::tile_cache::{
+    self as tcache, SourceInfo, SourceKey, StoredTile, TileCoord as CacheCoord,
+};
 use image::RgbImage;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use rand::seq::SliceRandom;
 use futures::stream::{self, StreamExt};
@@ -136,6 +140,44 @@ impl TileDownloader {
         &self.client
     }
 
+    /// 推断瓦片格式（从 URL 或字节魔数）
+    fn detect_format(bytes: &[u8]) -> &'static str {
+        if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+            "jpg"
+        } else if bytes.len() >= 4 && bytes[0] == 0x89 && bytes[1] == 0x50 {
+            "png"
+        } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            "webp"
+        } else {
+            "png"
+        }
+    }
+
+    fn format_to_mime(fmt: &str) -> String {
+        match fmt {
+            "jpg" | "jpeg" => "image/jpeg".to_string(),
+            "webp" => "image/webp".to_string(),
+            "pbf" => "application/x-protobuf".to_string(),
+            _ => "image/png".to_string(),
+        }
+    }
+
+    /// 构造缓存图源元信息
+    fn build_cache_source(&self) -> (SourceKey, SourceInfo) {
+        let key = SourceKey::new(&self.source.id);
+        let info = SourceInfo {
+            display_name: self.source.name.clone(),
+            url_template: self.source.url.clone(),
+            format: "png".to_string(),
+            min_zoom: None,
+            max_zoom: Some(self.source.max_zoom),
+            bounds: None,
+            attribution: Some(self.source.attribution.clone()),
+            capture_at: None,
+        };
+        (key, info)
+    }
+
     /// 下载单个瓦片（带重试）
     async fn download_one_tile(
         client: &Client,
@@ -257,6 +299,15 @@ impl TileDownloader {
         let mut failed_tiles: Vec<TileCoord> = Vec::new();
         let retrying_counter = std::sync::Arc::new(AtomicU32::new(0));
 
+        // 缓存元信息（每任务一次构建）
+        let (cache_src, cache_info) = self.build_cache_source();
+        let cache_src = Arc::new(cache_src);
+        let cache_info = Arc::new(cache_info);
+        // 确保 metadata 表存在（仅在缓存启用且至少要写时；ensure_source 在禁用时也安全 no-op? 不安全：直接调用会创建文件）
+        if tcache::get_config().enabled {
+            let _ = tcache::Store::global().ensure_source(&cache_src, (*cache_info).clone());
+        }
+
         let all_futures = need_download.into_iter().map(|tile| {
             let url = self.get_tile_url(&tile);
             let headers = self.get_headers();
@@ -264,14 +315,45 @@ impl TileDownloader {
             let retry_times = self.retry_times;
             let td = temp_dir.clone();
             let rc = retrying_counter.clone();
+            let cs = cache_src.clone();
+            let ci = cache_info.clone();
 
             async move {
                 let file_path = td.join(format!("{}_{}.png", tile.x, tile.y));
+                let coord = CacheCoord { z: tile.z as u8, x: tile.x, y: tile.y };
+
+                // 1) 优先查缓存
+                if tcache::get_config().enabled {
+                    if let Ok(Some(stored)) = tcache::Store::global().get(&cs, coord) {
+                        if !stored.bytes.is_empty() {
+                            if tokio::fs::write(&file_path, &stored.bytes).await.is_ok() {
+                                return (tile, Ok(file_path));
+                            }
+                        }
+                    }
+                }
+
+                // 2) 网络下载
                 let result = Self::download_one_tile(&client, &url, &headers, &file_path, retry_times, Some(&rc)).await;
-                // 404 返回 Ok(()) 但不会创建文件，需要检查文件实际存在才算成功
-                (tile, result.and_then(|_| {
-                    if file_path.exists() { Ok(file_path) } else { Err("no_data".to_string()) }
-                }))
+                let final_result = result.and_then(|_| {
+                    if file_path.exists() { Ok(file_path.clone()) } else { Err("no_data".to_string()) }
+                });
+
+                // 3) 写回缓存
+                if final_result.is_ok() && tcache::get_config().enabled {
+                    if let Ok(bytes) = tokio::fs::read(&file_path).await {
+                        if !bytes.is_empty() && bytes.len() <= 4 * 1024 * 1024 {
+                            let fmt = Self::detect_format(&bytes);
+                            let stored = StoredTile {
+                                bytes,
+                                content_type: Self::format_to_mime(fmt),
+                            };
+                            let _ = tcache::Store::global().put(&cs, coord, stored, Some((*ci).clone()));
+                        }
+                    }
+                }
+
+                (tile, final_result)
             }
         });
 
@@ -386,14 +468,43 @@ impl TileDownloader {
                 let headers = self.get_headers();
                 let client = self.client.clone();
                 let td = temp_dir.clone();
+                let cs = cache_src.clone();
+                let ci = cache_info.clone();
 
                 async move {
                     let file_path = td.join(format!("{}_{}.png", tile.x, tile.y));
+                    let coord = CacheCoord { z: tile.z as u8, x: tile.x, y: tile.y };
+
+                    if tcache::get_config().enabled {
+                        if let Ok(Some(stored)) = tcache::Store::global().get(&cs, coord) {
+                            if !stored.bytes.is_empty()
+                                && tokio::fs::write(&file_path, &stored.bytes).await.is_ok()
+                            {
+                                return (tile, Ok(file_path));
+                            }
+                        }
+                    }
+
                     // 重试轮只给 1 次重试机会
                     let result = Self::download_one_tile(&client, &url, &headers, &file_path, 1, None).await;
-                    (tile, result.and_then(|_| {
-                        if file_path.exists() { Ok(file_path) } else { Err("no_data".to_string()) }
-                    }))
+                    let final_result = result.and_then(|_| {
+                        if file_path.exists() { Ok(file_path.clone()) } else { Err("no_data".to_string()) }
+                    });
+
+                    if final_result.is_ok() && tcache::get_config().enabled {
+                        if let Ok(bytes) = tokio::fs::read(&file_path).await {
+                            if !bytes.is_empty() && bytes.len() <= 4 * 1024 * 1024 {
+                                let fmt = Self::detect_format(&bytes);
+                                let stored = StoredTile {
+                                    bytes,
+                                    content_type: Self::format_to_mime(fmt),
+                                };
+                                let _ = tcache::Store::global().put(&cs, coord, stored, Some((*ci).clone()));
+                            }
+                        }
+                    }
+
+                    (tile, final_result)
                 }
             });
 

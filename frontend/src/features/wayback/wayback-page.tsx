@@ -87,7 +87,7 @@ export function WaybackPage() {
   const [cropToShape, setCropToShape] = useState<boolean>(false)
   const [concurrency, setConcurrency] = useState<number>(8)
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set())
-  const [scanMode, setScanMode] = useState<'fast' | 'fine'>('fast')
+  const [scanMode, setScanMode] = useState<'fast' | 'fine' | 'official'>('official')
   const [coverageThreshold, setCoverageThreshold] = useState<number>(5)
   const [dominantThreshold, setDominantThreshold] = useState<number>(50)
   const [onlyLatestPerYear, setOnlyLatestPerYear] = useState<boolean>(false)
@@ -109,6 +109,11 @@ export function WaybackPage() {
     queryFn: getSettings,
     enabled: inTauri,
   })
+  // 全局并发统一从设置中获取（不在面板中暴露调节器）
+  useEffect(() => {
+    const c = settingsQuery.data?.default_concurrency
+    if (typeof c === 'number' && c > 0) setConcurrency(c)
+  }, [settingsQuery.data?.default_concurrency])
   const proxy =
     settingsQuery.data?.proxy_enabled && settingsQuery.data.proxy_url
       ? settingsQuery.data.proxy_url
@@ -462,6 +467,7 @@ export function WaybackPage() {
         icon={History}
         title="Esri Wayback 历史影像"
         description="按时间轴访问 Esri 全球历史影像"
+        dataTour="wayback-section"
         action={
           <Button
             type="button"
@@ -606,17 +612,6 @@ export function WaybackPage() {
           )}
         </div>
 
-        <div className="space-y-1.5">
-          <Label className="text-xs">下载并发：{concurrency}</Label>
-          <Slider
-            min={1}
-            max={32}
-            step={1}
-            value={[concurrency]}
-            onValueChange={(v) => setConcurrency(v[0] ?? concurrency)}
-          />
-        </div>
-
         {polygon && (
           <label className="flex items-center gap-2 text-xs">
             <input
@@ -632,7 +627,7 @@ export function WaybackPage() {
         <Separator />
 
         <Tabs value={wbMode} onValueChange={(v) => setWbMode(v as WbMode)}>
-          <TabsList className="grid h-8 w-full grid-cols-3">
+          <TabsList className="grid h-8 w-full grid-cols-3" data-tour="wayback-mode-tabs">
             <TabsTrigger value="single" className="text-xs">单个</TabsTrigger>
             <TabsTrigger value="batch" className="text-xs">批量</TabsTrigger>
             <TabsTrigger value="incremental" className="text-xs">增量</TabsTrigger>
@@ -714,13 +709,14 @@ export function WaybackPage() {
           <TabsContent value="incremental" className="mt-3 space-y-2">
             <div className="flex items-center gap-2 text-xs">
               <Label className="text-xs">扫描模式</Label>
-              <Select value={scanMode} onValueChange={(v) => setScanMode(v as 'fast' | 'fine')}>
-                <SelectTrigger className="h-7 w-24 text-xs">
+              <Select value={scanMode} onValueChange={(v) => setScanMode(v as 'fast' | 'fine' | 'official')}>
+                <SelectTrigger className="h-7 w-32 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="fast">fast</SelectItem>
-                  <SelectItem value="fine">fine</SelectItem>
+                  <SelectItem value="official">极速（ESRI 官方版）</SelectItem>
+                  <SelectItem value="fast">fast（AOI 全面）</SelectItem>
+                  <SelectItem value="fine">fine（多层准确）</SelectItem>
                 </SelectContent>
               </Select>
               <Button
@@ -770,6 +766,49 @@ export function WaybackPage() {
                   扫描了 <strong>{scanReleasesScanned}</strong> 个 release，区域内有数据{' '}
                   <strong>{scanReleases.length}</strong> 个
                 </div>
+
+                <details className="rounded border bg-muted/10 px-2 py-1 text-xs">
+                  <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">
+                    字段含义说明
+                  </summary>
+                  <div className="mt-2 space-y-1.5 text-muted-foreground">
+                    <div>
+                      <span className="font-medium text-foreground">主导日期</span>
+                      ：该 release 在 AOI 内出现频率最高的影像拍摄日期（来自元数据 SRC_DATE2 字段）。
+                    </div>
+                    <div>
+                      <span className="font-medium text-foreground">数据源 / 分辨率</span>
+                      ：主导日期对应栅格的来源（如 Vivid Advanced、Maxar）和空间分辨率（米/像素）。
+                    </div>
+                    <div>
+                      <span className="font-medium text-foreground">release</span>
+                      ：Wayback 发布日，可能与拍摄日期相差数月～数年（Esri 入库延迟）。
+                    </div>
+                    <div>
+                      <span className="font-medium text-foreground">主导 %</span>
+                      ：主导日期 footprint 面积 / 该 release 在 AOI 内全部 footprint 面积。值越接近 100% 表示 AOI 内基本是同一天的影像。
+                    </div>
+                    <div>
+                      <span className="font-medium text-foreground">覆盖 %</span>
+                      ：该 release 在 AOI 内 footprint 合计 / AOI 总面积。100% 表示该 release 完整覆盖你的范围。
+                    </div>
+                    <div>
+                      <span className="font-medium text-foreground">共 N 个日期</span>
+                      ：该 release 在 AOI 内包含多个不同拍摄日的影像（拼接图），可在下载后按需裁剪。
+                    </div>
+                    <div>
+                      <span className="font-medium text-foreground">圆点颜色</span>
+                      ：绿=Vivid 系列、蓝=Maxar 系列、灰=其他。
+                    </div>
+                    {scanMode === 'official' && (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 p-1.5 text-foreground">
+                        当前为「极速（ESRI 官方版）」模式，仅探测 AOI 中心 1 个瓦片，
+                        <span className="font-medium">主导 % 与覆盖 % 退化为二值（≈ 0% 或 ≈ 100%）</span>
+                        ，对应官方「Only versions with local changes」逻辑。如需准确比例请改用 fast/fine 模式。
+                      </div>
+                    )}
+                  </div>
+                </details>
 
                 <div className="space-y-1.5 rounded border bg-background/50 p-2 text-xs">
                   <div className="flex items-center gap-2">

@@ -29,6 +29,9 @@ pub struct DownloadRequest {
     /// 当 zoom_max > zoom 时，按 zoom..=zoom_max 逐级下载，输出到 <save_path 父目录>/z<N>/<文件名>
     #[serde(default)]
     pub zoom_max: Option<u8>,
+    /// 任意级别多选：当为 Some 且非空时，覆盖 zoom..=zoom_max 区段，按指定离散级别集合逐级下载
+    #[serde(default)]
+    pub zoom_levels: Option<Vec<u8>>,
     pub source: String,
     pub format: String,
     #[serde(default)]
@@ -150,15 +153,29 @@ pub fn get_system_memory() -> Option<budget::SystemMemoryInfo> {
 
 /// 估算下载大小
 #[tauri::command]
-pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format: Option<String>, crop_to_shape: Option<bool>) -> EstimateResult {
+pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format: Option<String>, crop_to_shape: Option<bool>, zoom_levels: Option<Vec<u8>>) -> EstimateResult {
     let z_min = zoom;
     let z_max = zoom_max.unwrap_or(zoom).max(zoom);
-    let multi_zoom = z_max > z_min;
+    // 优先使用离散级别集合
+    let levels: Vec<u8> = if let Some(ls) = zoom_levels.as_ref().filter(|l| !l.is_empty()) {
+        let mut v: Vec<u8> = ls.iter().copied().filter(|z| (1..=22).contains(z)).collect();
+        v.sort_unstable();
+        v.dedup();
+        if v.is_empty() { (z_min..=z_max).collect() } else { v }
+    } else {
+        (z_min..=z_max).collect()
+    };
+    let multi_zoom = levels.len() > 1;
+    let level_max = *levels.iter().max().unwrap_or(&z_max);
+    let level_min = *levels.iter().min().unwrap_or(&z_min);
 
-    // 当前级（z_max）的矩阵作为预算/警告基准（最高级别瓦片数最多，也是单文件最大尺寸）
-    let (_x_min, _y_min, _x_max, _y_max, cols, rows) = tile::get_tile_matrix_size(&bounds, z_max);
-    // 跨级总瓦片数
-    let tile_count = tile::estimate_tile_count_range(&bounds, z_min, z_max);
+    // 当前最大级的矩阵作为预算/警告基准
+    let (_x_min, _y_min, _x_max, _y_max, cols, rows) = tile::get_tile_matrix_size(&bounds, level_max);
+    // 跨级总瓦片数（按指定级别求和）
+    let tile_count: u32 = levels
+        .iter()
+        .map(|z| tile::estimate_tile_count(&bounds, *z))
+        .fold(0u32, |acc, n| acc.saturating_add(n));
     let avg_tile_size_kb = 20.0;
     let estimated_size_mb = (tile_count as f64 * avg_tile_size_kb) / 1024.0;
 
@@ -174,7 +191,7 @@ pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format:
             warning: Some(format!(
                 "区域过大（{} 个瓦片{}），超过 {} 个上限。请缩小区域或降低缩放级别。",
                 tile_count,
-                if multi_zoom { format!("，跨 z{}~z{} 共 {} 级", z_min, z_max, z_max - z_min + 1) } else { String::new() },
+                if multi_zoom { format!("，跨 z{}~z{} 共 {} 级", level_min, level_max, levels.len()) } else { String::new() },
                 max_tiles
             )),
             budget_check: None,
@@ -227,13 +244,13 @@ pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format:
             notes.push("卫星影像 LZW 压缩效率低，实际文件接近未压缩大小；矢量地图可压缩至 1/5~1/10".to_string());
         }
         if multi_zoom {
-            notes.push(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", z_max - z_min + 1, z_min, z_max));
+            notes.push(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", levels.len(), level_min, level_max));
         }
         let note = if notes.is_empty() { None } else { Some(notes.join("；")) };
         (Some(raw), note)
     } else {
         let note = if multi_zoom {
-            Some(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", z_max - z_min + 1, z_min, z_max))
+            Some(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", levels.len(), level_min, level_max))
         } else {
             None
         };
@@ -277,10 +294,23 @@ pub async fn create_download_task(
     let source = sources.get(&request.source)
         .ok_or_else(|| format!("未知图源: {}", request.source))?.clone();
     
-    // 估算瓦片数（跨级求和；单级时退化为 estimate_tile_count）
+    // 估算瓦片数：优先按离散级别集合求和，否则按 zoom..=zoom_max 区段求和
     let z_min = request.zoom;
     let z_max = request.zoom_max.unwrap_or(z_min).max(z_min);
-    let tile_count = tile::estimate_tile_count_range(&request.bounds, z_min, z_max);
+    let tile_count = if let Some(levels) = request
+        .zoom_levels
+        .as_ref()
+        .filter(|l| !l.is_empty())
+    {
+        let mut v: Vec<u8> = levels.iter().copied().filter(|z| (1..=22).contains(z)).collect();
+        v.sort_unstable();
+        v.dedup();
+        v.iter()
+            .map(|z| tile::estimate_tile_count(&request.bounds, *z))
+            .fold(0u32, |acc, n| acc.saturating_add(n))
+    } else {
+        tile::estimate_tile_count_range(&request.bounds, z_min, z_max)
+    };
     
     // 生成任务 ID
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -359,6 +389,7 @@ pub async fn create_download_task(
                     ).with_log_file(log_file_path);
                     if let Ok(manager) = HistoryManager::new() {
                         let _ = manager.add(record);
+                        let _ = app.emit("download-history-updated", ());
                     }
                     tm.fail_task(&tid, e.clone());
                     let _ = app.emit(&format!("task-progress-{}", tid), TaskProgressPayload {
@@ -489,7 +520,7 @@ async fn execute_zoom_level(
     task_log(app, tm, task_id, "INFO", &format!("瓦片临时目录: {}", temp_dir.display()));
     
     // 创建下载器
-    let downloader = TileDownloader::new(source, request.proxy.as_deref())?;
+    let downloader = TileDownloader::new(source.clone(), request.proxy.as_deref())?;
     
     // 更新状态: 下载中
     task_log(app, tm, task_id, "INFO", "开始下载瓦片...");
@@ -601,11 +632,67 @@ async fn execute_zoom_level(
     let is_dem = crate::dem::is_dem_source(&request.source);
     let is_geotiff = format == ExportFormat::GeoTiff || is_dem;
     let is_png = format == ExportFormat::Png;
+    let is_pack = format == ExportFormat::Mbtiles || format == ExportFormat::Gpkg;
     let use_streaming = is_geotiff || is_png;
-    
+
     let file_size;
-    
-    if use_streaming {
+
+    if is_pack {
+        // ===== MBTiles / GPKG 直接打包瓦片（不拼接、不重投影）=====
+        let format_label = if format == ExportFormat::Mbtiles { "MBTiles" } else { "GPKG" };
+        task_log(app, tm, task_id, "INFO", &format!(
+            "使用 {} 打包导出（{} 张瓦片）", format_label, actual_count
+        ));
+        let p_export = map_progress(88.0);
+        tm.update_progress(task_id, TaskStatus::Exporting, p_export, completed_after_download, failed_after_download, Some(format!("打包 {}...", format_label)));
+        let _ = app.emit(&event_name, TaskProgressPayload {
+            task_id: task_id.to_string(),
+            status: "exporting".to_string(),
+            progress: p_export,
+            completed: completed_after_download,
+            total: total_tiles,
+            message: Some(format!("打包 {}...", format_label)),
+        });
+
+        let sp = save_path.clone();
+        let bounds = request.bounds.clone();
+        let source_name = source.name.clone();
+        let attribution = source.attribution.clone();
+        let z_min_meta = request.zoom;
+        let z_max_meta = request.zoom_max.unwrap_or(z_min_meta).max(z_min_meta);
+        let is_mbtiles = format == ExportFormat::Mbtiles;
+        let tile_files_clone = tile_files.clone();
+        let cz = current_zoom;
+
+        file_size = tokio::task::spawn_blocking(move || -> Result<u64, String> {
+            let path = std::path::Path::new(&sp);
+            let needs_init = !path.exists();
+            let tile_format = crate::tile_pack::detect_tile_format(&tile_files_clone);
+            let meta = if needs_init {
+                Some(crate::tile_pack::PackMetadata {
+                    name: source_name,
+                    format: tile_format,
+                    bounds: crate::tile::TileBounds {
+                        north: bounds.north,
+                        south: bounds.south,
+                        east: bounds.east,
+                        west: bounds.west,
+                    },
+                    min_zoom: z_min_meta,
+                    max_zoom: z_max_meta,
+                    attribution: Some(attribution),
+                    description: None,
+                })
+            } else {
+                None
+            };
+            if is_mbtiles {
+                crate::tile_pack::append_zoom_to_mbtiles(path, cz, &tile_files_clone, meta.as_ref())
+            } else {
+                crate::tile_pack::append_zoom_to_gpkg(path, cz, &tile_files_clone, meta.as_ref())
+            }
+        }).await.map_err(|e| format!("打包失败: {}", e))??;
+    } else if use_streaming {
         // ===== 流式路径：逐行写入，内存极低 =====
         let has_crop = request.crop_to_shape && request.polygon.is_some();
         let format_label = if is_geotiff { "BigTIFF" } else { "PNG" };
@@ -867,8 +954,20 @@ async fn execute_download_task(
     let start_time = std::time::Instant::now();
     let z_min = request.zoom;
     let z_max = request.zoom_max.unwrap_or(z_min).max(z_min);
-    let multi_zoom = z_max > z_min;
-    let zooms: Vec<u8> = (z_min..=z_max).collect();
+    // 优先使用离散级别集合（任意级别多选），否则退化为 z_min..=z_max 连续区段
+    let zooms: Vec<u8> = if let Some(levels) = request
+        .zoom_levels
+        .as_ref()
+        .filter(|l| !l.is_empty())
+    {
+        let mut v: Vec<u8> = levels.iter().copied().filter(|z| (1..=22).contains(z)).collect();
+        v.sort_unstable();
+        v.dedup();
+        if v.is_empty() { (z_min..=z_max).collect() } else { v }
+    } else {
+        (z_min..=z_max).collect()
+    };
+    let multi_zoom = zooms.len() > 1;
     let per_level_counts: Vec<u32> = zooms
         .iter()
         .map(|z| tile::estimate_tile_count(&request.bounds, *z))
@@ -882,16 +981,25 @@ async fn execute_download_task(
     task_log(app, tm, task_id, "INFO", "=== 任务开始 ===");
     task_log(app, tm, task_id, "INFO", &format!("任务名称: {}", task_name));
     task_log(app, tm, task_id, "INFO", &format!("图源: {}", source_name));
+    let zooms_label: String = if zooms.len() == 1 {
+        format!("{}", zooms[0])
+    } else {
+        // 检测是否为连续段
+        let is_contig = zooms.windows(2).all(|w| w[1] == w[0] + 1);
+        if is_contig {
+            format!("{}~{}", zooms[0], zooms[zooms.len() - 1])
+        } else {
+            zooms.iter().map(|z| z.to_string()).collect::<Vec<_>>().join(",")
+        }
+    };
     task_log(app, tm, task_id, "INFO", &format!(
-        "缩放级别: {}{}，预计瓦片: {}",
-        z_min,
-        if multi_zoom { format!("~{}", z_max) } else { String::new() },
-        total_tiles
+        "缩放级别: {}，预计瓦片: {}",
+        zooms_label, total_tiles
     ));
     if multi_zoom {
         task_log(app, tm, task_id, "INFO", &format!(
-            "多级别下载将按 z{}~z{} 串行执行，输出到同级目录下的 z<N> 子目录",
-            z_min, z_max
+            "多级别下载将按 [{}] 串行执行，输出到同级目录下的 z<N> 子目录",
+            zooms_label
         ));
     }
 
@@ -919,7 +1027,14 @@ async fn execute_download_task(
         } else {
             (level_count as f64 / total_for_progress as f64) * 100.0
         };
-        let level_save_path = zoom_level_save_path(&save_path, *zoom, multi_zoom)?;
+        // MBTiles/GPKG 多 zoom 写入同一个文件，不需要为每个 zoom 单独建文件
+        let req_format = ExportFormat::from_str(&request.format);
+        let pack_single_file = matches!(req_format, ExportFormat::Mbtiles | ExportFormat::Gpkg);
+        let level_save_path = if pack_single_file {
+            save_path.clone()
+        } else {
+            zoom_level_save_path(&save_path, *zoom, multi_zoom)?
+        };
         let level_temp_dir = if multi_zoom {
             base_temp_dir.join(format!("z{}", zoom))
         } else {
@@ -1020,6 +1135,7 @@ async fn execute_download_task(
      .with_pyramid(pyramid_built);
     if let Ok(manager) = HistoryManager::new() {
         let _ = manager.add(record);
+        let _ = app.emit("download-history-updated", ());
     }
 
     Ok(())
@@ -1266,6 +1382,7 @@ pub async fn resume_task(
                     ).with_log_file(log_file_path);
                     if let Ok(manager) = HistoryManager::new() {
                         let _ = manager.add(record);
+                        let _ = app.emit("download-history-updated", ());
                     }
                     tm.fail_task(&tid, e.clone());
                     let _ = app.emit(&format!("task-progress-{}", tid), TaskProgressPayload {
@@ -1455,6 +1572,20 @@ pub fn save_settings(settings: AppSettings) -> Result<(), String> {
     manager.save(&settings)?;
     // 同步全局 TLS 严格性开关，避免用户变更后仍需重启才生效
     crate::config::set_allow_invalid_certs(settings.allow_invalid_certs);
+    // 同步瓦片缓存配置
+    crate::tile_cache::set_enabled(settings.tile_cache_enabled);
+    if let Some(dir) = settings
+        .tile_cache_dir
+        .as_ref()
+        .filter(|d| !d.trim().is_empty())
+    {
+        crate::tile_cache::set_root_dir(std::path::PathBuf::from(dir));
+    } else {
+        crate::tile_cache::set_root_dir(crate::tile_cache::CacheConfig::default_root());
+    }
+    crate::tile_cache::set_max_total_bytes(
+        settings.tile_cache_max_size_mb.saturating_mul(1024 * 1024),
+    );
     Ok(())
 }
 
@@ -1581,6 +1712,7 @@ pub async fn create_osm_download_task(
         ).with_log_file(log_file_path);
         if let Ok(manager) = HistoryManager::new() {
             let _ = manager.add(record);
+            let _ = app.emit("download-history-updated", ());
         }
     });
 
@@ -1940,6 +2072,7 @@ async fn execute_3dtiles_task(
     ).with_log_file(log_file_path);
     if let Ok(manager) = HistoryManager::new() {
         let _ = manager.add(record);
+        let _ = app.emit("download-history-updated", ());
     }
 
     let _ = app.emit(
@@ -2464,6 +2597,7 @@ pub async fn download_wayback_incremental(
             bounds: req.bounds.clone(),
             zoom: req.zoom,
             zoom_max: req.zoom_max,
+            zoom_levels: None,
             source: format!("wayback_{}", fp.release_id),
             format: req.format.clone(),
             proxy: req.proxy.clone(),
@@ -2498,6 +2632,167 @@ fn strip_ext(path: &str) -> String {
 
 fn ext_of(path: &str) -> Option<String> {
     path.rfind('.').map(|i| path[i + 1..].to_string())
+}
+
+// ============================================================
+// 瓦片缓存（tile_cache）
+// ============================================================
+
+use base64::Engine;
+use crate::tile_cache::{self, SourceInfo, SourceKey, SourceStats, StoredTile, TileCoord};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedTilePayload {
+    pub content_type: String,
+    pub base64: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheStatsResponse {
+    pub root_dir: String,
+    pub enabled: bool,
+    pub max_total_bytes: u64,
+    pub used_bytes: u64,
+    pub sources: Vec<SourceStats>,
+}
+
+#[tauri::command]
+pub async fn cache_get_tile(
+    source: String,
+    z: u8,
+    x: u32,
+    y: u32,
+) -> Result<Option<CachedTilePayload>, String> {
+    let src = SourceKey::new(source);
+    let store = tile_cache::Store::global();
+    let result = tokio::task::spawn_blocking(move || store.get(&src, TileCoord { z, x, y }))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(result.map(|t| CachedTilePayload {
+        content_type: t.content_type,
+        base64: base64::engine::general_purpose::STANDARD.encode(&t.bytes),
+    }))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachePutTileRequest {
+    pub source: String,
+    pub z: u8,
+    pub x: u32,
+    pub y: u32,
+    pub content_type: String,
+    pub base64: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub url_template: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub capture_at: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cache_put_tile(req: CachePutTileRequest) -> Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(req.base64.as_bytes())
+        .map_err(|e| format!("base64 decode failed: {}", e))?;
+    let src = SourceKey::new(req.source);
+    let coord = TileCoord {
+        z: req.z,
+        x: req.x,
+        y: req.y,
+    };
+    let info = SourceInfo {
+        display_name: req.display_name.unwrap_or_default(),
+        url_template: req.url_template.unwrap_or_default(),
+        format: req.format.unwrap_or_else(|| {
+            mime_to_format(&req.content_type).to_string()
+        }),
+        capture_at: req.capture_at,
+        ..Default::default()
+    };
+    let tile = StoredTile {
+        bytes,
+        content_type: req.content_type,
+    };
+    tokio::task::spawn_blocking(move || {
+        tile_cache::Store::global().put(&src, coord, tile, Some(info))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cache_stats() -> Result<CacheStatsResponse, String> {
+    let cfg = tile_cache::get_config();
+    let sources = tokio::task::spawn_blocking(|| tile_cache::Store::global().stats())
+        .await
+        .map_err(|e| e.to_string())??;
+    let used: u64 = sources.iter().map(|s| s.size_bytes).sum();
+    Ok(CacheStatsResponse {
+        root_dir: cfg.root_dir.to_string_lossy().to_string(),
+        enabled: cfg.enabled,
+        max_total_bytes: cfg.max_total_bytes,
+        used_bytes: used,
+        sources,
+    })
+}
+
+#[tauri::command]
+pub async fn cache_clear(source: Option<String>) -> Result<u64, String> {
+    let src = source.map(SourceKey::new);
+    tokio::task::spawn_blocking(move || tile_cache::Store::global().clear(src.as_ref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn cache_set_max_size_mb(mb: u64) -> Result<u64, String> {
+    let bytes = mb.saturating_mul(1024 * 1024);
+    tile_cache::set_max_total_bytes(bytes);
+    // 立即触发一次 prune
+    let report = tokio::task::spawn_blocking(move || {
+        tile_cache::Store::global().prune(bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(report.freed_bytes)
+}
+
+#[tauri::command]
+pub async fn cache_set_dir(dir: Option<String>) -> Result<String, String> {
+    let path = match dir {
+        Some(s) if !s.trim().is_empty() => std::path::PathBuf::from(s),
+        _ => tile_cache::CacheConfig::default_root(),
+    };
+    std::fs::create_dir_all(&path)
+        .map_err(|e| format!("创建缓存目录失败: {}", e))?;
+    tile_cache::set_root_dir(path.clone());
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn cache_set_enabled(enabled: bool) -> Result<(), String> {
+    tile_cache::set_enabled(enabled);
+    Ok(())
+}
+
+fn mime_to_format(mime: &str) -> &'static str {
+    let m = mime.to_ascii_lowercase();
+    if m.contains("jpeg") || m.contains("jpg") {
+        "jpg"
+    } else if m.contains("webp") {
+        "webp"
+    } else if m.contains("protobuf") || m.contains("pbf") {
+        "pbf"
+    } else {
+        "png"
+    }
 }
 
 

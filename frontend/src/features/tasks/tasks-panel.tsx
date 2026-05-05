@@ -526,6 +526,11 @@ export function TasksPanel() {
     () => tasks.filter((t) => isFinished(String(t.status))).length,
     [tasks],
   )
+  // 已完成/失败/取消的任务转入「历史记录」展示，活动列表只保留进行中/暂停
+  const visibleTasks = useMemo(
+    () => tasks.filter((t) => !isFinished(String(t.status))),
+    [tasks],
+  )
 
   if (!inTauri) {
     return (
@@ -584,13 +589,16 @@ export function TasksPanel() {
           <div className="text-xs font-medium text-muted-foreground">活动任务</div>
         )}
         {tasksQuery.isLoading && <p className="text-xs text-muted-foreground">加载中...</p>}
-        {!tasksQuery.isLoading && tasks.length === 0 && (
+        {!tasksQuery.isLoading && visibleTasks.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-8 text-xs text-muted-foreground">
             <Inbox className="size-7 opacity-50" />
             <p>暂无活动任务</p>
+            {finishedCount > 0 && (
+              <p>已完成 {finishedCount} 项已转入历史记录</p>
+            )}
           </div>
         )}
-        {tasks.map((t) => (
+        {visibleTasks.map((t) => (
           <TaskRow key={t.id} task={t} />
         ))}
       </div>

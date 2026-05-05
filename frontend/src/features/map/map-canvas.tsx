@@ -18,6 +18,7 @@ import { getSettings } from '@/features/settings/settings-api'
 import { getTileSourcesMerged } from '@/features/sources/sources-api'
 import { getWaybackVersions } from '@/features/wayback/wayback-api'
 import type { TileSource } from '@/types/api'
+import { createCachedTileLayer } from '@/features/map/cached-tile-layer'
 
 // 修复 Leaflet 默认图标路径
 const iconRetinaUrl = new URL(
@@ -304,7 +305,10 @@ export function MapCanvas() {
       }
       if (!c.url) continue
       try {
-        const layer = L.tileLayer(c.url, {
+        const layer = createCachedTileLayer(c.url, {
+          sourceKey: key,
+          displayName: c.name ?? key,
+          urlTemplate: c.url,
           attribution: c.attribution ?? '',
           maxZoom: c.max_zoom ?? 22,
           subdomains: c.subdomains ?? 'abc',
@@ -331,7 +335,13 @@ export function MapCanvas() {
     for (const v of ascendingWaybackVersions) {
       if (cache.has(v.id)) continue
       const url = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/${v.id}/{z}/{y}/{x}`
-      const layer = L.tileLayer(url, { maxZoom: 19, attribution: 'Esri Wayback' })
+      const layer = createCachedTileLayer(url, {
+        sourceKey: `wayback_${v.id}`,
+        displayName: `Esri Wayback ${v.date ?? v.id}`,
+        urlTemplate: url,
+        maxZoom: 19,
+        attribution: 'Esri Wayback',
+      })
       cache.set(v.id, layer)
     }
   }, [ascendingWaybackVersions])
@@ -358,13 +368,29 @@ export function MapCanvas() {
 
     const tdt = tdtToken || '436ce7e50d27eede2f2929307e6b33c0'
     const tdtSubdomains = ['0', '1', '2', '3', '4', '5', '6', '7']
-    const ciaLayer = L.tileLayer(
+    const ciaLayer = createCachedTileLayer(
       `https://t{s}.tianditu.gov.cn/cia_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cia&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tdt}`,
-      { subdomains: tdtSubdomains, maxZoom: 18, attribution: '天地图' },
+      {
+        sourceKey: 'tdt_cia_w',
+        displayName: '天地图中文注记',
+        urlTemplate:
+          'https://t{s}.tianditu.gov.cn/cia_w/wmts?...&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
+        subdomains: tdtSubdomains,
+        maxZoom: 18,
+        attribution: '天地图',
+      },
     )
-    const cvaLayer = L.tileLayer(
+    const cvaLayer = createCachedTileLayer(
       `https://t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tdt}`,
-      { subdomains: tdtSubdomains, maxZoom: 18, attribution: '天地图' },
+      {
+        sourceKey: 'tdt_cva_w',
+        displayName: '天地图英文注记',
+        urlTemplate:
+          'https://t{s}.tianditu.gov.cn/cva_w/wmts?...&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
+        subdomains: tdtSubdomains,
+        maxZoom: 18,
+        attribution: '天地图',
+      },
     )
     overlayLayersRef.current = [ciaLayer, cvaLayer]
 

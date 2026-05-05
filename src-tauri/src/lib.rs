@@ -16,6 +16,8 @@ pub mod wayback;
 pub mod wayback_metadata;
 pub mod budget;
 pub mod dem;
+pub mod tile_cache;
+pub mod tile_pack;
 
 // Tauri commands
 mod commands;
@@ -31,6 +33,41 @@ use tauri::{
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .register_uri_scheme_protocol("gdcache", |_ctx, request| {
+            // 解析 gdcache://localhost/<source>/<z>/<x>/<y>[.ext]
+            let uri = request.uri().to_string();
+            let make_resp = |status: u16, body: Vec<u8>, mime: &str| {
+                tauri::http::Response::builder()
+                    .status(status)
+                    .header("Content-Type", mime)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(body)
+                    .unwrap_or_else(|_| {
+                        tauri::http::Response::builder()
+                            .status(500)
+                            .body(Vec::new())
+                            .expect("response")
+                    })
+            };
+            let parsed = match tile_cache::parse_gdcache_uri(&uri) {
+                Some(v) => v,
+                None => return make_resp(400, b"bad request".to_vec(), "text/plain"),
+            };
+            let (source, z, x, y) = parsed;
+            let key = tile_cache::SourceKey::new(source);
+            let coord = tile_cache::TileCoord { z, x, y };
+            match tile_cache::Store::global().get(&key, coord) {
+                Ok(Some(stored)) => {
+                    let mime = if stored.content_type.is_empty() {
+                        "image/png".to_string()
+                    } else {
+                        stored.content_type
+                    };
+                    make_resp(200, stored.bytes, &mime)
+                }
+                _ => make_resp(404, Vec::new(), "text/plain"),
+            }
+        })
         .manage(Arc::new(TaskManager::new()))
         .manage(wayback_metadata::new_progress_map())
         .plugin(
@@ -101,12 +138,28 @@ pub fn run() {
             commands::download_wayback_incremental,
             // 更新
             commands::download_and_install_update,
+            // 瓦片缓存
+            commands::cache_get_tile,
+            commands::cache_put_tile,
+            commands::cache_stats,
+            commands::cache_clear,
+            commands::cache_set_max_size_mb,
+            commands::cache_set_dir,
+            commands::cache_set_enabled,
         ])
         .setup(|app| {
             // 启动时从用户设置同步 TLS 严格性开关（默认 false = 严格验证证书）
             if let Ok(sm) = settings::SettingsManager::new() {
                 if let Ok(s) = sm.get() {
                     config::set_allow_invalid_certs(s.allow_invalid_certs);
+                    // 同步瓦片缓存配置
+                    tile_cache::set_enabled(s.tile_cache_enabled);
+                    if let Some(dir) = s.tile_cache_dir.as_ref().filter(|d| !d.trim().is_empty()) {
+                        tile_cache::set_root_dir(std::path::PathBuf::from(dir));
+                    }
+                    tile_cache::set_max_total_bytes(
+                        s.tile_cache_max_size_mb.saturating_mul(1024 * 1024),
+                    );
                 }
             }
 

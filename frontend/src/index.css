@@ -116,6 +116,17 @@
   --ring: 207 90% 54%;
 }
 
+:root[data-accent='indigo'] {
+  --primary: 239 84% 60%;
+  --primary-foreground: 210 40% 98%;
+  --ring: 239 84% 60%;
+}
+.dark[data-accent='indigo'] {
+  --primary: 234 89% 74%;
+  --primary-foreground: 240 21% 15%;
+  --ring: 234 89% 74%;
+}
+
 :root[data-accent='green'] {
   --primary: 142.1 76.2% 36.3%;
   --primary-foreground: 355.7 100% 97.3%;
@@ -302,4 +313,10 @@ body {
 }
 .leaflet-control-attribution a {
   color: hsl(var(--primary)) !important;
+}
+
+/* driver.js: disable html/body scroll while tour active */
+html:has(.driver-active),
+body:has(.driver-active) {
+  overflow: hidden !important;
 }

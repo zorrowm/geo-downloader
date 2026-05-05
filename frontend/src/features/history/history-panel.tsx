@@ -350,19 +350,24 @@ export function HistoryPanel() {
   // 监听任务完成事件，自动刷新历史
   useEffect(() => {
     if (!inTauri) return
-    let unlisten: UnlistenFn | undefined
     let cancelled = false
-    listen('task-list-updated', () => {
-      qc.invalidateQueries({ queryKey: ['download-history'] })
-    })
-      .then((fn) => {
-        if (cancelled) fn()
-        else unlisten = fn
+    const unlisteners: UnlistenFn[] = []
+    Promise.all([
+      listen('task-list-updated', () => {
+        qc.invalidateQueries({ queryKey: ['download-history'] })
+      }),
+      listen('download-history-updated', () => {
+        qc.invalidateQueries({ queryKey: ['download-history'] })
+      }),
+    ])
+      .then((fns) => {
+        if (cancelled) fns.forEach((fn) => fn())
+        else unlisteners.push(...fns)
       })
       .catch(() => {})
     return () => {
       cancelled = true
-      if (unlisten) unlisten()
+      unlisteners.forEach((fn) => fn())
     }
   }, [inTauri, qc])
 

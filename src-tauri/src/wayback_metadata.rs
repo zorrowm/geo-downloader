@@ -150,6 +150,7 @@ fn default_scan_mode() -> String {
 pub fn normalize_scan_mode(scan_mode: Option<&str>) -> String {
     match scan_mode {
         Some("fine") => "fine".to_string(),
+        Some("official") => "official".to_string(),
         _ => "fast".to_string(),
     }
 }
@@ -307,7 +308,10 @@ pub async fn scan_metadata(
         }
     }
 
-    // 扫描模式：fast = 仅 zoom_max 单 layer（默认，3× 速度）；fine = 多 layer（更准）
+    // 扫描模式：
+    // - official: 仅在 AOI 中心一个 tile 上探探 zoom_max 单 layer，最快（对齐官方「only versions with local changes」）
+    // - fast: 仅 zoom_max 单 layer，查询 AOI 完整 bbox（默认）
+    // - fine: 多 layer，查询 AOI 完整 bbox（更准）
     let layers = if scan_mode == "fine" {
         select_layers(z_min, z_max)
     } else {
@@ -316,6 +320,17 @@ pub async fn scan_metadata(
     if layers.is_empty() {
         return Err("zoom 范围无效".to_string());
     }
+    // official 模式使用 AOI 中心 tile 的微小 bbox，其余模式使用完整 bbox
+    let query_bbox: [f64; 4] = if scan_mode == "official" {
+        let cx = (bbox[0] + bbox[2]) / 2.0;
+        let cy = (bbox[1] + bbox[3]) / 2.0;
+        // 在 zoom_max 上一个 tile 的经度宽度（度）
+        let tile_deg = 360.0 / (1u64 << z_max.min(22) as u64) as f64;
+        let half = tile_deg.max(1e-6) / 2.0;
+        [cx - half, cy - half, cx + half, cy + half]
+    } else {
+        bbox
+    };
 
     let releases = fetch_releases_raw(proxy.as_deref()).await?;
     let total_tasks = (releases.len() as u32) * (layers.len() as u32);
@@ -367,7 +382,7 @@ pub async fn scan_metadata(
                     &client,
                     &metadata_url,
                     layer_id,
-                    &bbox,
+                    &query_bbox,
                     &release_id,
                     &release_date,
                     release_num,

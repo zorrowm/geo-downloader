@@ -89,7 +89,7 @@
 ### 区域选择
 - 地名搜索定位
 - 中国省 / 市 / 区县三级行政区划
-- 上传 GeoJSON / Shapefile（`.zip` / `.shp + .shx + .dbf`）
+- 上传 GeoJSON / Shapefile（`.zip` / `.shp + .shx + .dbf`） / KML / KMZ
 - 地图绘制矩形或多边形
 
 ### 任务系统

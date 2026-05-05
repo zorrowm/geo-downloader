@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { PropsWithChildren } from 'react'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
-export type ThemeAccent = 'zinc' | 'blue' | 'green' | 'violet' | 'orange'
+export type ThemeAccent = 'zinc' | 'indigo' | 'blue' | 'green' | 'violet' | 'orange'
 
 interface ThemeContextValue {
   mode: ThemeMode
@@ -18,17 +18,17 @@ const MODE_KEY = 'gd:theme-mode'
 const ACCENT_KEY = 'gd:theme-accent'
 
 function readMode(): ThemeMode {
-  if (typeof localStorage === 'undefined') return 'system'
+  if (typeof localStorage === 'undefined') return 'light'
   const v = localStorage.getItem(MODE_KEY)
   if (v === 'light' || v === 'dark' || v === 'system') return v
-  return 'system'
+  return 'light'
 }
 
 function readAccent(): ThemeAccent {
-  if (typeof localStorage === 'undefined') return 'zinc'
+  if (typeof localStorage === 'undefined') return 'indigo'
   const v = localStorage.getItem(ACCENT_KEY)
-  if (v === 'zinc' || v === 'blue' || v === 'green' || v === 'violet' || v === 'orange') return v
-  return 'zinc'
+  if (v === 'zinc' || v === 'indigo' || v === 'blue' || v === 'green' || v === 'violet' || v === 'orange') return v
+  return 'indigo'
 }
 
 function resolveSystemMode(): 'light' | 'dark' {

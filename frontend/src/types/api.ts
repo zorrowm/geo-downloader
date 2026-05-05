@@ -58,6 +58,12 @@ export interface AppSettings {
   memory_budget_mb?: number
   /** 允许无效 HTTPS 证书（默认 false，安全风险） */
   allow_invalid_certs?: boolean
+  /** 启用瓦片缓存（默认 true） */
+  tile_cache_enabled?: boolean
+  /** 瓦片缓存容量上限 MB，0 = 不限 */
+  tile_cache_max_size_mb?: number
+  /** 瓦片缓存目录（null = 默认 data_local_dir） */
+  tile_cache_dir?: Nullable<string>
 }
 
 /** 自定义瓦片图源（与 Rust CustomTileSource 对齐） */
@@ -85,6 +91,8 @@ export interface DownloadRequest {
   bounds: Bounds
   zoom: number
   zoom_max?: Nullable<number>
+  /** 任意级别多选：非空时覆盖 zoom..=zoom_max */
+  zoom_levels?: Nullable<number[]>
   source: string
   format: OutputFormat
   save_path?: Nullable<string>
@@ -241,7 +249,7 @@ export interface WaybackScanRequest {
   zoom_max: number
   force_refresh?: boolean
   proxy?: Nullable<string>
-  scan_mode?: 'fast' | 'fine'
+  scan_mode?: 'fast' | 'fine' | 'official'
   [key: string]: unknown
 }
 

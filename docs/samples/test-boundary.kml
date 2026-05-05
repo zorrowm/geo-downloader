@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>测试边界 - 北京天安门附近</name>
+    <description>用于验证 KML 导入功能</description>
+    <Placemark>
+      <name>天安门示例区域</name>
+      <description>覆盖天安门广场及周边约 1.5km 见方的区域</description>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              116.3850,39.8980,0
+              116.4060,39.8980,0
+              116.4060,39.9100,0
+              116.3850,39.9100,0
+              116.3850,39.8980,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+    <Folder>
+      <name>测试 Folder 嵌套</name>
+      <Placemark>
+        <name>故宫示例区域</name>
+        <Polygon>
+          <outerBoundaryIs>
+            <LinearRing>
+              <coordinates>
+                116.3900,39.9130,0
+                116.4030,39.9130,0
+                116.4030,39.9230,0
+                116.3900,39.9230,0
+                116.3900,39.9130,0
+              </coordinates>
+            </LinearRing>
+          </outerBoundaryIs>
+        </Polygon>
+      </Placemark>
+    </Folder>
+  </Document>
+</kml>

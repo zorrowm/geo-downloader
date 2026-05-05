@@ -16,11 +16,13 @@ export function estimateDownload(
   format: OutputFormat,
   cropToShape = false,
   zoomMax: Nullable<number> = null,
+  zoomLevels: Nullable<number[]> = null,
 ) {
   return invokeCommand<DownloadEstimate>('estimate_download', {
     bounds,
     zoom,
     zoom_max: zoomMax,
+    zoom_levels: zoomLevels,
     format: format || null,
     crop_to_shape: cropToShape,
   })

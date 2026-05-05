@@ -24,6 +24,7 @@ export function ResumableTasksButton() {
 
   return (
     <Button
+      data-tour="resumable-tasks"
       variant="ghost"
       size="sm"
       className="relative h-8 gap-1 px-2 text-xs"

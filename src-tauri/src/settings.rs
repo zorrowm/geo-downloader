@@ -71,6 +71,15 @@ pub struct AppSettings {
     /// 中间人攻击嗅探或篡改，**不得默认启用**。
     #[serde(default)]
     pub allow_invalid_certs: bool,
+    /// 是否启用「浏览即缓存」瓦片缓存
+    #[serde(default = "default_tile_cache_enabled")]
+    pub tile_cache_enabled: bool,
+    /// 瓦片缓存容量上限（MB），0 表示不限制
+    #[serde(default = "default_tile_cache_max_size_mb")]
+    pub tile_cache_max_size_mb: u64,
+    /// 瓦片缓存目录（None = 使用默认 data_local_dir）
+    #[serde(default)]
+    pub tile_cache_dir: Option<String>,
 }
 
 fn default_proxy_enabled() -> bool { false }
@@ -80,6 +89,8 @@ fn default_zoom() -> u8 { 15 }
 fn default_format() -> String { "geotiff".to_string() }
 fn default_source() -> String { "osm".to_string() }
 fn default_memory_budget_mb() -> u64 { 2048 }
+fn default_tile_cache_enabled() -> bool { true }
+fn default_tile_cache_max_size_mb() -> u64 { 5120 }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -97,6 +108,9 @@ impl Default for AppSettings {
             memory_budget_mb: default_memory_budget_mb(),
             debug_mode: false,
             allow_invalid_certs: false,
+            tile_cache_enabled: default_tile_cache_enabled(),
+            tile_cache_max_size_mb: default_tile_cache_max_size_mb(),
+            tile_cache_dir: None,
         }
     }
 }

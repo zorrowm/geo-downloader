@@ -35,9 +35,10 @@ async function withCurrentWindow(action: 'minimize' | 'toggleMaximize' | 'close'
 
 interface AppShellProps extends PropsWithChildren {
   modeSlot?: ReactNode
+  headerExtras?: ReactNode
 }
 
-export function AppShell({ children, modeSlot }: AppShellProps) {
+export function AppShell({ children, modeSlot, headerExtras }: AppShellProps) {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div
@@ -69,6 +70,7 @@ export function AppShell({ children, modeSlot }: AppShellProps) {
           </div>
         )}
         <div className="flex items-center gap-1">
+          {headerExtras}
           <ResumableTasksButton />
           <ThemeSwitcher />
           <Button aria-label="最小化" size="icon" variant="ghost" onClick={() => void withCurrentWindow('minimize')}>

@@ -10,6 +10,8 @@ pub enum ExportFormat {
     GeoTiff,
     Png,
     Jpeg,
+    Mbtiles,
+    Gpkg,
 }
 
 impl ExportFormat {
@@ -18,6 +20,8 @@ impl ExportFormat {
             "geotiff" | "tiff" | "tif" => ExportFormat::GeoTiff,
             "png" => ExportFormat::Png,
             "jpeg" | "jpg" => ExportFormat::Jpeg,
+            "mbtiles" => ExportFormat::Mbtiles,
+            "gpkg" | "geopackage" => ExportFormat::Gpkg,
             _ => ExportFormat::Png,
         }
     }
@@ -27,6 +31,8 @@ impl ExportFormat {
             ExportFormat::GeoTiff => ".tif",
             ExportFormat::Png => ".png",
             ExportFormat::Jpeg => ".jpg",
+            ExportFormat::Mbtiles => ".mbtiles",
+            ExportFormat::Gpkg => ".gpkg",
         }
     }
 
@@ -35,6 +41,8 @@ impl ExportFormat {
             ExportFormat::GeoTiff => "image/tiff",
             ExportFormat::Png => "image/png",
             ExportFormat::Jpeg => "image/jpeg",
+            ExportFormat::Mbtiles => "application/vnd.mapbox-vector-tile",
+            ExportFormat::Gpkg => "application/geopackage+sqlite3",
         }
     }
 }
@@ -210,6 +218,9 @@ pub fn export_image(
         ExportFormat::Png => export_png_bytes(image),
         ExportFormat::Jpeg => export_jpeg_bytes(image, 90),
         ExportFormat::GeoTiff => export_tiff_bytes(image, bounds, compression),
+        ExportFormat::Mbtiles | ExportFormat::Gpkg => {
+            Err("MBTiles/GPKG 不走 RGB 拼接路径".to_string())
+        }
     }
 }
 
@@ -227,6 +238,9 @@ pub fn export_rgba_image(
             export_jpeg_bytes(&rgb, 90)
         }
         ExportFormat::GeoTiff => export_rgba_tiff_bytes(&image, bounds, compression),
+        ExportFormat::Mbtiles | ExportFormat::Gpkg => {
+            Err("MBTiles/GPKG 不走 RGBA 拼接路径".to_string())
+        }
     }
 }
 
@@ -272,6 +286,9 @@ pub fn export_image_to_file(
             std::fs::write(path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
             Ok(size)
         }
+        ExportFormat::Mbtiles | ExportFormat::Gpkg => {
+            Err("MBTiles/GPKG 不走 RGB 拼接路径".to_string())
+        }
     }
 }
 
@@ -312,6 +329,9 @@ pub fn export_rgba_image_to_file(
             let size = bytes.len() as u64;
             std::fs::write(path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
             Ok(size)
+        }
+        ExportFormat::Mbtiles | ExportFormat::Gpkg => {
+            Err("MBTiles/GPKG 不走 RGBA 拼接路径".to_string())
         }
     }
 }

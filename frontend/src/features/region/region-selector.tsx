@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import shp from 'shpjs'
 import { Loader2, MapPin, Search, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Feature, FeatureCollection, GeoJsonObject } from 'geojson'
@@ -18,6 +17,12 @@ import {
 import { isTauriRuntime } from '@/lib/tauri'
 import { PanelSection } from '@/components/layout/panel-section'
 import {
+  parseRegionFile,
+  REGION_FILE_ACCEPT_ATTR,
+  UnsupportedRegionFileError,
+} from '@/lib/geo-import'
+import { RegionImportDialog } from './region-import-dialog'
+import {
   geocodeSearch,
   getAdminBoundary,
   getCities,
@@ -27,7 +32,6 @@ import {
 } from './region-api'
 import { useSelectionStore, type LatLngRing, type MapBounds } from '@/store/selection-store'
 import { useAppStore } from '@/store/app-store'
-import { useBatchStore } from '@/store/batch-store'
 import { getSettings } from '@/features/settings/settings-api'
 
 function ringsFromGeoJSON(geojson: GeoJsonObject): LatLngRing[] {
@@ -70,7 +74,7 @@ function boundsFromRings(rings: LatLngRing[]): MapBounds | null {
   return { north: n, south: s, east: e, west: w }
 }
 
-export function RegionSelector() {
+export function RegionSelector({ extras }: { extras?: import('react').ReactNode } = {}) {
   const inTauri = isTauriRuntime()
   const setExternalSelection = useSelectionStore((s) => s.setExternalSelection)
   const setCurrentAdminCode = useAppStore((s) => s.setCurrentAdminCode)
@@ -192,23 +196,25 @@ export function RegionSelector() {
   }
 
   const importedFilesRef = useRef<File[]>([])
+  const [importDialog, setImportDialog] = useState<{
+    features: Feature[]
+    filename: string
+  } | null>(null)
 
   const onPickFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
     importedFilesRef.current = Array.from(files)
     try {
       const file = files[0]
-      const name = file.name.toLowerCase()
       let geojson: GeoJsonObject
-      if (name.endsWith('.geojson') || name.endsWith('.json')) {
-        const text = await file.text()
-        geojson = JSON.parse(text) as GeoJsonObject
-      } else if (name.endsWith('.zip') || name.endsWith('.shp')) {
-        const buf = await file.arrayBuffer()
-        geojson = (await shp(buf)) as GeoJsonObject
-      } else {
-        toast.error('仅支持 .geojson / .json / .zip / .shp')
-        return
+      try {
+        geojson = await parseRegionFile(file)
+      } catch (e) {
+        if (e instanceof UnsupportedRegionFileError) {
+          toast.error(e.message)
+          return
+        }
+        throw e
       }
       const rings = ringsFromGeoJSON(geojson)
       if (rings.length === 0) {
@@ -216,19 +222,24 @@ export function RegionSelector() {
         return
       }
 
-      // 多要素 + 影像/DEM 模式 → 弹出批量模式选择对话框
+      // 收集可选要素：仅保留 Polygon / MultiPolygon 类型
       const fc = geojson as FeatureCollection
-      const features = fc.type === 'FeatureCollection' ? fc.features ?? [] : []
-      const mode = useAppStore.getState().mode
-      if (
-        features.length > 1 &&
-        inTauri &&
-        (mode === 'imagery' || mode === 'dem')
-      ) {
-        useBatchStore.getState().open(features, file.name)
+      const allFeatures: Feature[] =
+        fc.type === 'FeatureCollection'
+          ? (fc.features ?? []).filter(
+              (f) =>
+                f.geometry?.type === 'Polygon' ||
+                f.geometry?.type === 'MultiPolygon',
+            )
+          : []
+
+      // 多要素 → 弹出选择对话框（仅选范围，不触发下载）
+      if (allFeatures.length > 1) {
+        setImportDialog({ features: allFeatures, filename: file.name })
         return
       }
 
+      // 单要素 / FeatureCollection 仅 1 项 / 裸 Geometry
       setExternalSelection({ bounds: boundsFromRings(rings), polygon: rings })
       toast.success('边界已导入')
     } catch (e) {
@@ -250,14 +261,17 @@ export function RegionSelector() {
 
   if (!inTauri) {
     return (
-      <div className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
-        非 Tauri 环境，行政区划与地名搜索不可用
-      </div>
+      <PanelSection icon={MapPin} title="区域选择" description="手动四至">
+        <div className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
+          非 Tauri 环境，行政区划与地名搜索不可用
+        </div>
+        {extras}
+      </PanelSection>
     )
   }
 
   return (
-    <PanelSection icon={MapPin} title="区域选择" description="地名搜索 / 行政区划 / 上传边界">
+    <PanelSection icon={MapPin} title="区域选择" description="地名 / 行政区划 / 上传边界 / 手动四至">
       {/* 地名搜索 */}
       <div className="space-y-1.5">
         <div className="flex gap-1.5">
@@ -328,10 +342,20 @@ export function RegionSelector() {
         <Select
           value={districtCode || undefined}
           onValueChange={(v) => setDistrictCode(v)}
-          disabled={!cityCode || districtsQuery.isLoading}
+          disabled={
+            !cityCode ||
+            districtsQuery.isLoading ||
+            (districtsQuery.data?.length ?? 0) === 0
+          }
         >
           <SelectTrigger className="text-sm">
-            <SelectValue placeholder="区县" />
+            <SelectValue
+              placeholder={
+                cityCode && !districtsQuery.isLoading && (districtsQuery.data?.length ?? 0) === 0
+                  ? '无下级区县'
+                  : '区县'
+              }
+            />
           </SelectTrigger>
           <SelectContent>
             {districtsQuery.data?.map((d) => (
@@ -364,7 +388,7 @@ export function RegionSelector() {
           variant="outline"
           size="sm"
           onClick={() => fileRef.current?.click()}
-          title="上传 GeoJSON / Shapefile"
+          title="上传 GeoJSON / Shapefile / KML・KMZ"
         >
           <Upload className="mr-1 size-3.5" />
           上传
@@ -385,9 +409,15 @@ export function RegionSelector() {
         ref={fileRef}
         id="boundary-upload"
         type="file"
-        accept=".geojson,.json,.shp,.zip"
+        accept={REGION_FILE_ACCEPT_ATTR}
         className="hidden"
         onChange={(e) => void onPickFiles(e.target.files)}
+      />
+      {extras}
+      <RegionImportDialog
+        features={importDialog?.features ?? null}
+        filename={importDialog?.filename ?? ''}
+        onClose={() => setImportDialog(null)}
       />
     </PanelSection>
   )

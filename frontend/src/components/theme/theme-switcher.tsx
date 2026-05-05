@@ -11,7 +11,8 @@ import { useTheme, type ThemeAccent } from './theme-provider'
 
 const ACCENTS: { value: ThemeAccent; label: string; color: string }[] = [
   { value: 'zinc', label: '中性灰', color: 'bg-zinc-900' },
-  { value: 'blue', label: '靛蓝', color: 'bg-blue-600' },
+  { value: 'indigo', label: '靛蓝', color: 'bg-indigo-500' },
+  { value: 'blue', label: '湛蓝', color: 'bg-blue-600' },
   { value: 'green', label: '翠绿', color: 'bg-green-600' },
   { value: 'violet', label: '紫罗兰', color: 'bg-violet-600' },
   { value: 'orange', label: '橙色', color: 'bg-orange-500' },

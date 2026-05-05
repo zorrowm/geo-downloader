@@ -9,9 +9,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { QR_ASSETS, fallbackToLocal } from '@/lib/qr-assets'
+import { fallbackToLocal } from '@/lib/qr-assets'
+import { useCachedImage } from '@/lib/use-cached-image'
 
 export function CommunityDialog() {
+  const gzhSrc = useCachedImage('gzh')
+  const wxqSrc = useCachedImage('wxq')
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -31,7 +34,7 @@ export function CommunityDialog() {
           <div className="flex flex-col items-center gap-2 rounded-md border p-3">
             <div className="text-sm font-medium">微信公众号</div>
             <img
-              src={QR_ASSETS.gzh.remote}
+              src={gzhSrc}
               onError={(e) => fallbackToLocal(e, 'gzh')}
               alt="GeoD 公众号"
               className="h-44 w-44 rounded-md border object-contain"
@@ -41,7 +44,7 @@ export function CommunityDialog() {
           <div className="flex flex-col items-center gap-2 rounded-md border p-3">
             <div className="text-sm font-medium">技术交流群</div>
             <img
-              src={QR_ASSETS.wxq.remote}
+              src={wxqSrc}
               onError={(e) => fallbackToLocal(e, 'wxq')}
               alt="GeoD 技术交流群"
               className="h-44 w-44 rounded-md border object-contain"
