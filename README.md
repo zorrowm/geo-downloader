@@ -38,15 +38,15 @@
 
 前往 [Releases](https://github.com/gaopengbin/geo-downloader/releases) 下载对应平台安装包：
 
-| 平台 | 稳定版 | 预览版 (v3.4.0-beta.2) |
-|---|---|---|
-| Windows x64 | [latest setup.exe](https://github.com/gaopengbin/geo-downloader/releases/latest) | [3.4.0-beta.2 setup.exe](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0-beta.2/GeoDownloader_3.4.0-beta.2_windows_x64-setup.exe) |
-| macOS Apple Silicon | [latest arm64.dmg](https://github.com/gaopengbin/geo-downloader/releases/latest) | [3.4.0-beta.2 arm64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0-beta.2/GeoDownloader_3.4.0-beta.2_macos_arm64.dmg) |
-| macOS Intel | [latest x64.dmg](https://github.com/gaopengbin/geo-downloader/releases/latest) | [3.4.0-beta.2 x64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0-beta.2/GeoDownloader_3.4.0-beta.2_macos_x64.dmg) |
-| Linux (Debian/Ubuntu) | [latest .deb](https://github.com/gaopengbin/geo-downloader/releases/latest) | [3.4.0-beta.2 .deb](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0-beta.2/GeoDownloader_3.4.0-beta.2_linux_amd64.deb) |
-| Linux (AppImage) | [latest AppImage](https://github.com/gaopengbin/geo-downloader/releases/latest) | [3.4.0-beta.2 AppImage](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0-beta.2/GeoDownloader_3.4.0-beta.2_linux_amd64.AppImage) |
+| 平台 | 稳定版 (v3.4.0) |
+|---|---|
+| Windows x64 | [setup.exe](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0/GeoDownloader_3.4.0_windows_x64-setup.exe) |
+| macOS Apple Silicon | [arm64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0/GeoDownloader_3.4.0_macos_arm64.dmg) |
+| macOS Intel | [x64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0/GeoDownloader_3.4.0_macos_x64.dmg) |
+| Linux (Debian/Ubuntu) | [.deb](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0/GeoDownloader_3.4.0_linux_amd64.deb) |
+| Linux (AppImage) | [AppImage](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.0/GeoDownloader_3.4.0_linux_amd64.AppImage) |
 
-> **预览版说明**：v3.4.0-beta.2 是前端整体迁移到 React 19 + shadcn/ui 的首个公开预览版，欢迎尝鲜并反馈，详见 [Release Notes](https://github.com/gaopengbin/geo-downloader/releases/tag/v3.4.0-beta.2)。
+> **v3.4.0 GA**：前端整体迁移到 React 19 + shadcn/ui，新增 browse-as-cache、3D Tiles 表面拾取与 Cesium Ion 自动预览等能力，详见 [Release Notes](https://github.com/gaopengbin/geo-downloader/releases/tag/v3.4.0)。
 
 > macOS 首次打开提示"无法验证开发者"时：右键安装包 → 打开，或在「系统设置 → 隐私与安全性」放行。
 
@@ -178,7 +178,7 @@ geo-downloader/
 
 完整发布说明见 [Releases](https://github.com/gaopengbin/geo-downloader/releases)。近期亮点：
 
-- **v3.4.0-beta**：前端整体迁移到 React 19 + shadcn/ui；Wayback 时间轴重设计；矢量区域选择器；二维码资源中心化
+- **v3.4.0**：前端整体迁移到 React 19 + shadcn/ui；浏览即缓存（browse-as-cache）；3D Tiles 表面拾取与 Cesium Ion 自动预览；Wayback 时间轴重设计；矢量区域选择器
 - **v3.3.x**：Wayback 历史影像批量下载；DEM 下载模块
 - **v3.2.x**：TIFF 压缩三选一；任务日志系统；断点续传增强；BigTIFF 兼容性修复
 - **v3.0.0**：产品更名 GeoDownloader；3D Tiles 下载与离线预览
