@@ -157,6 +157,30 @@ src-tauri/src/
 
 ---
 
+## v3.4.3 — 缓存清理与导出体验修复
+
+> 日期: 2026-05-06
+
+### 36. mbtiles WAL/SHM 清理
+
+- tile cache 连接关闭前执行 `PRAGMA wal_checkpoint(TRUNCATE)`，并切回 `journal_mode=DELETE` 后关闭连接。
+- 连接池驱逐、单源关闭、全局 shutdown、缓存目录切换和应用退出均统一收敛到关闭流程，减少 `.mbtiles-wal` / `.mbtiles-shm` 残留。
+
+### 37. Wayback 历史影像稳定性
+
+- Wayback 预览与下载切换到 Esri 官方 `wayback-a.maptiles.arcgis.com` 瓦片地址。
+- 前端预览采用直连探针优先、本地代理 fallback；瓦片图片设置 `referrerPolicy='no-referrer'`。
+- 后端 Wayback 下载和最大缩放探测同步使用官方地址，减少代理和 Referer 差异造成的空白图层。
+
+### 38. 输出参数一致性
+
+- 普通影像、DEM、Wayback 统一输出格式、TIFF 压缩、金字塔、选区裁剪、任务名称、保存目录等交互。
+- 普通影像与 DEM 的路径按钮改为目录选择，选择目录后按任务名称自动生成文件名，同时继续兼容手动输入完整文件路径。
+- Wayback 单个、批量、增量下载统一保存目录选择和任务名称设置，单个下载按钮占满整行。
+- 3D Tiles 与 OSM 矢量下载补充任务名称/保存目录等通用输出参数。
+
+---
+
 ## 3D Tiles 功能模块
 
 > 日期: 2026-04-05
