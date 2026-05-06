@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import type { GeoJsonObject } from 'geojson'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -55,6 +56,7 @@ export function VectorPanel() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const [featureType, setFeatureType] = useState<FeatureType>('roads')
+  const [osmTaskName, setOsmTaskName] = useState('')
   const [statusMsg, setStatusMsg] = useState<string>('绘制区域或选择行政区划后可下载')
 
   const bounds = useSelectionStore((s) => s.bounds)
@@ -92,7 +94,7 @@ export function VectorPanel() {
       })
       if (!savePath) throw new Error('__user_cancelled__')
 
-      const taskName = `OSM ${featLabel}`
+      const taskName = osmTaskName.trim() || `OSM ${featLabel}`
       // OSM Overpass 只接受单个外环
       const osmRing = polygon && polygon.length > 0 ? polygon[0] : null
       return createOsmDownloadTask(
@@ -182,6 +184,18 @@ export function VectorPanel() {
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="space-y-1.5 border-t border-border/60 pt-3" data-tour="vector-output-section">
+        <Label className="text-xs">
+          OSM 任务名称 <span className="text-muted-foreground">(可选)</span>
+        </Label>
+        <Input
+          value={osmTaskName}
+          onChange={(e) => setOsmTaskName(e.target.value)}
+          placeholder="留空则自动生成，例如 OSM 道路"
+          className="h-8 text-xs"
+        />
       </div>
 
       <div className="grid grid-cols-2 gap-2">

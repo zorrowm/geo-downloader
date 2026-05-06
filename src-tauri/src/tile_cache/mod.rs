@@ -215,6 +215,8 @@ pub fn set_enabled(enabled: bool) {
 }
 
 pub fn set_root_dir(dir: PathBuf) {
+    // 切换目录前必须先关掉旧目录上的所有连接，否则旧目录会留下孤儿 -wal/-shm
+    Store::global().shutdown();
     config_lock().write().expect("cache config poisoned").root_dir = dir;
 }
 

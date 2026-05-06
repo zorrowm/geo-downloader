@@ -25,7 +25,8 @@ struct Inner {
 }
 
 impl Inner {
-    fn evict_if_needed(&mut self) {
+    fn evict_if_needed(&mut self) -> Vec<PoolEntry> {
+        let mut evicted = Vec::new();
         while self.entries.len() > POOL_MAX {
             // 找出最久未用的踢掉
             if let Some(oldest_key) = self
@@ -34,11 +35,14 @@ impl Inner {
                 .min_by_key(|(_, e)| e.last_used)
                 .map(|(k, _)| k.clone())
             {
-                self.entries.remove(&oldest_key);
+                if let Some(e) = self.entries.remove(&oldest_key) {
+                    evicted.push(e);
+                }
             } else {
                 break;
             }
         }
+        evicted
     }
 }
 
@@ -77,14 +81,55 @@ impl Store {
                 last_used: Instant::now(),
             },
         );
-        inner.evict_if_needed();
+        let evicted = inner.evict_if_needed();
+        // 释放 inner 锁后再 checkpoint，避免阻塞其它 source 的请求
+        drop(inner);
+        for e in evicted {
+            Self::checkpoint_entry(e);
+        }
         Ok(arc)
     }
 
     /// 关闭 source 对应的连接（用于删除文件前）。
     fn close(&self, src: &SourceKey) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.entries.remove(src.as_str());
+            if let Some(entry) = inner.entries.remove(src.as_str()) {
+                Self::checkpoint_entry(entry);
+            }
+        }
+    }
+
+    /// 取出 PoolEntry 并执行 checkpoint + close（在 Mutex 外执行，避免长时间持锁）。
+    fn checkpoint_entry(entry: PoolEntry) {
+        // Arc<Mutex<TileStore>>：必须是唯一持有者才能 try_unwrap 取出 TileStore
+        match Arc::try_unwrap(entry.store) {
+            Ok(mutex) => match mutex.into_inner() {
+                Ok(store) => store.checkpoint_and_close(),
+                Err(_) => log::warn!("[tile_cache] store mutex poisoned, 跳过 checkpoint"),
+            },
+            Err(_arc) => {
+                // 还有其它持有者（理论上不该发生：调用 shutdown/close 前应保证无并发使用）
+                log::warn!("[tile_cache] 连接仍被借用，无法 checkpoint，连接将随后续 drop 关闭");
+            }
+        }
+    }
+
+    /// 关闭并清空整个连接池：对每个 entry 执行 checkpoint(TRUNCATE) + journal_mode=DELETE + close。
+    /// 用于：进程退出、缓存目录切换。安全可重复调用。
+    pub fn shutdown(&self) {
+        let drained: Vec<PoolEntry> = match self.inner.lock() {
+            Ok(mut inner) => inner.entries.drain().map(|(_, v)| v).collect(),
+            Err(_) => {
+                log::warn!("[tile_cache] pool poisoned, 跳过 shutdown");
+                return;
+            }
+        };
+        let n = drained.len();
+        for entry in drained {
+            Self::checkpoint_entry(entry);
+        }
+        if n > 0 {
+            log::info!("[tile_cache] shutdown: checkpoint 并关闭了 {} 个 mbtiles 连接", n);
         }
     }
 
@@ -199,10 +244,8 @@ impl Store {
                 Ok(size)
             }
             None => {
-                // 关闭全部连接
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.entries.clear();
-                }
+                // 关闭全部连接（先 checkpoint 再丢，避免删主文件后留下孤儿 -wal）
+                self.shutdown();
                 let cfg = get_config();
                 let mut freed = 0u64;
                 if let Ok(rd) = std::fs::read_dir(&cfg.root_dir) {

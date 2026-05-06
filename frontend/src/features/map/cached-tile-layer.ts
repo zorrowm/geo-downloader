@@ -47,6 +47,9 @@ const CachedTileLayerImpl = L.TileLayer.extend({
       tile.crossOrigin =
         this.options.crossOrigin === true ? '' : this.options.crossOrigin
     }
+    if (typeof this.options.referrerPolicy === 'string') {
+      tile.referrerPolicy = this.options.referrerPolicy
+    }
 
     const onError = () => {
       done(new Error('tile load failed') as unknown as Error, tile)

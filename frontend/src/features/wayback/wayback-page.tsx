@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
-import { Download, History, Loader2, RefreshCw, Search } from 'lucide-react'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { Download, FolderOpen, History, Loader2, RefreshCw, Search } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -24,6 +24,13 @@ import { StatCard } from '@/components/layout/stat-card'
 import { RegionSelector } from '@/features/region/region-selector'
 import { getSettings } from '@/features/settings/settings-api'
 import { estimateDownload } from '@/features/download/download-api'
+import { buildSelectionCropPolygon } from '@/features/download/crop-utils'
+import {
+  BuildPyramidToggle,
+  SelectionCropToggle,
+  TiffCompressionSelect,
+  type TiffCompression,
+} from '@/features/download/output-controls'
 import { useSelectionStore } from '@/store/selection-store'
 import { useAppStore } from '@/store/app-store'
 import { useWaybackStore } from '@/store/wayback-store'
@@ -50,12 +57,6 @@ const FORMAT_OPTIONS = [
   { value: 'jpeg', label: 'JPEG (.jpg)' },
 ]
 
-const COMPRESSION_OPTIONS = [
-  { value: 'lzw', label: 'LZW (推荐)' },
-  { value: 'deflate', label: 'Deflate' },
-  { value: 'none', label: '无压缩' },
-]
-
 function extOf(format: string) {
   return format === 'geotiff' ? 'tif' : format === 'png' ? 'png' : 'jpg'
 }
@@ -67,6 +68,19 @@ function formatZoomLabel(zoom: number, zoomMax: number | null) {
 
 function timestampNow() {
   return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+}
+
+function joinPath(dir: string, file: string) {
+  const sep = dir.includes('\\') ? '\\' : '/'
+  return dir.endsWith(sep) ? `${dir}${file}` : `${dir}${sep}${file}`
+}
+
+function sanitizeName(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 80) || 'wayback'
+}
+
+function looksLikeFilePath(path: string, ext: string): boolean {
+  return path.trim().toLowerCase().endsWith(`.${ext.toLowerCase()}`)
 }
 
 export function WaybackPage() {
@@ -84,8 +98,13 @@ export function WaybackPage() {
   const [zoomMax, setZoomMax] = useState<number | ''>('')
   const [format, setFormat] = useState<string>('geotiff')
   const [compression, setCompression] = useState<string>('lzw')
-  const [cropToShape, setCropToShape] = useState<boolean>(false)
+  const [cropToShape, setCropToShape] = useState<boolean>(true)
+  const [buildPyramid, setBuildPyramid] = useState<boolean>(false)
   const [concurrency, setConcurrency] = useState<number>(8)
+  const [taskName, setTaskName] = useState<string>('')
+  const [singleSaveDir, setSingleSaveDir] = useState<string>('')
+  const [batchSaveDir, setBatchSaveDir] = useState<string>('')
+  const [incrementalSaveDir, setIncrementalSaveDir] = useState<string>('')
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set())
   const [scanMode, setScanMode] = useState<'fast' | 'fine' | 'official'>('official')
   const [coverageThreshold, setCoverageThreshold] = useState<number>(5)
@@ -103,6 +122,8 @@ export function WaybackPage() {
   const [estimating, setEstimating] = useState(false)
   const [incSelected, setIncSelected] = useState<Set<string>>(new Set())
   const scanAbortRef = useRef(false)
+  const supportsSelectionCrop = format === 'geotiff' || format === 'png'
+  const effectiveCropToShape = cropToShape && supportsSelectionCrop
 
   const settingsQuery = useQuery({
     queryKey: ['settings'],
@@ -162,6 +183,38 @@ export function WaybackPage() {
   )
 
   const selectedVersion = sortedVersions.find((v) => v.id === versionId) ?? null
+  const zMaxValue = typeof zoomMax === 'number' && zoomMax > zoom ? zoomMax : null
+  const zLabel = formatZoomLabel(zoom, zMaxValue)
+  const currentOutputPath =
+    wbMode === 'single'
+      ? singleSaveDir
+      : wbMode === 'batch'
+        ? batchSaveDir
+        : incrementalSaveDir
+  const outputPathPlaceholder = '选择下载保存目录，文件名会自动生成'
+
+  const setCurrentOutputPath = (path: string) => {
+    if (wbMode === 'single') setSingleSaveDir(path)
+    else if (wbMode === 'batch') setBatchSaveDir(path)
+    else setIncrementalSaveDir(path)
+  }
+
+  const makeDefaultFilename = (date: string, stem = 'wayback') =>
+    `${sanitizeName(stem)}_${date}_${zLabel}_${timestampNow()}.${extOf(format)}`
+
+  const pickOutputPath = async () => {
+    const picked = await openDialog({
+      directory: true,
+      title:
+        wbMode === 'single'
+          ? '选择 Wayback 保存目录'
+          : wbMode === 'batch'
+            ? '选择批量下载保存目录'
+            : '选择增量下载保存目录',
+    })
+    if (picked) setCurrentOutputPath(picked as string)
+    return picked as string | null
+  }
 
   const probeMutation = useMutation({
     mutationFn: async () => {
@@ -196,13 +249,13 @@ export function WaybackPage() {
     const zMax = typeof zoomMax === 'number' && zoomMax > zoom ? zoomMax : null
     const t = window.setTimeout(() => {
       setEstimating(true)
-      estimateDownload(bounds, zoom, format, cropToShape, zMax)
+      estimateDownload(bounds, zoom, format, effectiveCropToShape, zMax)
         .then((res) => setEstimate(res))
         .catch(() => setEstimate(null))
         .finally(() => setEstimating(false))
     }, 400)
     return () => window.clearTimeout(t)
-  }, [wbMode, bounds, zoom, zoomMax, format, cropToShape])
+  }, [wbMode, bounds, zoom, zoomMax, format, cropToShape, effectiveCropToShape])
 
   // ========== 单个下载 ==========
   const singleMutation = useMutation({
@@ -211,33 +264,42 @@ export function WaybackPage() {
       if (!bounds) throw new Error('请先选择下载区域')
 
       const ext = extOf(format)
-      const zLabel = formatZoomLabel(zoom, typeof zoomMax === 'number' ? zoomMax : null)
-      const defaultName = `wayback_${selectedVersion.date}_${zLabel}_${timestampNow()}.${ext}`
+      let saveDirOrPath = singleSaveDir.trim()
+      if (!saveDirOrPath) {
+        const picked = await openDialog({
+          directory: true,
+          title: '选择 Wayback 保存目录',
+        })
+        if (!picked) throw new Error('__user_cancelled__')
+        saveDirOrPath = picked as string
+        setSingleSaveDir(saveDirOrPath)
+      }
+      const defaultFilename = makeDefaultFilename(
+        selectedVersion.date,
+        taskName.trim() || 'wayback',
+      )
+      const savePath = looksLikeFilePath(saveDirOrPath, ext)
+        ? saveDirOrPath
+        : joinPath(saveDirOrPath, defaultFilename)
 
-      const savePath = await saveDialog({
-        defaultPath: defaultName,
-        filters: [{ name: 'Image', extensions: [ext] }],
-      })
-      if (!savePath) throw new Error('__user_cancelled__')
-
-      const zMax = typeof zoomMax === 'number' && zoomMax > zoom ? zoomMax : null
+      const cropPolygon = buildSelectionCropPolygon(bounds, polygon, effectiveCropToShape)
       const request: DownloadRequest = {
         bounds,
         zoom,
-        zoom_max: zMax,
+        zoom_max: zMaxValue,
         source: 'esri_wayback',
         format,
-        save_path: savePath as string,
+        save_path: savePath,
         concurrency,
         proxy,
-        polygon: cropToShape && polygon ? polygon : null,
-        crop_to_shape: cropToShape && polygon != null,
+        polygon: cropPolygon,
+        crop_to_shape: cropPolygon != null,
         tianditu_token: null,
         compression: format === 'geotiff' ? compression : 'none',
-        build_pyramid: false,
+        build_pyramid: format === 'geotiff' && buildPyramid,
       }
-      const taskName = `Wayback ${selectedVersion.date} ${zLabel}`
-      return createWaybackTask(request, versionId, selectedVersion.date, taskName)
+      const finalTaskName = taskName.trim() || `Wayback ${selectedVersion.date} ${zLabel}`
+      return createWaybackTask(request, versionId, selectedVersion.date, finalTaskName)
     },
     onSuccess: () => {
       toast.success('Wayback 下载任务已创建')
@@ -256,39 +318,45 @@ export function WaybackPage() {
     mutationFn: async () => {
       if (!bounds) throw new Error('请先选择下载区域')
       if (batchSelected.size === 0) throw new Error('请至少选择一个版本')
-      const dir = await openDialog({
-        directory: true,
-        title: '选择批量下载保存目录',
-      })
-      if (!dir) throw new Error('__user_cancelled__')
+      let dir = batchSaveDir.trim()
+      if (!dir) {
+        const picked = await openDialog({
+          directory: true,
+          title: '选择批量下载保存目录',
+        })
+        if (!picked) throw new Error('__user_cancelled__')
+        dir = picked as string
+        setBatchSaveDir(dir)
+      }
 
-      const zMax = typeof zoomMax === 'number' && zoomMax > zoom ? zoomMax : null
-      const zLabel = formatZoomLabel(zoom, zMax)
       const ext = extOf(format)
       const versions = sortedVersions.filter((v) => batchSelected.has(v.id))
+      const cropPolygon = buildSelectionCropPolygon(bounds, polygon, effectiveCropToShape)
 
       let created = 0
       for (const v of versions) {
         const filename = `wayback_${v.date}_${zLabel}_${timestampNow()}.${ext}`
-        const sep = (dir as string).includes('\\') ? '\\' : '/'
-        const savePath = `${dir}${sep}${filename}`
+        const savePath = joinPath(dir, filename)
         const request: DownloadRequest = {
           bounds,
           zoom,
-          zoom_max: zMax,
+          zoom_max: zMaxValue,
           source: 'esri_wayback',
           format,
           save_path: savePath,
           concurrency,
           proxy,
-          polygon: cropToShape && polygon ? polygon : null,
-          crop_to_shape: cropToShape && polygon != null,
+          polygon: cropPolygon,
+          crop_to_shape: cropPolygon != null,
           tianditu_token: null,
           compression: format === 'geotiff' ? compression : 'none',
-          build_pyramid: false,
+          build_pyramid: format === 'geotiff' && buildPyramid,
         }
         try {
-          await createWaybackTask(request, v.id, v.date, `Wayback ${v.date} ${zLabel}`)
+          const finalTaskName = taskName.trim()
+            ? `${taskName.trim()} ${v.date} ${zLabel}`
+            : `Wayback ${v.date} ${zLabel}`
+          await createWaybackTask(request, v.id, v.date, finalTaskName)
           created += 1
         } catch (e) {
           console.error(`批量任务 ${v.date} 创建失败:`, e)
@@ -416,13 +484,17 @@ export function WaybackPage() {
     mutationFn: async () => {
       if (!bounds) throw new Error('请先选择下载区域')
       if (incSelected.size === 0) throw new Error('请至少选择一个 release')
-      const dir = await openDialog({ directory: true, title: '选择保存目录' })
-      if (!dir) throw new Error('__user_cancelled__')
+      let dir = incrementalSaveDir.trim()
+      if (!dir) {
+        const picked = await openDialog({ directory: true, title: '选择保存目录' })
+        if (!picked) throw new Error('__user_cancelled__')
+        dir = picked as string
+        setIncrementalSaveDir(dir)
+      }
 
       const ext = extOf(format)
-      const sep = (dir as string).includes('\\') ? '\\' : '/'
-      const savePathBase = `${dir}${sep}wayback_inc.${ext}`
-      const zMax = typeof zoomMax === 'number' && zoomMax > zoom ? zoomMax : null
+      const savePathBase = joinPath(dir, `${sanitizeName(taskName.trim() || 'wayback_inc')}.${ext}`)
+      const cropPolygon = buildSelectionCropPolygon(bounds, polygon, effectiveCropToShape)
       const footprints = filteredReleases
         .filter((r) => incSelected.has(r.release_id))
         .map((r) => ({
@@ -435,14 +507,15 @@ export function WaybackPage() {
       const result = await downloadWaybackIncremental({
         bounds,
         zoom,
-        zoom_max: zMax,
+        zoom_max: zMaxValue,
         format,
         save_path: savePathBase,
         footprints,
-        crop_to_shape: cropToShape && polygon != null,
-        polygon: cropToShape && polygon ? polygon[0] : null,
+        crop_to_shape: cropPolygon != null,
+        polygon: cropPolygon?.[0] ?? null,
         compression: format === 'geotiff' ? compression : 'none',
-        build_pyramid: false,
+        build_pyramid: format === 'geotiff' && buildPyramid,
+        task_name_prefix: taskName.trim() || null,
         proxy,
       })
       return result.task_ids.length
@@ -576,7 +649,7 @@ export function WaybackPage() {
           </StatCard>
         )}
 
-        {/* 格式 + 压缩 + 并发 */}
+        {/* 输出参数 */}
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1.5">
             <Label className="text-xs">输出格式</Label>
@@ -594,35 +667,69 @@ export function WaybackPage() {
             </Select>
           </div>
           {format === 'geotiff' && (
-            <div className="space-y-1.5">
-              <Label className="text-xs">TIFF 压缩</Label>
-              <Select value={compression} onValueChange={setCompression}>
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {COMPRESSION_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <TiffCompressionSelect
+              value={compression as TiffCompression}
+              onChange={setCompression}
+              triggerClassName="h-8 text-xs"
+            />
           )}
         </div>
 
-        {polygon && (
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={cropToShape}
-              onChange={(e) => setCropToShape(e.target.checked)}
-              className="size-3.5"
-            />
-            按多边形精确裁剪
-          </label>
+        {format === 'geotiff' && (
+          <BuildPyramidToggle checked={buildPyramid} onChange={setBuildPyramid} />
         )}
+
+        {supportsSelectionCrop && (
+          <SelectionCropToggle
+            bounds={bounds}
+            polygon={polygon}
+            checked={cropToShape}
+            onChange={setCropToShape}
+          />
+        )}
+
+        <div className="space-y-1.5">
+          <Label className="text-xs">
+            任务名称 <span className="text-muted-foreground">(可选)</span>
+          </Label>
+          <Input
+            value={taskName}
+            onChange={(e) => setTaskName(e.target.value)}
+            placeholder={
+              selectedVersion
+                ? `留空则自动生成，例如 Wayback ${selectedVersion.date} ${zLabel}`
+                : '留空则自动生成'
+            }
+            className="h-8 text-xs"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label className="text-xs">保存目录</Label>
+          <div className="flex gap-1.5">
+            <Input
+              value={currentOutputPath}
+              onChange={(e) => setCurrentOutputPath(e.target.value)}
+              placeholder={outputPathPlaceholder}
+              className="h-8 font-mono text-xs"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="size-8 shrink-0"
+              title="选择保存目录"
+              onClick={() => void pickOutputPath()}
+            >
+              <FolderOpen className="size-3.5" />
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            {wbMode === 'single'
+              ? '单个版本会在该目录下自动生成文件名；也可手动输入完整文件路径。'
+              : '批量/增量会在该目录下按日期生成多个文件，避免互相覆盖。'}
+          </p>
+        </div>
 
         <Separator />
 
@@ -638,6 +745,7 @@ export function WaybackPage() {
             <Button
               type="button"
               size="sm"
+              className="w-full"
               onClick={() => singleMutation.mutate()}
               disabled={singleMutation.isPending || !bounds || !versionId}
             >

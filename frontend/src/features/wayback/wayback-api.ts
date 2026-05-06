@@ -11,8 +11,30 @@ import type {
   WaybackVersion,
 } from '@/types/api'
 
+export const WAYBACK_TILE_BASE_URL =
+  'https://wayback-a.maptiles.arcgis.com/arcgis/rest/services/world_imagery/mapserver/tile'
+
 export function getWaybackVersions(proxy: Nullable<string>) {
   return invokeCommand<WaybackVersion[]>('get_wayback_versions', { proxy: proxy || null })
+}
+
+export function buildWaybackTileUrl(
+  versionId: string,
+  baseUrl: string | null = WAYBACK_TILE_BASE_URL,
+) {
+  const base = (baseUrl || WAYBACK_TILE_BASE_URL).replace(/\/$/, '')
+  return `${base}/${versionId}/{z}/{y}/{x}`
+}
+
+export function startWaybackTileProxy(proxy: Nullable<string>) {
+  return invokeCommand<string>('start_tile_proxy', {
+    baseUrl: WAYBACK_TILE_BASE_URL,
+    headers: {
+      Origin: 'https://livingatlas.arcgis.com',
+      Referer: 'https://livingatlas.arcgis.com/',
+    },
+    proxy: proxy || null,
+  })
 }
 
 export function createWaybackTask(

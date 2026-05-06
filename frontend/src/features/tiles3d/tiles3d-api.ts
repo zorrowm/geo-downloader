@@ -28,8 +28,12 @@ export function create3dTilesTask(request: Tiles3dTaskRequest, taskName: string)
   return invokeCommand<CreateTaskResult>('create_3dtiles_task', { request, taskName })
 }
 
-export function startTileProxy(baseUrl: string, headers: Record<string, string> = {}) {
-  return invokeCommand<string>('start_tile_proxy', { baseUrl, headers })
+export function startTileProxy(
+  baseUrl: string,
+  headers: Record<string, string> = {},
+  proxy: Nullable<string> = null,
+) {
+  return invokeCommand<string>('start_tile_proxy', { baseUrl, headers, proxy: proxy || null })
 }
 
 export function serveLocalTiles(dirPath: string) {

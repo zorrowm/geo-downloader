@@ -16,7 +16,11 @@ import { useVectorLayersStore } from '@/store/vector-layers-store'
 import { useWaybackStore } from '@/store/wayback-store'
 import { getSettings } from '@/features/settings/settings-api'
 import { getTileSourcesMerged } from '@/features/sources/sources-api'
-import { getWaybackVersions } from '@/features/wayback/wayback-api'
+import {
+  buildWaybackTileUrl,
+  getWaybackVersions,
+  startWaybackTileProxy,
+} from '@/features/wayback/wayback-api'
 import type { TileSource } from '@/types/api'
 import { createCachedTileLayer } from '@/features/map/cached-tile-layer'
 
@@ -67,6 +71,34 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;')
 }
 
+function fillTileUrl(template: string, coords: { z: number; x: number; y: number }) {
+  return template
+    .replace('{z}', String(coords.z))
+    .replace('{x}', String(coords.x))
+    .replace('{y}', String(coords.y))
+}
+
+function probeImageUrl(url: string, timeoutMs = 4500): Promise<boolean> {
+  if (typeof Image === 'undefined') return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.referrerPolicy = 'no-referrer'
+    let done = false
+    const finish = (ok: boolean) => {
+      if (done) return
+      done = true
+      window.clearTimeout(timer)
+      img.onload = null
+      img.onerror = null
+      resolve(ok)
+    }
+    const timer = window.setTimeout(() => finish(false), timeoutMs)
+    img.onload = () => finish(true)
+    img.onerror = () => finish(false)
+    img.src = url
+  })
+}
+
 export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -85,6 +117,7 @@ export function MapCanvas() {
   const [error] = useState<string | null>(null)
   const [statusCoords, setStatusCoords] = useState<string>('经度: --  纬度: --')
   const [statusZoom, setStatusZoom] = useState<string>('缩放: --')
+  const [waybackProxyBaseUrl, setWaybackProxyBaseUrl] = useState<string | null>(null)
 
   const setSelection = useSelectionStore((s) => s.setSelection)
   const externalRevision = useSelectionStore((s) => s.externalRevision)
@@ -270,6 +303,42 @@ export function MapCanvas() {
     return [...list].reverse()
   }, [waybackVersionsQuery.data])
 
+  const waybackProbeVersionId = useMemo(() => {
+    return waybackPreviewId ?? ascendingWaybackVersions.at(-1)?.id ?? null
+  }, [ascendingWaybackVersions, waybackPreviewId])
+
+  useEffect(() => {
+    if (mode !== 'wayback' || !proxyUrl || !waybackProbeVersionId) {
+      setWaybackProxyBaseUrl(null)
+      return
+    }
+    let cancelled = false
+    const directProbeUrl = fillTileUrl(buildWaybackTileUrl(waybackProbeVersionId), {
+      z: 0,
+      x: 0,
+      y: 0,
+    })
+    probeImageUrl(directProbeUrl)
+      .then((directOk) => {
+        if (cancelled) return
+        if (directOk) {
+          // 能直连 Esri 时保持原始 URL，避免错误/过期代理反而拖慢或超时。
+          setWaybackProxyBaseUrl(null)
+          return
+        }
+        return startWaybackTileProxy(proxyUrl).then((baseUrl) => {
+          if (!cancelled) setWaybackProxyBaseUrl(baseUrl)
+        })
+      })
+      .catch((e) => {
+        console.warn('Wayback 瓦片代理启动失败', e)
+        if (!cancelled) setWaybackProxyBaseUrl(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mode, proxyUrl, waybackProbeVersionId])
+
   // 当前 mode 期望的底图 key：'src:<key>' 或 'wb:<id>'
   const desiredBaseKey = useMemo<string | null>(() => {
     if (mode === 'wayback') {
@@ -327,24 +396,31 @@ export function MapCanvas() {
     const cache = waybackLayersRef.current
     const validIds = new Set(ascendingWaybackVersions.map((v) => v.id))
     for (const [id, layer] of cache) {
-      if (!validIds.has(id)) {
+      const expectedUrl = buildWaybackTileUrl(id, waybackProxyBaseUrl)
+      const layerUrl = (layer as L.TileLayer & { _url?: string })._url
+      if (!validIds.has(id) || layerUrl !== expectedUrl) {
         if (map.hasLayer(layer)) map.removeLayer(layer)
+        if (currentBaseLayerKeyRef.current === `wb:${id}`) {
+          currentBaseLayerKeyRef.current = null
+        }
         cache.delete(id)
       }
     }
     for (const v of ascendingWaybackVersions) {
       if (cache.has(v.id)) continue
-      const url = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/${v.id}/{z}/{y}/{x}`
+      const url = buildWaybackTileUrl(v.id, waybackProxyBaseUrl)
+      const originUrl = buildWaybackTileUrl(v.id)
       const layer = createCachedTileLayer(url, {
         sourceKey: `wayback_${v.id}`,
         displayName: `Esri Wayback ${v.date ?? v.id}`,
-        urlTemplate: url,
+        urlTemplate: originUrl,
+        referrerPolicy: 'no-referrer',
         maxZoom: 19,
         attribution: 'Esri Wayback',
       })
       cache.set(v.id, layer)
     }
-  }, [ascendingWaybackVersions])
+  }, [ascendingWaybackVersions, waybackProxyBaseUrl])
 
   // 按 mode 重建 LayersControl + 同步天地图标注 overlay
   useEffect(() => {
@@ -651,7 +727,7 @@ export function MapCanvas() {
     target.addTo(map)
     target.bringToBack?.()
     currentBaseLayerKeyRef.current = desiredBaseKey
-  }, [desiredBaseKey, sourcesQuery.data, ascendingWaybackVersions])
+  }, [desiredBaseKey, sourcesQuery.data, ascendingWaybackVersions, waybackProxyBaseUrl])
 
   // 同步本地矢量图层（按 revision 增量 diff）
   useEffect(() => {

@@ -3,7 +3,7 @@ import { Controller, useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Download, FolderOpen, Info, Loader2, Layers, SlidersHorizontal } from 'lucide-react'
-import { ask as askDialog, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
+import { ask as askDialog, open as openDialog } from '@tauri-apps/plugin-dialog'
 import { toast } from 'sonner'
 import { z } from 'zod'
 
@@ -20,6 +20,12 @@ import {
 } from '@/components/ui/select'
 
 import { createDownloadTask, estimateDownload, probeTile } from '@/features/download/download-api'
+import { buildSelectionCropPolygon } from '@/features/download/crop-utils'
+import {
+  BuildPyramidToggle,
+  SelectionCropToggle,
+  TiffCompressionSelect,
+} from '@/features/download/output-controls'
 import { RegionSelector } from '@/features/region/region-selector'
 import { getSettings } from '@/features/settings/settings-api'
 import { getTileSourcesMerged } from '@/features/sources/sources-api'
@@ -39,12 +45,6 @@ const FORMAT_OPTIONS = [
   { value: 'tiles', label: '原始瓦片目录' },
   { value: 'mbtiles', label: 'MBTiles (.mbtiles)' },
   { value: 'gpkg', label: 'GeoPackage (.gpkg)' },
-] as const
-
-const COMPRESSION_OPTIONS = [
-  { value: 'none', label: '无压缩 (最快导出)' },
-  { value: 'lzw', label: 'LZW (通用兼容)' },
-  { value: 'deflate', label: 'Deflate (体积最小)' },
 ] as const
 
 function zoomLevelLabel(z: number): string {
@@ -96,7 +96,7 @@ const DEFAULT_VALUES: DownloadFormValues = {
   source: '',
   zoom_levels: [15],
   format: 'geotiff',
-  compression: 'none',
+  compression: 'lzw',
   build_pyramid: false,
   concurrency: 30,
   save_path: '',
@@ -141,9 +141,17 @@ function appendTimestamp(path: string, format: DownloadFormValues['format']): st
   return `${path}_${ts}`
 }
 
+function sanitizeFileBase(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 80) || 'download'
+}
+
 // 当用户选择的是目录（多级别 / 多要素拆分），后端仍要求 save_path 为文件路径，
 // 此处自动拼接默认文件名。已经是文件路径则原样返回。
-function resolveSavePath(input: string, format: DownloadFormValues['format'], levels: number[]): string {
+function resolveSavePath(
+  input: string,
+  format: DownloadFormValues['format'],
+  defaultBaseName = 'download',
+): string {
   const trimmed = (input ?? '').trim()
   if (!trimmed) return trimmed
   if (format === 'tiles') return trimmed
@@ -153,7 +161,7 @@ function resolveSavePath(input: string, format: DownloadFormValues['format'], le
   if (ext && lower.endsWith(`.${ext}`)) return trimmed
   // 视为目录，拼接默认文件名
   const sep = trimmed.includes('\\') ? '\\' : '/'
-  const base = levels.length > 1 ? `download.${ext}` : `download.${ext}`
+  const base = `${sanitizeFileBase(defaultBaseName)}.${ext}`
   return trimmed.endsWith(sep) ? `${trimmed}${base}` : `${trimmed}${sep}${base}`
 }
 
@@ -339,9 +347,11 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
   const concurrency = useWatch({ control, name: 'concurrency' })
 
   const [estimate, setEstimate] = useState<DownloadEstimate | null>(null)
-  const [cropToShape, setCropToShape] = useState(false)
+  const [cropToShape, setCropToShape] = useState(true)
   const qc = useQueryClient()
   const dispatchCtx = useMultiFeatureSubmit()
+  const supportsSelectionCrop = format === 'geotiff' || format === 'png'
+  const effectiveCropToShape = cropToShape && supportsSelectionCrop
 
   const submitMutation = useMutation({
     mutationFn: async (values: DownloadFormValues) => {
@@ -381,6 +391,17 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
         toast.warning(`瓦片探测失败：${m}`)
       }
 
+      const cropPolygon = buildSelectionCropPolygon(bounds, polygon, effectiveCropToShape)
+      const levelLabel = levels.length === 1
+        ? `z${zMin}`
+        : (levels.length === zMax - zMin + 1 ? `z${zMin}~z${zMax}` : `z${levels.join(',')}`)
+      const fallbackName = `${sourceMeta?.name ?? values.source} ${levelLabel}`
+      const finalName = (values.task_name && values.task_name.trim()) || fallbackName
+      const resolvedSavePath = resolveSavePath(
+        values.save_path,
+        values.format,
+        finalName,
+      )
       const request: DownloadRequest = {
         bounds,
         zoom: zMin,
@@ -388,23 +409,18 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
         zoom_levels: levels,
         source: values.source,
         format: values.format,
-        save_path: appendTimestamp(resolveSavePath(values.save_path, values.format, levels), values.format),
+        save_path: appendTimestamp(resolvedSavePath, values.format),
         concurrency: values.concurrency,
         tianditu_token: settingsQuery.data?.tianditu_token ?? null,
         proxy:
           settingsQuery.data?.proxy_enabled && settingsQuery.data.proxy_url
             ? settingsQuery.data.proxy_url
             : null,
-        crop_to_shape: cropToShape && polygon != null,
-        polygon: cropToShape && polygon ? polygon : null,
+        crop_to_shape: cropPolygon != null,
+        polygon: cropPolygon,
         compression: values.format === 'geotiff' ? values.compression : 'none',
         build_pyramid: values.format === 'geotiff' && values.build_pyramid,
       }
-      const levelLabel = levels.length === 1
-        ? `z${zMin}`
-        : (levels.length === zMax - zMin + 1 ? `z${zMin}~z${zMax}` : `z${levels.join(',')}`)
-      const fallbackName = `${sourceMeta?.name ?? values.source} ${levelLabel}`
-      const finalName = (values.task_name && values.task_name.trim()) || fallbackName
       return createDownloadTask(request, finalName, sourceMeta?.name ?? values.source)
     },
     onSuccess: (res) => {
@@ -454,43 +470,14 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
   })
 
   const pickSavePath = async () => {
-    const fmt = (form.getValues('format') ?? 'geotiff') as DownloadFormValues['format']
-    const extMap: Record<DownloadFormValues['format'], { ext: string; name: string }> = {
-      geotiff: { ext: 'tif', name: 'GeoTIFF' },
-      png: { ext: 'png', name: 'PNG' },
-      jpeg: { ext: 'jpg', name: 'JPEG' },
-      tiles: { ext: '', name: '瓦片目录' },
-      mbtiles: { ext: 'mbtiles', name: 'MBTiles' },
-      gpkg: { ext: 'gpkg', name: 'GeoPackage' },
-    }
-    const meta = extMap[fmt]
-    // 多级别（zoom_levels 长度>1，后端按级别输出到 z<N>/ 子目录）
-    // 或多要素拆分模式，应当让用户选「目录」而不是「文件」
-    const wantsDir =
-      fmt === 'tiles' ||
-      (zoomLevels?.length ?? 0) > 1 ||
-      (dispatchCtx.showModeSelector && dispatchCtx.mode === 'split')
     try {
-      let chosen: string | null = null
-      if (wantsDir) {
-        const r = await openDialog({
-          directory: true,
-          multiple: false,
-          title: '选择保存目录',
-        })
-        chosen = typeof r === 'string' ? r : null
-      } else {
-        const current = form.getValues('save_path')
-        const defaultName = current && current.trim() ? current : `download.${meta.ext}`
-        chosen = await saveDialog({
-          defaultPath: defaultName,
-          filters: meta.ext
-            ? [{ name: meta.name, extensions: [meta.ext] }]
-            : undefined,
-        })
-      }
+      const chosen = await openDialog({
+        directory: true,
+        multiple: false,
+        title: '选择保存目录',
+      })
       if (chosen) {
-        setValue('save_path', chosen, { shouldValidate: true })
+        setValue('save_path', chosen as string, { shouldValidate: true })
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -513,7 +500,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
     }
     const handle = window.setTimeout(() => {
       const zMax = zoomMax > zoom ? zoomMax : null
-      estimateDownload(bounds, zoom, format, cropToShape && polygon != null, zMax, sortedLevels)
+      estimateDownload(bounds, zoom, format, effectiveCropToShape, zMax, sortedLevels)
         .then((data) => setEstimate(data))
         .catch(() => {
           /* 自动估算失败不打扰用户 */
@@ -541,7 +528,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
       format: format as OutputFormat,
       compression: compression as 'none' | 'lzw' | 'deflate',
       buildPyramid: !!buildPyramid,
-      cropToShape,
+      cropToShape: effectiveCropToShape,
       concurrency,
     })
   }, [
@@ -553,7 +540,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
     format,
     compression,
     buildPyramid,
-    cropToShape,
+    effectiveCropToShape,
     concurrency,
   ])
 
@@ -588,16 +575,13 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
               </div>
             )}
 
-            {polygon && (
-              <label className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={cropToShape}
-                  onChange={(e) => setCropToShape(e.target.checked)}
-                  className="size-3.5 accent-primary"
-                />
-                按多边形精确裁剪 (crop_to_shape)
-              </label>
+            {supportsSelectionCrop && (
+              <SelectionCropToggle
+                bounds={bounds}
+                polygon={polygon}
+                checked={cropToShape}
+                onChange={setCropToShape}
+              />
             )}
           </div>
         }
@@ -767,39 +751,20 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
 
         {format === 'geotiff' && (
           <>
-            <div className="space-y-1.5">
-              <Label className="text-xs">TIFF 压缩</Label>
-              <Select
-                value={compression}
-                onValueChange={(v) =>
-                  setValue('compression', v as DownloadFormValues['compression'], {
-                    shouldDirty: true,
-                  })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {COMPRESSION_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={buildPyramid}
-                onChange={(e) =>
-                  setValue('build_pyramid', e.target.checked, { shouldDirty: true })
-                }
-                className="size-3.5"
-              />
-              构建影像金字塔（加速 GIS 浏览）
-            </label>
+            <TiffCompressionSelect
+              value={compression as DownloadFormValues['compression']}
+              onChange={(v) =>
+                setValue('compression', v, {
+                  shouldDirty: true,
+                })
+              }
+            />
+            <BuildPyramidToggle
+              checked={!!buildPyramid}
+              onChange={(checked) =>
+                setValue('build_pyramid', checked, { shouldDirty: true })
+              }
+            />
           </>
         )}
 
@@ -827,9 +792,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
 
         <div className="space-y-1.5">
           <Label htmlFor="save_path" className="text-xs">
-            {((zoomLevels?.length ?? 0) > 1 || (dispatchCtx.showModeSelector && dispatchCtx.mode === 'split'))
-              ? '保存目录'
-              : '保存路径'}
+            保存目录
           </Label>
           <div className="flex gap-1.5">
             <Input
@@ -842,7 +805,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
               variant="outline"
               size="icon"
               className="size-9 shrink-0"
-              title="选择保存路径"
+              title="选择保存目录"
               onClick={pickSavePath}
             >
               <FolderOpen className="size-3.5" />
@@ -851,6 +814,9 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' } =
           {errors.save_path && (
             <p className="text-xs text-destructive">{errors.save_path.message}</p>
           )}
+          <p className="text-[11px] text-muted-foreground">
+            选择目录后会自动生成文件名；也可手动输入完整文件路径。
+          </p>
         </div>
         </PanelSection>
 

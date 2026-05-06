@@ -214,6 +214,25 @@ impl TileStore {
         })
     }
 
+    /// 优雅关闭：先 checkpoint(TRUNCATE) 把 WAL 数据合并回主库并截断 WAL，
+    /// 再切回 DELETE journal 模式，使后续 close 时 SQLite 自动删除 -wal/-shm 副文件。
+    /// 任一步骤失败都不阻塞流程（只 log），因为关闭时不能传播错误。
+    pub fn checkpoint_and_close(self) {
+        let conn = self.conn;
+        // 1) 强制 checkpoint，把 WAL 中已提交的页全部写回主库并截断 WAL
+        if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
+            log::warn!("[tile_cache] wal_checkpoint(TRUNCATE) 失败 ({}): {}", self.source_key, e);
+        }
+        // 2) 切回 DELETE 模式，下次 open 时 SQLite 会清理掉残留 -wal/-shm
+        if let Err(e) = conn.pragma_update(None, "journal_mode", "DELETE") {
+            log::warn!("[tile_cache] 切回 journal_mode=DELETE 失败 ({}): {}", self.source_key, e);
+        }
+        // 3) 显式 close（drop 也会 close，但 close() 能拿到错误）
+        if let Err((_, e)) = conn.close() {
+            log::warn!("[tile_cache] close 连接失败 ({}): {}", self.source_key, e);
+        }
+    }
+
     fn cached_format_to_mime(&self) -> String {
         let fmt = self
             .conn

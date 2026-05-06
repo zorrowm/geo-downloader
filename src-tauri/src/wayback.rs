@@ -18,6 +18,14 @@ const RELEASES_CACHE_TTL: Duration = Duration::from_secs(3600);
 const WAYBACK_CONFIG_URL: &str =
     "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json";
 
+/// Wayback 官网（Living Atlas）实际使用的瓦片入口。
+///
+/// `waybackconfig.json` 中的 itemURL 仍指向 WMTS 兼容路径，但官网网络面板使用该
+/// mapserver 路径和 wayback-a CDN 主机。两者返回同一瓦片；这里跟齐官网入口，
+/// 降低 WebView2/CDN 调度差异导致的超时概率。
+const WAYBACK_TILE_BASE_URL: &str =
+    "https://wayback-a.maptiles.arcgis.com/arcgis/rest/services/world_imagery/mapserver/tile";
+
 /// 单个 Wayback 版本的原始配置
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,11 +179,8 @@ pub async fn fetch_releases_raw(
 /// `date`: 显示日期（如 "2026-03-26"），用于 source 命名
 pub fn make_tile_source(version_id: &str, date: &str) -> TileSource {
     // Esri Wayback 瓦片 URL:
-    // https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/{layerId}/{z}/{y}/{x}
-    let url = format!(
-        "https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/{}/{{z}}/{{y}}/{{x}}",
-        version_id
-    );
+    // https://wayback-a.maptiles.arcgis.com/arcgis/rest/services/world_imagery/mapserver/tile/{layerId}/{z}/{y}/{x}
+    let url = format!("{}/{}/{{z}}/{{y}}/{{x}}", WAYBACK_TILE_BASE_URL, version_id);
 
     TileSource {
         id: format!("wayback_{}", version_id),
@@ -209,12 +214,10 @@ pub async fn probe_max_zoom(
 
     for z in (1..=19u32).rev() {
         let (x, y) = lat_lng_to_tile(lat, lng, z);
-        let url = format!(
-            "https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/{}/{}/{}/{}",
-            version_id, z, y, x
-        );
+        let url = format!("{}/{}/{}/{}/{}", WAYBACK_TILE_BASE_URL, version_id, z, y, x);
         match client
             .head(&url)
+            .header("Origin", "https://livingatlas.arcgis.com")
             .header("Referer", "https://livingatlas.arcgis.com/")
             .send()
             .await

@@ -315,6 +315,7 @@ export interface WaybackIncrementalRequest {
   polygon?: Nullable<PolygonCoord[]>
   compression?: string
   build_pyramid?: boolean
+  task_name_prefix?: Nullable<string>
   proxy?: Nullable<string>
 }
 

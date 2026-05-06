@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { Box, Download, Globe, Key, Loader2, Search } from 'lucide-react'
+import { Box, Download, FolderOpen, Globe, Key, Loader2, Search } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -76,6 +76,8 @@ export function Tiles3dPage() {
   const [ionToken, setIonToken] = useState('')
   const [summary, setSummary] = useState<TilesetSummary | null>(null)
   const [estimate, setEstimate] = useState<Tiles3dEstimate | null>(null)
+  const [taskName, setTaskName] = useState('')
+  const [saveDir, setSaveDir] = useState('')
 
   const settingsQuery = useQuery({
     queryKey: ['settings'],
@@ -178,14 +180,15 @@ export function Tiles3dPage() {
     mutationFn: async (args: { saveDir: string; nameOverride?: string }) => {
       if (!source) throw new Error('请填写完整的数据源信息')
       const coords = buildPolygonCoords()
-      const baseName = `3dtiles_${timestampNow()}`
-      const taskName = args.nameOverride
-        ? `${baseName}_${sanitizeName(args.nameOverride)}`
+      const baseName = taskName.trim() || `3dtiles_${timestampNow()}`
+      const finalTaskName = args.nameOverride
+        ? `${baseName} - ${args.nameOverride}`
         : baseName
       // 始终在保存目录下追加唯一子目录，避免重名覆盖
-      const subDirName = args.nameOverride
-        ? `${sanitizeName(args.nameOverride)}_${timestampNow()}`
-        : `3dtiles_${timestampNow()}`
+      const subDirBase = args.nameOverride
+        ? `${sanitizeName(baseName)}_${sanitizeName(args.nameOverride)}`
+        : sanitizeName(baseName)
+      const subDirName = `${subDirBase}_${timestampNow()}`
       const savePath = joinPath(args.saveDir, subDirName)
       const result = await create3dTilesTask(
         {
@@ -195,7 +198,7 @@ export function Tiles3dPage() {
           concurrency,
           proxy,
         },
-        taskName,
+        finalTaskName,
       )
       return result
     },
@@ -220,21 +223,35 @@ export function Tiles3dPage() {
       toast.error('请填写完整的数据源信息')
       return
     }
-    const dir = await openDialog({
-      directory: true,
-      title: '选择 3D Tiles 保存目录',
-    })
+    let dir = saveDir.trim()
+    if (!dir) {
+      const picked = await openDialog({
+        directory: true,
+        title: '选择 3D Tiles 保存目录',
+      })
+      if (!picked) return
+      dir = picked as string
+      setSaveDir(dir)
+    }
     if (!dir) return
     try {
       await dispatchCtx.runSubmit(async (perFeatureName) => {
         await downloadMutation.mutateAsync({
-          saveDir: dir as string,
+          saveDir: dir,
           nameOverride: perFeatureName,
         })
       })
     } catch {
       /* surfaced by mutation onError */
     }
+  }
+
+  const pickSaveDir = async () => {
+    const dir = await openDialog({
+      directory: true,
+      title: '选择 3D Tiles 保存目录',
+    })
+    if (dir) setSaveDir(dir as string)
   }
 
   // 自动估算：解析完成后，bounds / polygon 变化 400ms 后触发
@@ -318,6 +335,45 @@ export function Tiles3dPage() {
             </div>
           </TabsContent>
         </Tabs>
+
+        <div className="space-y-3 border-t border-border/60 pt-3" data-tour="tiles3d-output-section">
+          <div className="space-y-1.5">
+            <Label className="text-xs">
+              任务名称 <span className="text-muted-foreground">(可选)</span>
+            </Label>
+            <Input
+              value={taskName}
+              onChange={(e) => setTaskName(e.target.value)}
+              placeholder="留空则自动生成，例如 3dtiles_20260506"
+              className="h-8 text-xs"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs">保存目录</Label>
+            <div className="flex gap-1.5">
+              <Input
+                value={saveDir}
+                onChange={(e) => setSaveDir(e.target.value)}
+                placeholder="选择下载根目录，任务会自动创建唯一子目录"
+                className="h-8 font-mono text-xs"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="size-8 shrink-0"
+                title="选择保存目录"
+                onClick={pickSaveDir}
+              >
+                <FolderOpen className="size-3.5" />
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              3D Tiles 会输出为目录；为避免覆盖，下载时会在该目录下追加唯一子目录。
+            </p>
+          </div>
+        </div>
 
         {dispatchCtx.showModeSelector && (
           <DispatchModeRadio

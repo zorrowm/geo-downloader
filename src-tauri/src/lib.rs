@@ -27,7 +27,7 @@ use task::TaskManager;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    Manager, WindowEvent,
+    Manager, RunEvent, WindowEvent,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -211,6 +211,12 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // 进程真正退出前 checkpoint 并关闭所有 mbtiles 连接，避免 -wal/-shm 残留
+            if let RunEvent::Exit = event {
+                tile_cache::Store::global().shutdown();
+            }
+        });
 }

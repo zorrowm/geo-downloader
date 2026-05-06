@@ -2216,6 +2216,7 @@ pub async fn serve_local_tiles(dir_path: String) -> Result<String, String> {
 pub async fn start_tile_proxy(
     base_url: String,
     headers: HashMap<String, String>,
+    proxy: Option<String>,
 ) -> Result<String, String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -2243,9 +2244,19 @@ pub async fn start_tile_proxy(
             default_headers.insert(name, val);
         }
     }
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .default_headers(default_headers)
         .danger_accept_invalid_certs(crate::config::allow_invalid_certs())
+        .timeout(std::time::Duration::from_secs(30));
+    if let Some(proxy_url) = proxy.as_deref() {
+        if !proxy_url.is_empty() {
+            builder = builder.proxy(
+                reqwest::Proxy::all(proxy_url)
+                    .map_err(|e| format!("代理配置错误: {}", e))?,
+            );
+        }
+    }
+    let client = builder
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
@@ -2553,6 +2564,8 @@ pub struct WaybackIncrementalRequest {
     #[serde(default)]
     pub build_pyramid: bool,
     #[serde(default)]
+    pub task_name_prefix: Option<String>,
+    #[serde(default)]
     pub proxy: Option<String>,
 }
 
@@ -2579,10 +2592,17 @@ pub async fn download_wayback_incremental(
     let mut task_ids = Vec::new();
     for fp in req.footprints {
         let safe_source = fp.source_name.replace([' ', '/', '\\'], "_");
-        let task_name = format!(
+        let default_task_name = format!(
             "Wayback {} · {} · {:.2}m",
             fp.capture_date_str, safe_source, fp.resolution_m
         );
+        let task_name = req
+            .task_name_prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|prefix| format!("{} · {} · {} · {:.2}m", prefix, fp.capture_date_str, safe_source, fp.resolution_m))
+            .unwrap_or(default_task_name);
         // 输出文件按拍摄日期命名，避免多个任务覆盖同一文件
         let safe_date = fp.capture_date_str.replace('-', "");
         let task_save_path = format!(
