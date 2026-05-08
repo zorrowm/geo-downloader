@@ -1,9 +1,19 @@
-# v3.4.4 — 注记叠加 / mbtiles MVT 修复 / 中文文件名规避 / DEM 信息
+# v3.4.4 — 矢量瓦片下载 / 注记叠加 / mbtiles MVT 修复 / DEM 信息卡
 
 ## 新增
 
-- **天地图注记图层**：新增 `tianditu_satellite_label`（cia_w）/ `tianditu_vector_label`（cva_w）/ `tianditu_terrain_label`（cta_w）三个注记源，可作为底图单独导出，也可在影像下载时通过新增的"叠加注记图层"多选块勾选并自动透明合成到瓦片上，输出时已合成。
-- **DEM 模式信息卡**：DEM 高程页面的图源选择器下方新增提示卡，显示原始分辨率（Terrarium 全球约 30 m）/ 覆盖范围 / 编码格式 / 当前 zoom 在赤道处的采样间距（如 z15 ≈ 5 m/px），随 zoom 选择实时更新。
+- **矢量瓦片（MVT/PBF）下载支持**
+  - 新增独立的"矢量瓦片"主 Tab（App 顶部模式切换），整套下载流水线打通：raw tiles 文件夹输出、mbtiles 打包（自动写 `format=pbf` 元信息）、gzip(1F 8B) 内容嗅探、按 hint 修正格式。
+  - 内置默认源：`mvt_openfreemap`（OpenFreeMap 全球，使用版本化 URL `planet/20260429_001001_pt/{z}/{x}/{y}.pbf`，因裸 URL 返回 0 字节）/ `mvt_versatiles_osm`（VersaTiles OSM 全球）。
+  - **主地图直接渲染 MVT**：通过 `@maplibre/maplibre-gl-leaflet` 把 MapLibre GL 作为 L.Layer 注入现有 Leaflet 地图，所有选区 / 绘制 / wayback 逻辑零改动。
+  - 新增 `discoverLayers`（TileJSON 优先 + 多点探测）+ `buildStyle`，自动识别 source-layer 并生成可视化样式；`canonicalTileUrl` 优先使用 TileJSON 返回的真实带版本号 URL，避免 OpenFreeMap 裸 URL 失效。
+
+- **天地图注记图层**
+  - 新增 `tianditu_satellite_label`（cia_w）/ `tianditu_vector_label`（cva_w）/ `tianditu_terrain_label`（cta_w）三个注记源。
+  - 可作为底图单独下载导出，也可在影像下载时通过新增的"叠加注记图层"多选块勾选，下载阶段自动透明合成到瓦片上。
+
+- **DEM 模式信息卡**
+  - DEM 页面图源选择器下方新增提示卡，显示原始分辨率（Terrarium 全球约 30 m）/ 覆盖范围 / 编码格式 / 当前 zoom 在赤道处的采样间距（如 z15 ≈ 5 m/px），随 zoom 实时刷新。
 
 ## 修复
 
