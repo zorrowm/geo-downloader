@@ -38,15 +38,15 @@
 
 前往 [Releases](https://github.com/gaopengbin/geo-downloader/releases) 下载对应平台安装包：
 
-| 平台 | 稳定版 (v3.4.3) |
+| 平台 | 稳定版 (v3.4.4) |
 |---|---|
-| Windows x64 | [setup.exe](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.3/GeoDownloader_3.4.3_windows_x64-setup.exe) |
-| macOS Apple Silicon | [arm64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.3/GeoDownloader_3.4.3_macos_arm64.dmg) |
-| macOS Intel | [x64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.3/GeoDownloader_3.4.3_macos_x64.dmg) |
-| Linux (Debian/Ubuntu) | [.deb](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.3/GeoDownloader_3.4.3_linux_amd64.deb) |
-| Linux (AppImage) | [AppImage](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.3/GeoDownloader_3.4.3_linux_amd64.AppImage) |
+| Windows x64 | [setup.exe](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_windows_x64-setup.exe) |
+| macOS Apple Silicon | [arm64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_macos_arm64.dmg) |
+| macOS Intel | [x64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_macos_x64.dmg) |
+| Linux (Debian/Ubuntu) | [.deb](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_linux_amd64.deb) |
+| Linux (AppImage) | [AppImage](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_linux_amd64.AppImage) |
 
-> **v3.4.3**：修复 mbtiles 缓存 WAL/SHM 残留、Wayback 历史影像预览/下载稳定性，并统一普通影像、DEM、Wayback、3D Tiles 与矢量下载的输出参数体验。详见 [Release Notes](https://github.com/gaopengbin/geo-downloader/releases/tag/v3.4.3)。
+> **v3.4.4**：新增矢量瓦片（MVT/PBF）下载与 MapLibre GL 主地图直接渲染，新增天地图注记图层（cia_w/cva_w/cta_w）及"叠加注记"合成；DEM 模式新增分辨率信息卡；修复 mbtiles 在中文路径下 QGIS 报"无效图层"、MVT 输出 mbtiles 元信息错误、tiles/pbf 输出污染父目录等问题。详见 [Release Notes](https://github.com/gaopengbin/geo-downloader/releases/tag/v3.4.4)。
 
 > macOS 首次打开提示"无法验证开发者"时：右键安装包 → 打开，或在「系统设置 → 隐私与安全性」放行。
 
