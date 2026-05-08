@@ -7,6 +7,7 @@
 
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::tile::TileBounds;
@@ -35,6 +36,145 @@ fn read_tile_bytes(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("读取瓦片失败 {}: {}", path.display(), e))
 }
 
+/// 把字节流按 gzip 压缩。已经是 gzip（魔数 1F 8B）则原样返回。
+/// 用于 MBTiles 1.3 矢量瓦片规范：tile_data 必须是 gzip 压缩的 protobuf。
+fn gzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
+        return Ok(bytes);
+    }
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    let mut enc = GzEncoder::new(Vec::with_capacity(bytes.len()), Compression::default());
+    enc.write_all(&bytes).map_err(|e| format!("gzip 压缩失败: {}", e))?;
+    enc.finish().map_err(|e| format!("gzip 压缩失败: {}", e))
+}
+
+/// 从 gzip 或原始 MVT protobuf 中提取所有 layer 的 name 字段。
+/// 用于生成 MBTiles 矢量瓦片规范要求的 metadata.json (vector_layers)。
+/// 失败时返回空 Vec，调用方可继续。
+fn extract_mvt_layer_names(bytes: &[u8]) -> Vec<String> {
+    // 解压 gzip 头
+    let plain: Vec<u8> = if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+        let mut d = GzDecoder::new(bytes);
+        let mut v = Vec::new();
+        if d.read_to_end(&mut v).is_err() {
+            return Vec::new();
+        }
+        v
+    } else {
+        bytes.to_vec()
+    };
+    // 极简 protobuf 解析：遍历 Tile 顶层字段，找 tag=3 (layers, length-delimited)
+    let mut names = Vec::new();
+    let mut i = 0usize;
+    while i < plain.len() {
+        let (tag, n) = match read_varint(&plain[i..]) {
+            Some(v) => v,
+            None => return names,
+        };
+        i += n;
+        let field_no = (tag >> 3) as u32;
+        let wire = (tag & 0x07) as u32;
+        match wire {
+            0 => {
+                // varint
+                let (_, n2) = match read_varint(&plain[i..]) {
+                    Some(v) => v,
+                    None => return names,
+                };
+                i += n2;
+            }
+            1 => {
+                if i + 8 > plain.len() {
+                    return names;
+                }
+                i += 8;
+            }
+            5 => {
+                if i + 4 > plain.len() {
+                    return names;
+                }
+                i += 4;
+            }
+            2 => {
+                let (len, n2) = match read_varint(&plain[i..]) {
+                    Some(v) => v,
+                    None => return names,
+                };
+                i += n2;
+                let len = len as usize;
+                if i + len > plain.len() {
+                    return names;
+                }
+                if field_no == 3 {
+                    // 进入 Layer 消息，找 name (tag=1, wire=2)
+                    let layer = &plain[i..i + len];
+                    let mut j = 0usize;
+                    while j < layer.len() {
+                        let (ltag, ln) = match read_varint(&layer[j..]) {
+                            Some(v) => v,
+                            None => break,
+                        };
+                        j += ln;
+                        let lfn = (ltag >> 3) as u32;
+                        let lw = (ltag & 0x07) as u32;
+                        match lw {
+                            0 => {
+                                let (_, n2) = match read_varint(&layer[j..]) {
+                                    Some(v) => v,
+                                    None => break,
+                                };
+                                j += n2;
+                            }
+                            1 => j += 8,
+                            5 => j += 4,
+                            2 => {
+                                let (slen, sn) = match read_varint(&layer[j..]) {
+                                    Some(v) => v,
+                                    None => break,
+                                };
+                                j += sn;
+                                let slen = slen as usize;
+                                if j + slen > layer.len() {
+                                    break;
+                                }
+                                if lfn == 1 {
+                                    if let Ok(s) = std::str::from_utf8(&layer[j..j + slen]) {
+                                        names.push(s.to_string());
+                                    }
+                                }
+                                j += slen;
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+                i += len;
+            }
+            _ => return names,
+        }
+    }
+    names
+}
+
+fn read_varint(buf: &[u8]) -> Option<(u64, usize)> {
+    let mut result: u64 = 0;
+    let mut shift = 0u32;
+    for (i, &b) in buf.iter().enumerate() {
+        result |= ((b & 0x7F) as u64) << shift;
+        if b & 0x80 == 0 {
+            return Some((result, i + 1));
+        }
+        shift += 7;
+        if shift >= 64 {
+            return None;
+        }
+    }
+    None
+}
+
 fn detect_format(bytes: &[u8]) -> &'static str {
     if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
         "jpg"
@@ -42,6 +182,14 @@ fn detect_format(bytes: &[u8]) -> &'static str {
         "png"
     } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         "webp"
+    } else if bytes.len() >= 4
+        && ((bytes[0] == 0x49 && bytes[1] == 0x49 && bytes[2] == 0x2A && bytes[3] == 0x00)
+            || (bytes[0] == 0x4D && bytes[1] == 0x4D && bytes[2] == 0x00 && bytes[3] == 0x2A)
+            // BigTIFF：II/MM + version 43
+            || (bytes[0] == 0x49 && bytes[1] == 0x49 && bytes[2] == 0x2B && bytes[3] == 0x00)
+            || (bytes[0] == 0x4D && bytes[1] == 0x4D && bytes[2] == 0x00 && bytes[3] == 0x2B))
+    {
+        "tif"
     } else if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
         // gzip 头部：MVT 瓦片返回时通常带 Content-Encoding: gzip，
         // 但 reqwest 在启用 gzip feature 后会自动解压；
@@ -151,7 +299,21 @@ pub fn append_zoom_to_mbtiles(
         .map_err(|e| e.to_string())?;
     }
 
+    let is_pbf = init_meta
+        .map(|m| m.format == "pbf")
+        .unwrap_or_else(|| {
+            // 已存在的库：查 metadata.format
+            conn.query_row(
+                "SELECT value FROM metadata WHERE name='format'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .map(|s| s == "pbf")
+            .unwrap_or(false)
+        });
+
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut sample_layers: Vec<String> = Vec::new();
     {
         let mut stmt = tx
             .prepare(
@@ -164,12 +326,50 @@ pub fn append_zoom_to_mbtiles(
                 Ok(b) if !b.is_empty() => b,
                 _ => continue,
             };
+            // MVT/PBF 在 MBTiles 1.3 规范里要求 tile_data 为 gzip 压缩的 protobuf
+            let stored = if is_pbf {
+                if sample_layers.is_empty() {
+                    sample_layers = extract_mvt_layer_names(&bytes);
+                }
+                gzip_if_needed(bytes)?
+            } else {
+                bytes
+            };
             let tms_row = xyz_to_tms_row(zoom, *y);
-            stmt.execute(params![zoom as i64, *x as i64, tms_row as i64, bytes])
+            stmt.execute(params![zoom as i64, *x as i64, tms_row as i64, stored])
                 .map_err(|e| e.to_string())?;
         }
     }
     tx.commit().map_err(|e| e.to_string())?;
+
+    // 矢量瓦片库写入 / 更新 metadata.json (vector_layers)
+    if is_pbf {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE name='json'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        if existing.is_none() && !sample_layers.is_empty() {
+            // 极简 vector_layers 描述：QGIS 会基于此识别 source-layer
+            let layers_json: Vec<String> = sample_layers
+                .iter()
+                .map(|n| {
+                    format!(
+                        "{{\"id\":{},\"description\":\"\",\"minzoom\":0,\"maxzoom\":22,\"fields\":{{}}}}",
+                        serde_json::to_string(n).unwrap_or_else(|_| "\"\"".to_string())
+                    )
+                })
+                .collect();
+            let json_value = format!("{{\"vector_layers\":[{}]}}", layers_json.join(","));
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata (name, value) VALUES ('json', ?1)",
+                params![json_value],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
 
     let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
     Ok(size)
@@ -315,6 +515,16 @@ pub fn append_zoom_to_gpkg(
     tile_files: &HashMap<(u32, u32), PathBuf>,
     init_meta: Option<&PackMetadata>,
 ) -> Result<u64, String> {
+    // GeoPackage 标准的 raster tiles 表不支持矢量瓦片（QGIS 会按栅格尝试解码 PBF 失败）。
+    // OGC 还有「Vector Tiles Extension」可承载 PBF，但实现复杂且 QGIS 支持不完整。
+    // 当前版本对矢量数据建议改用 MBTiles 或原始 PBF 目录。
+    if let Some(m) = init_meta {
+        if m.format == "pbf" {
+            return Err(
+                "GeoPackage 当前版本不支持 MVT/PBF 矢量瓦片，请改用 MBTiles 或 PBF 目录格式".to_string(),
+            );
+        }
+    }
     let mut conn = open_gpkg(output, init_meta)?;
 
     // tile_matrix 行（每 zoom 一行）
@@ -373,11 +583,12 @@ pub fn detect_tile_format_with_hint(
 ) -> String {
     if let Some(h) = hint {
         let h = h.to_lowercase();
-        if matches!(h.as_str(), "pbf" | "mvt" | "png" | "jpg" | "jpeg" | "webp") {
+        if matches!(h.as_str(), "pbf" | "mvt" | "png" | "jpg" | "jpeg" | "webp" | "tif" | "tiff") {
             // 规范化
             return match h.as_str() {
                 "jpeg" => "jpg".to_string(),
                 "mvt" => "pbf".to_string(),
+                "tiff" => "tif".to_string(),
                 _ => h,
             };
         }

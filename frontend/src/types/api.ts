@@ -106,6 +106,8 @@ export interface DownloadRequest {
   compression?: string
   /** 是否构建影像金字塔（仅 GeoTIFF） */
   build_pyramid?: boolean
+  /** 叠加图层 ID 列表（按顺序自下而上叠在主源之上，仅栅格输出生效） */
+  overlay_sources?: Nullable<string[]>
   [key: string]: unknown
 }
 

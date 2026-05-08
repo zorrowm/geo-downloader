@@ -51,7 +51,6 @@ const FORMAT_OPTIONS = [
 const MVT_FORMAT_OPTIONS = [
   { value: 'pbf', label: 'PBF 瓦片目录 ({z}/{x}/{y}.pbf)' },
   { value: 'mbtiles', label: 'MBTiles (.mbtiles，format=pbf)' },
-  { value: 'gpkg', label: 'GeoPackage (.gpkg，format=pbf)' },
 ] as const
 
 function zoomLevelLabel(z: number): string {
@@ -75,6 +74,34 @@ function isDemSource(key: string): boolean {
   return key === 'dem_terrarium'
 }
 
+// DEM 数据集元信息：原始分辨率 / 覆盖范围 / 编码格式。仅做 UI 提示。
+type DemMeta = {
+  nativeResolution: string
+  coverage: string
+  encoding: string
+}
+const DEM_META: Record<string, DemMeta> = {
+  dem_terrarium: {
+    // AWS Terrain Tiles 拼合自多源：NASADEM / SRTM 全球 30 m，
+    // 高纬度走 ArcticDEM / REMA 可达 2 m，部分国家有 10 m 公开 DEM
+    nativeResolution: '全球约 30 m（高纬度可至 2 m，部分区域 10 m）',
+    coverage: '全球，海域不覆盖',
+    encoding: 'Terrarium PNG（R/G/B 三通道编码高程，米为单位）',
+  },
+}
+
+// 给定 zoom 估算 Web Mercator 在赤道处的像素地面分辨率（米/像素）
+function metersPerPixelAtEquator(z: number): number {
+  return 156543.03392 / 2 ** z
+}
+
+function formatMeters(m: number): string {
+  if (m >= 1000) return `${(m / 1000).toFixed(2)} km`
+  if (m >= 10) return `${m.toFixed(0)} m`
+  if (m >= 1) return `${m.toFixed(1)} m`
+  return `${(m * 100).toFixed(0)} cm`
+}
+
 // 近似计算选区面积（km²）
 function estimateAreaKm2(b: MapBounds): number {
   if (!b) return 0
@@ -92,6 +119,7 @@ const downloadSchema = z.object({
   format: z.enum(['geotiff', 'png', 'jpeg', 'tiles', 'mbtiles', 'gpkg', 'pbf']),
   compression: z.enum(['none', 'lzw', 'deflate']),
   build_pyramid: z.boolean(),
+  overlay_sources: z.array(z.string()),
   concurrency: z.number().int().min(1).max(100),
   save_path: z.string().min(1, '请填写保存路径'),
   task_name: z.string().optional(),
@@ -105,6 +133,7 @@ const DEFAULT_VALUES: DownloadFormValues = {
   format: 'geotiff',
   compression: 'lzw',
   build_pyramid: false,
+  overlay_sources: [],
   concurrency: 30,
   save_path: '',
   task_name: '',
@@ -136,9 +165,14 @@ function appendTimestamp(path: string, format: DownloadFormValues['format']): st
   if (!path) return path
   const ts = tsStamp()
   if (format === 'tiles' || format === 'pbf') {
+    // 目录类输出：在用户所选目录内部新建带时间戳的子目录，
+    // 而不是在同级新建 <chosen>_<ts>，避免污染父目录。
     const sep = path.includes('\\') ? '\\' : '/'
     const trimmed = path.endsWith(sep) ? path.slice(0, -1) : path
-    return `${trimmed}_${ts}`
+    const lastSep = trimmed.lastIndexOf(sep)
+    const baseName = lastSep >= 0 ? trimmed.slice(lastSep + 1) : trimmed
+    const childName = baseName ? `${baseName}_${ts}` : ts
+    return `${trimmed}${sep}${childName}`
   }
   const sep = path.includes('\\') ? '\\' : '/'
   const lastSep = path.lastIndexOf(sep)
@@ -363,6 +397,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
   const zoomMax = sortedLevels[sortedLevels.length - 1] ?? zoom
   const compression = useWatch({ control, name: 'compression' })
   const buildPyramid = useWatch({ control, name: 'build_pyramid' })
+  const overlaySources = (useWatch({ control, name: 'overlay_sources' }) ?? []) as string[]
   const concurrency = useWatch({ control, name: 'concurrency' })
 
   const [estimate, setEstimate] = useState<DownloadEstimate | null>(null)
@@ -414,7 +449,13 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
       const levelLabel = levels.length === 1
         ? `z${zMin}`
         : (levels.length === zMax - zMin + 1 ? `z${zMin}~z${zMax}` : `z${levels.join(',')}`)
-      const fallbackName = `${sourceMeta?.name ?? values.source} ${levelLabel}`
+      // SQLite 系格式（mbtiles/gpkg）在 Windows 中文路径下，QGIS / GDAL 会因
+      // SQLite 打开失败报"无效图层"。所以默认文件名走 ASCII-safe 的图源 id。
+      // 其他栅格格式保留中文人类可读名。用户手填的 task_name 始终透传。
+      const isSqlitePack = values.format === 'mbtiles' || values.format === 'gpkg'
+      const fallbackName = isSqlitePack
+        ? `${values.source}_${levelLabel}`
+        : `${sourceMeta?.name ?? values.source} ${levelLabel}`
       const finalName = (values.task_name && values.task_name.trim()) || fallbackName
       const resolvedSavePath = resolveSavePath(
         values.save_path,
@@ -439,6 +480,10 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
         polygon: cropPolygon,
         compression: values.format === 'geotiff' ? values.compression : 'none',
         build_pyramid: values.format === 'geotiff' && values.build_pyramid,
+        overlay_sources:
+          (values.overlay_sources && values.overlay_sources.length > 0 && !isMvtMode && !isDemMode && values.format !== 'pbf')
+            ? values.overlay_sources.filter((id) => id && id !== values.source)
+            : null,
       }
       return createDownloadTask(request, finalName, sourceMeta?.name ?? values.source)
     },
@@ -640,6 +685,31 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
           </p>
         )}
 
+        {isDemMode && DEM_META[source] && (
+          <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/30 p-2 text-[11px] leading-relaxed text-muted-foreground space-y-0.5">
+            <div>
+              <span className="text-foreground font-medium">原始分辨率</span>：{DEM_META[source].nativeResolution}
+            </div>
+            <div>
+              <span className="text-foreground font-medium">覆盖范围</span>：{DEM_META[source].coverage}
+            </div>
+            <div>
+              <span className="text-foreground font-medium">编码格式</span>：{DEM_META[source].encoding}
+            </div>
+            {sortedLevels.length > 0 && (
+              <div>
+                <span className="text-foreground font-medium">当前级别采样间距</span>
+                ：{sortedLevels.length === 1
+                  ? `z${sortedLevels[0]} ≈ ${formatMeters(metersPerPixelAtEquator(sortedLevels[0]))}/px (赤道)`
+                  : `z${sortedLevels[0]}~z${sortedLevels[sortedLevels.length - 1]} ≈ ${formatMeters(metersPerPixelAtEquator(sortedLevels[sortedLevels.length - 1]))} ~ ${formatMeters(metersPerPixelAtEquator(sortedLevels[0]))}/px (赤道)`}
+              </div>
+            )}
+            <div className="text-muted-foreground/70">
+              提示：高 zoom 仅是重采样切片，真实精度受限于原始 DEM 分辨率。中国大陆范围基本为 30 m。
+            </div>
+          </div>
+        )}
+
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <Label className="text-xs">缩放级别（任意多选）</Label>
@@ -797,6 +867,51 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
             />
           </>
         )}
+
+        {!isMvtMode && !isDemMode && format !== 'pbf' && (() => {
+          const overlayCandidates = Object.entries(sourcesQuery.data ?? {})
+            .map(([k, v]) => ({ key: k, ...v }))
+            .filter((s) => {
+              const id = ((s.id as string) ?? s.key).toString()
+              const name = (s.name as string) ?? ''
+              return id !== source && (id.includes('label') || name.includes('注记') || name.includes('Label'))
+            })
+            .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+          if (overlayCandidates.length === 0) return null
+          const toggle = (id: string) => {
+            const next = overlaySources.includes(id)
+              ? overlaySources.filter((x) => x !== id)
+              : [...overlaySources, id]
+            setValue('overlay_sources', next, { shouldDirty: true })
+          }
+          return (
+            <div className="space-y-1.5">
+              <Label className="text-xs">叠加图层 <span className="text-muted-foreground">（注记/标签，按勾选顺序自下而上叠加）</span></Label>
+              <div className="rounded border bg-background/50 p-2 space-y-1">
+                {overlayCandidates.map((s) => {
+                  const id = ((s.id as string) ?? s.key).toString()
+                  const checked = overlaySources.includes(id)
+                  return (
+                    <label key={id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-accent/50 px-1 py-0.5 rounded">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggle(id)}
+                        className="size-3.5"
+                      />
+                      <span>{(s.name as string) ?? id}</span>
+                    </label>
+                  )
+                })}
+              </div>
+              {overlaySources.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  已选 {overlaySources.length} 层；下载时将额外拉取相同 z/x/y 瓦片并合成到主图（输出统一为 PNG 字节）
+                </p>
+              )}
+            </div>
+          )
+        })()}
 
         <div className="space-y-1.5">
           <Label htmlFor="task_name" className="text-xs">

@@ -55,6 +55,11 @@ pub struct DownloadRequest {
     /// 导出 GeoTIFF 后是否构建内置金字塔（Overview Layers）
     #[serde(default)]
     pub build_pyramid: bool,
+    /// 叠加图层 ID 列表（按顺序自下而上叠在主源之上，如天地图注记）。
+    /// 仅对栅格输出有效（geotiff/png/jpeg/tiles/mbtiles）；为空或 None 时禁用。
+    /// 叠加图层若 max_zoom 不足，将在不支持的级别静默跳过该图层。
+    #[serde(default)]
+    pub overlay_sources: Option<Vec<String>>,
 }
 
 fn default_concurrency() -> usize {
@@ -622,7 +627,137 @@ async fn execute_zoom_level(
             ));
         }
     }
-    
+
+    // ===== 叠加图层合成 =====
+    // 当 request.overlay_sources 非空时，对每个叠加图层下载相同 z/x/y 瓦片，并按顺序
+    // alpha-composite 到主源瓦片上（in-place 覆写为 PNG）。downstream 流程（流式 GeoTIFF /
+    // PNG / Mbtiles / 原始目录）随后会看到合成后的 PNG 内容，无须额外改造。
+    let mut composited = false;
+    if let Some(overlay_ids) = request.overlay_sources.as_ref() {
+        // 过滤：剔除空白、与主源相同、不存在的图源
+        let all_sources = get_tile_sources(request.tianditu_token.clone());
+        let mut overlay_list: Vec<TileSource> = Vec::new();
+        for oid in overlay_ids {
+            let trimmed = oid.trim();
+            if trimmed.is_empty() || trimmed == request.source { continue; }
+            match all_sources.get(trimmed) {
+                Some(s) => overlay_list.push(s.clone()),
+                None => task_log(app, tm, task_id, "WARN", &format!("叠加图层不存在，已跳过: {}", trimmed)),
+            }
+        }
+        if !overlay_list.is_empty() && !tile_files.is_empty() {
+            task_log(app, tm, task_id, "INFO", &format!(
+                "叠加图层启用：{} 层 ({})",
+                overlay_list.len(),
+                overlay_list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+            let p_overlay_start = map_progress(85.0);
+            tm.update_progress(task_id, TaskStatus::Downloading, p_overlay_start, completed_after_download, failed_after_download, Some("下载叠加图层...".to_string()));
+            let _ = app.emit(&event_name, TaskProgressPayload {
+                task_id: task_id.to_string(),
+                status: "downloading".to_string(),
+                progress: p_overlay_start,
+                completed: completed_after_download,
+                total: total_tiles,
+                message: Some("下载叠加图层...".to_string()),
+            });
+
+            // 重建 tile coord 列表（仅成功的主瓦片）
+            let main_tiles: Vec<crate::tile::TileCoord> = tile_files.keys()
+                .map(|&(x, y)| crate::tile::TileCoord { x, y, z: current_zoom })
+                .collect();
+
+            // 收集每层 overlay 的 tile_files
+            let mut per_layer_files: Vec<HashMap<(u32, u32), std::path::PathBuf>> = Vec::with_capacity(overlay_list.len());
+            for (idx, ov_src) in overlay_list.iter().enumerate() {
+                if cancel_token.is_cancelled() {
+                    return Err("任务已取消".to_string());
+                }
+                if current_zoom > ov_src.max_zoom {
+                    task_log(app, tm, task_id, "WARN", &format!(
+                        "叠加图层 [{}] max_zoom={} 不支持当前 z{}，本级跳过",
+                        ov_src.name, ov_src.max_zoom, current_zoom
+                    ));
+                    per_layer_files.push(HashMap::new());
+                    continue;
+                }
+                let ov_temp_dir = temp_dir.join(format!("__overlay_{}", idx));
+                std::fs::create_dir_all(&ov_temp_dir).map_err(|e| format!("创建叠加图层临时目录失败: {}", e))?;
+                let ov_dl = TileDownloader::new(ov_src.clone(), request.proxy.as_deref())?;
+                let ov_files = ov_dl.download_tiles(
+                    main_tiles.clone(),
+                    request.concurrency,
+                    &ov_temp_dir,
+                    Some(cancel_token),
+                    Some(pause_control),
+                    |_p| {},
+                ).await.unwrap_or_else(|e| {
+                    task_log(app, tm, task_id, "WARN", &format!("叠加图层 [{}] 下载异常: {}（本层瓦片缺失部分将被跳过）", ov_src.name, e));
+                    HashMap::new()
+                });
+                task_log(app, tm, task_id, "INFO", &format!(
+                    "叠加图层 [{}] 完成：{}/{}",
+                    ov_src.name, ov_files.len(), main_tiles.len()
+                ));
+                per_layer_files.push(ov_files);
+            }
+
+            // 对每张主瓦片做合成（in-place 覆写为 PNG）
+            let p_composite = map_progress(87.0);
+            tm.update_progress(task_id, TaskStatus::Downloading, p_composite, completed_after_download, failed_after_download, Some("合成叠加瓦片...".to_string()));
+            let mut composite_ok = 0usize;
+            let mut composite_err = 0usize;
+            for (&(x, y), main_path) in tile_files.iter() {
+                let main_bytes = match std::fs::read(main_path) {
+                    Ok(b) => b,
+                    Err(_) => { composite_err += 1; continue; }
+                };
+                let mut base_img = match image::load_from_memory(&main_bytes) {
+                    Ok(img) => img.to_rgba8(),
+                    Err(_) => { composite_err += 1; continue; }
+                };
+                let mut layered = false;
+                for ov_files in per_layer_files.iter() {
+                    if let Some(ov_path) = ov_files.get(&(x, y)) {
+                        if let Ok(ob) = std::fs::read(ov_path) {
+                            if let Ok(ov_img) = image::load_from_memory(&ob) {
+                                let ov_rgba = ov_img.to_rgba8();
+                                if ov_rgba.dimensions() == base_img.dimensions() {
+                                    image::imageops::overlay(&mut base_img, &ov_rgba, 0, 0);
+                                    layered = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if layered {
+                    let mut out: Vec<u8> = Vec::with_capacity(main_bytes.len());
+                    if image::DynamicImage::ImageRgba8(base_img)
+                        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                        .is_ok()
+                    {
+                        if std::fs::write(main_path, &out).is_ok() {
+                            composite_ok += 1;
+                            continue;
+                        }
+                    }
+                }
+                composite_err += 1;
+            }
+            // 清理 overlay 临时目录
+            for idx in 0..overlay_list.len() {
+                let _ = std::fs::remove_dir_all(temp_dir.join(format!("__overlay_{}", idx)));
+            }
+            task_log(app, tm, task_id, "INFO", &format!(
+                "叠加合成完成：成功 {} / 跳过或失败 {}",
+                composite_ok, composite_err
+            ));
+            if composite_ok > 0 {
+                composited = true;
+            }
+        }
+    }
+
     // 判断是否使用流式写入路径
     // GeoTIFF: 流式 BigTIFF（streaming_tiff）
     // PNG: 流式 PNG（streaming_raster）
@@ -639,6 +774,28 @@ async fn execute_zoom_level(
         ExportFormat::Pbf => Some("pbf"),
         ExportFormat::Png => Some("png"),
         ExportFormat::Jpeg => Some("jpg"),
+        ExportFormat::Mbtiles | ExportFormat::Gpkg => {
+            // 启用了叠加合成时，瓦片字节统一为 PNG
+            if composited {
+                Some("png")
+            } else {
+                // 打包格式本身不携带瓦片数据格式，依赖来源 URL 推断
+                let lower = source.url.to_lowercase();
+                // 去除 query 串
+                let url_no_q = lower.split('?').next().unwrap_or("");
+                if url_no_q.ends_with(".pbf") || url_no_q.ends_with(".mvt") || source.id.starts_with("mvt_") {
+                    Some("pbf")
+                } else if url_no_q.ends_with(".jpg") || url_no_q.ends_with(".jpeg") {
+                    Some("jpg")
+                } else if url_no_q.ends_with(".webp") {
+                    Some("webp")
+                } else if url_no_q.ends_with(".png") {
+                    Some("png")
+                } else {
+                    None
+                }
+            }
+        }
         _ => None,
     };
 
@@ -658,6 +815,7 @@ async fn execute_zoom_level(
                 "png" => "png",
                 "webp" => "webp",
                 "pbf" => "pbf",
+                "tif" => "tif",
                 _ => "bin",
             }
         };
@@ -2185,6 +2343,94 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// 当前活跃的预览服务器端口（0 表示无）
 static PREVIEW_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
 
+/// 扫描 `<dir>/<z>/<x>/<y>.<ext>` 布局，返回合成 TileJSON（仅当看起来像 MVT 目录时）。
+async fn synthesize_mvt_tilejson(dir: &std::path::Path) -> Option<String> {
+    use std::collections::BTreeMap;
+    // z -> Vec<(x, y)>
+    let mut z_levels: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+    let mut ext: Option<String> = None;
+
+    // 第一层：z 目录（数字）
+    let mut z_iter = tokio::fs::read_dir(dir).await.ok()?;
+    while let Ok(Some(z_entry)) = z_iter.next_entry().await {
+        let z_name = z_entry.file_name().to_string_lossy().to_string();
+        let Ok(z) = z_name.parse::<u32>() else { continue };
+        if !z_entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        // 第二层：x
+        let Ok(mut x_iter) = tokio::fs::read_dir(z_entry.path()).await else { continue };
+        while let Ok(Some(x_entry)) = x_iter.next_entry().await {
+            let x_name = x_entry.file_name().to_string_lossy().to_string();
+            let Ok(x) = x_name.parse::<u32>() else { continue };
+            if !x_entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let Ok(mut y_iter) = tokio::fs::read_dir(x_entry.path()).await else { continue };
+            while let Ok(Some(y_entry)) = y_iter.next_entry().await {
+                let y_name = y_entry.file_name().to_string_lossy().to_string();
+                let stem = y_name.rsplit_once('.').map(|(s, e)| (s, e));
+                let Some((stem, e)) = stem else { continue };
+                if !matches!(e, "pbf" | "mvt") {
+                    continue;
+                }
+                let Ok(y) = stem.parse::<u32>() else { continue };
+                z_levels.entry(z).or_default().push((x, y));
+                if ext.is_none() {
+                    ext = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    let ext = ext?; // 没找到任何 pbf/mvt 就放弃
+    let minzoom = *z_levels.keys().next()?;
+    let maxzoom = *z_levels.keys().last()?;
+
+    // 在 maxzoom 计算 bounds（最精确）
+    let coords = z_levels.get(&maxzoom)?;
+    if coords.is_empty() {
+        return None;
+    }
+    let z = maxzoom as f64;
+    let n = 2f64.powf(z);
+    let mut min_x = u32::MAX;
+    let mut max_x = 0u32;
+    let mut min_y = u32::MAX;
+    let mut max_y = 0u32;
+    for &(x, y) in coords {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    let lon_w = (min_x as f64) / n * 360.0 - 180.0;
+    let lon_e = ((max_x as f64) + 1.0) / n * 360.0 - 180.0;
+    let lat_n = (std::f64::consts::PI * (1.0 - 2.0 * (min_y as f64) / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    let lat_s = (std::f64::consts::PI * (1.0 - 2.0 * ((max_y as f64) + 1.0) / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    let center_lon = (lon_w + lon_e) / 2.0;
+    let center_lat = (lat_s + lat_n) / 2.0;
+
+    let port = PREVIEW_SERVER_PORT.load(Ordering::Relaxed);
+    let tile_url = format!(
+        "http://127.0.0.1:{}/{{z}}/{{x}}/{{y}}.{}",
+        port, ext
+    );
+
+    // 不带 vector_layers（前端会回退到首块瓦片探测真实图层）
+    let json = format!(
+        "{{\"tilejson\":\"3.0.0\",\"tiles\":[\"{}\"],\"minzoom\":{},\"maxzoom\":{},\"bounds\":[{:.6},{:.6},{:.6},{:.6}],\"center\":[{:.6},{:.6},{}],\"scheme\":\"xyz\"}}",
+        tile_url, minzoom, maxzoom, lon_w, lat_s, lon_e, lat_n, center_lon, center_lat, maxzoom
+    );
+    Some(json)
+}
+
 /// 启动本地文件服务器以预览 3D Tiles
 #[tauri::command]
 pub async fn serve_local_tiles(dir_path: String) -> Result<String, String> {
@@ -2227,6 +2473,26 @@ pub async fn serve_local_tiles(dir_path: String) -> Result<String, String> {
                 // URL 解码
                 let decoded = urlencoding::decode(&req_path).unwrap_or_default();
                 let rel = decoded.trim_start_matches('/');
+
+                // MVT 目录的合成 TileJSON：扫描 z/x/y 推断 zoom 范围 + bounds，
+                // 让前端 MapLibre 不必盲探瓦片位置即可加载图层。
+                if rel.is_empty()
+                    || rel == "tilejson.json"
+                    || rel == "index.json"
+                    || rel == "metadata.json"
+                {
+                    if let Some(json) = synthesize_mvt_tilejson(&dir).await {
+                        let body = json.into_bytes();
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&body).await;
+                        return;
+                    }
+                }
+
                 let file_path = dir.join(rel);
 
                 // 安全检查：防止路径穿越
@@ -2245,7 +2511,8 @@ pub async fn serve_local_tiles(dir_path: String) -> Result<String, String> {
 
                 match tokio::fs::read(&canonical).await {
                     Ok(data) => {
-                        let mime = match canonical.extension().and_then(|e| e.to_str()) {
+                        let ext = canonical.extension().and_then(|e| e.to_str());
+                        let mime = match ext {
                             Some("json") => "application/json",
                             Some("glb") => "model/gltf-binary",
                             Some("gltf") => "model/gltf+json",
@@ -2256,11 +2523,21 @@ pub async fn serve_local_tiles(dir_path: String) -> Result<String, String> {
                             Some("png") => "image/png",
                             Some("jpg" | "jpeg") => "image/jpeg",
                             Some("ktx2") => "image/ktx2",
+                            Some("pbf" | "mvt") => "application/x-protobuf",
+                            Some("webp") => "image/webp",
                             _ => "application/octet-stream",
                         };
+                        // 矢量瓦片往往以 gzip 落盘，浏览器需要 Content-Encoding: gzip 才能透明解压
+                        let is_gzip = data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b;
+                        let encoding_header = if is_gzip && matches!(ext, Some("pbf" | "mvt")) {
+                            "Content-Encoding: gzip\r\n"
+                        } else {
+                            ""
+                        };
                         let header = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: {}\r\n{}Content-Length: {}\r\n\r\n",
                             mime,
+                            encoding_header,
                             data.len()
                         );
                         let _ = stream.write_all(header.as_bytes()).await;
@@ -2698,6 +2975,7 @@ pub async fn download_wayback_incremental(
             concurrency: default_concurrency(),
             compression: req.compression.clone(),
             build_pyramid: req.build_pyramid,
+            overlay_sources: None,
         };
         let result = create_wayback_task(
             app.clone(),

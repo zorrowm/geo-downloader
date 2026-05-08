@@ -266,6 +266,64 @@ pub fn get_tile_sources(tianditu_token: Option<&str>) -> HashMap<String, TileSou
         },
     );
 
+    // 天地图注记图层（带 alpha 通道的 PNG，用于叠加在影像/矢量底图之上）
+    // cia_w: 影像注记（白字描边，配合卫星影像）
+    // cva_w: 矢量注记（黑字，配合矢量地图）
+    // cta_w: 地形注记（配合地形图）
+    sources.insert(
+        "tianditu_satellite_label".to_string(),
+        TileSource {
+            id: "tianditu_satellite_label".to_string(),
+            name: "天地图 影像注记".to_string(),
+            url: format!(
+                "https://t{{s}}.tianditu.gov.cn/cia_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cia&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={{z}}&TILEROW={{y}}&TILECOL={{x}}&tk={}",
+                token
+            ),
+            subdomains: vec!["0", "1", "2", "3", "4", "5", "6", "7"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            max_zoom: 18,
+            attribution: "© 天地图".to_string(),
+        },
+    );
+
+    sources.insert(
+        "tianditu_vector_label".to_string(),
+        TileSource {
+            id: "tianditu_vector_label".to_string(),
+            name: "天地图 矢量注记".to_string(),
+            url: format!(
+                "https://t{{s}}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={{z}}&TILEROW={{y}}&TILECOL={{x}}&tk={}",
+                token
+            ),
+            subdomains: vec!["0", "1", "2", "3", "4", "5", "6", "7"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            max_zoom: 18,
+            attribution: "© 天地图".to_string(),
+        },
+    );
+
+    sources.insert(
+        "tianditu_terrain_label".to_string(),
+        TileSource {
+            id: "tianditu_terrain_label".to_string(),
+            name: "天地图 地形注记".to_string(),
+            url: format!(
+                "https://t{{s}}.tianditu.gov.cn/cta_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cta&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={{z}}&TILEROW={{y}}&TILECOL={{x}}&tk={}",
+                token
+            ),
+            subdomains: vec!["0", "1", "2", "3", "4", "5", "6", "7"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            max_zoom: 18,
+            attribution: "© 天地图".to_string(),
+        },
+    );
+
     // DEM: AWS Terrain Tiles (Terrarium 编码) - 全球免费
     sources.insert(
         "dem_terrarium".to_string(),

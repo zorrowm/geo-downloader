@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Inbox,
   Layers,
+  Map as MapIcon,
   RefreshCw,
   Trash2,
   X,
@@ -17,6 +18,12 @@ import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { isTauriRuntime } from '@/lib/tauri'
 import {
   buildPyramidForFile,
@@ -26,6 +33,8 @@ import {
   openFileLocation,
 } from '@/features/history/history-api'
 import { readLogFile } from '@/features/tasks/tasks-api'
+import { serveLocalTiles } from '@/features/tiles3d/tiles3d-api'
+import { MvtPreview } from '@/features/mvt/mvt-preview'
 import type { DownloadHistoryRecord, TaskLog } from '@/types/api'
 
 function formatBytes(n?: number): string {
@@ -167,7 +176,22 @@ function HistoryCard({
     record.format === 'geotiff' || (filePath && filePath.toLowerCase().endsWith('.tif'))
   const hasPyramid = Boolean(record.has_pyramid)
   const canBuildPyramid = !isFailed && Boolean(filePath) && Boolean(isTiff) && !hasPyramid
+  const isMvt = record.format === 'pbf' || record.format === 'mvt'
+  const canPreviewMvt = !isFailed && Boolean(filePath) && isMvt
   const duration = formatDuration(record.duration_secs as number | undefined)
+  const [mvtPreviewOpen, setMvtPreviewOpen] = useState(false)
+  const [mvtPreviewUrl, setMvtPreviewUrl] = useState<string | null>(null)
+  const mvtPreviewMutation = useMutation({
+    mutationFn: async () => {
+      const base = await serveLocalTiles(filePath)
+      return `${base}/{z}/{x}/{y}.pbf`
+    },
+    onSuccess: (url) => {
+      setMvtPreviewUrl(url)
+      setMvtPreviewOpen(true)
+    },
+    onError: (e) => toast.error(`启动预览服务失败：${String(e)}`),
+  })
 
   const openMutation = useMutation({
     mutationFn: () => openFileLocation(filePath),
@@ -278,6 +302,18 @@ function HistoryCard({
             {pyramidLabel}
           </Button>
         )}
+        {canPreviewMvt && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => mvtPreviewMutation.mutate()}
+            disabled={mvtPreviewMutation.isPending}
+            className="h-7 gap-1 text-xs"
+          >
+            <MapIcon className="size-3" />
+            {mvtPreviewMutation.isPending ? '启动中…' : '预览矢量瓦片'}
+          </Button>
+        )}
         {logFile && (
           <Button
             size="sm"
@@ -302,6 +338,23 @@ function HistoryCard({
       </div>
 
       {showLogs && logFile && <HistoryLogPanel logFile={logFile} />}
+      {canPreviewMvt && (
+        <Dialog open={mvtPreviewOpen} onOpenChange={setMvtPreviewOpen}>
+          <DialogContent className="max-w-5xl">
+            <DialogHeader>
+              <DialogTitle>矢量瓦片预览 · {record.name}</DialogTitle>
+            </DialogHeader>
+            <p className="truncate font-mono text-[11px] text-muted-foreground" title={mvtPreviewUrl ?? ''}>
+              {mvtPreviewUrl}
+            </p>
+            {mvtPreviewUrl && (
+              <div style={{ height: 520 }}>
+                <MvtPreview urlTemplate={mvtPreviewUrl} maxZoom={record.zoom as number | undefined ?? 14} />
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }

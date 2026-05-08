@@ -53,6 +53,9 @@ interface DiscoverResult {
   layers: DiscoveredLayer[]
   // TileJSON 中给出的真实 tile URL（含版本号），优于用户传入的模板
   canonicalTileUrl?: string
+  bounds?: [number, number, number, number]
+  minzoom?: number
+  maxzoom?: number
 }
 
 // 1. 优先尝试 TileJSON 端点（OpenFreeMap、TileServer-GL、OSM Vector 等都提供）
@@ -68,19 +71,34 @@ async function discoverViaTileJson(urlTemplate: string): Promise<DiscoverResult 
     const json = (await res.json()) as {
       vector_layers?: { id: string; geometry_type?: string }[]
       tiles?: string[]
+      bounds?: [number, number, number, number]
+      minzoom?: number
+      maxzoom?: number
     }
-    if (!Array.isArray(json.vector_layers) || json.vector_layers.length === 0) return null
-    const layers = json.vector_layers.map((vl) => {
-      const gt = (vl.geometry_type ?? '').toLowerCase()
-      let geomType: 1 | 2 | 3 = 3
-      if (gt.includes('point')) geomType = 1
-      else if (gt.includes('line')) geomType = 2
-      else if (gt.includes('polygon')) geomType = 3
-      return { name: vl.id, geomType }
-    })
     const canonicalTileUrl =
       Array.isArray(json.tiles) && json.tiles.length > 0 ? json.tiles[0] : undefined
-    return { layers, canonicalTileUrl }
+    if (Array.isArray(json.vector_layers) && json.vector_layers.length > 0) {
+      const layers = json.vector_layers.map((vl) => {
+        const gt = (vl.geometry_type ?? '').toLowerCase()
+        let geomType: 1 | 2 | 3 = 3
+        if (gt.includes('point')) geomType = 1
+        else if (gt.includes('line')) geomType = 2
+        else if (gt.includes('polygon')) geomType = 3
+        return { name: vl.id, geomType }
+      })
+      return { layers, canonicalTileUrl, bounds: json.bounds, minzoom: json.minzoom, maxzoom: json.maxzoom }
+    }
+    // 没有 vector_layers，但有 bounds/zoom 时也返回，让后续探测使用
+    if (json.bounds || json.maxzoom !== undefined) {
+      return {
+        layers: [],
+        canonicalTileUrl,
+        bounds: json.bounds,
+        minzoom: json.minzoom,
+        maxzoom: json.maxzoom,
+      }
+    }
+    return null
   } catch {
     return null
   }
@@ -133,32 +151,106 @@ async function discoverLayers(
   // 优先 TileJSON
   const viaJson = await discoverViaTileJson(urlTemplate)
   if (viaJson && viaJson.layers.length > 0) return viaJson
-  // 多点探测：选区中心 → 已知陆地 (上海/伦敦/纽约) — 避免落在水域/极地
-  const probes: Array<[number, number]> = [
-    [centerLon, centerLat],
-    [121.4737, 31.2304], // 上海
-    [-0.1276, 51.5074], // 伦敦
-    [-74.006, 40.7128], // 纽约
-  ]
-  for (const [lon, lat] of probes) {
+
+  // 准备探测点：若 TileJSON 给了 bounds，用其中心；否则用选区/默认 + 已知陆地
+  let probes: Array<[number, number, number]> = []
+  let effectiveTpl = urlTemplate
+  let preserved: DiscoverResult = { layers: [] }
+  if (viaJson) {
+    preserved = viaJson
+    if (viaJson.canonicalTileUrl) effectiveTpl = viaJson.canonicalTileUrl
+    if (viaJson.bounds) {
+      const [w, s, e, n] = viaJson.bounds
+      const lon = (w + e) / 2
+      const lat = (s + n) / 2
+      const z = Math.max(viaJson.minzoom ?? 0, Math.min(viaJson.maxzoom ?? 14, 12))
+      probes.push([lon, lat, z])
+    }
+  }
+  if (probes.length === 0) {
+    probes = [
+      [centerLon, centerLat, 10],
+      [121.4737, 31.2304, 10], // 上海
+      [-0.1276, 51.5074, 10],
+      [-74.006, 40.7128, 10],
+    ]
+  }
+
+  for (const [lon, lat, z] of probes) {
     try {
-      const z = 10
       const x = lon2tile(lon, z)
       const y = lat2tile(lat, z)
-      const layers = await discoverLayersViaProbe(urlTemplate, z, x, y)
-      if (layers.length > 0) return { layers }
+      const layers = await discoverLayersViaProbe(effectiveTpl, z, x, y)
+      if (layers.length > 0) {
+        return { ...preserved, layers, canonicalTileUrl: effectiveTpl }
+      }
     } catch {
       // try next probe
     }
   }
-  return { layers: [] }
+  return preserved
 }
+
+type BasemapId = 'gaode' | 'gaode-sat' | 'osm' | 'esri' | 'none'
+
+interface BasemapDef {
+  id: BasemapId
+  label: string
+  tiles: string[]
+  attribution: string
+  maxzoom?: number
+}
+
+const BASEMAPS: BasemapDef[] = [
+  {
+    id: 'gaode',
+    label: '高德地图',
+    tiles: [1, 2, 3, 4].map(
+      (s) =>
+        `https://webrd0${s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}`,
+    ),
+    attribution: '© 高德地图',
+    maxzoom: 18,
+  },
+  {
+    id: 'gaode-sat',
+    label: '高德影像',
+    tiles: [1, 2, 3, 4].map(
+      (s) => `https://webst0${s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}`,
+    ),
+    attribution: '© 高德影像',
+    maxzoom: 18,
+  },
+  {
+    id: 'esri',
+    label: 'Esri 影像',
+    tiles: [
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    ],
+    attribution: '© Esri',
+    maxzoom: 19,
+  },
+  {
+    id: 'osm',
+    label: 'OpenStreetMap',
+    tiles: [
+      'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    ],
+    attribution: '© OpenStreetMap',
+    maxzoom: 19,
+  },
+  { id: 'none', label: '无底图', tiles: [], attribution: '' },
+]
 
 function buildStyle(
   urlTemplate: string,
   layers: DiscoveredLayer[],
   maxZoom: number,
+  basemapId: BasemapId,
 ): StyleSpecification {
+  const basemap = BASEMAPS.find((b) => b.id === basemapId) ?? BASEMAPS[0]
   const style: StyleSpecification = {
     version: 8,
     sources: {
@@ -168,26 +260,24 @@ function buildStyle(
         minzoom: 0,
         maxzoom: maxZoom,
       },
-      osm: {
-        type: 'raster',
-        tiles: [
-          'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
-          'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
-          'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png',
-        ],
-        tileSize: 256,
-        attribution: '© OpenStreetMap',
-      },
     },
-    layers: [
-      {
-        id: 'osm',
-        type: 'raster',
-        source: 'osm',
-        paint: { 'raster-opacity': 0.4 },
-      },
-    ],
+    layers: [],
     glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+  }
+  if (basemap.tiles.length > 0) {
+    ;(style.sources as Record<string, unknown>)['basemap'] = {
+      type: 'raster',
+      tiles: basemap.tiles,
+      tileSize: 256,
+      attribution: basemap.attribution,
+      maxzoom: basemap.maxzoom ?? 19,
+    }
+    style.layers.push({
+      id: 'basemap',
+      type: 'raster',
+      source: 'basemap',
+      paint: { 'raster-opacity': 0.85 },
+    })
   }
   for (const l of layers) {
     const c = colorFor(l.name)
@@ -231,6 +321,7 @@ export function MvtPreview({ urlTemplate, maxZoom = 14 }: MvtPreviewProps) {
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [layerCount, setLayerCount] = useState(0)
+  const [basemap, setBasemap] = useState<BasemapId>('gaode')
   const bounds = useSelectionStore((s) => s.bounds)
 
   // 初始中心：选区中心，否则 [120, 30]
@@ -260,7 +351,7 @@ export function MvtPreview({ urlTemplate, maxZoom = 14 }: MvtPreviewProps) {
         }
         // 首选 TileJSON 返回的含版本 URL（OpenFreeMap 裸路径返回空体）
         const effectiveUrl = canonicalTileUrl ?? urlTemplate
-        const style = buildStyle(effectiveUrl, layers, maxZoom)
+        const style = buildStyle(effectiveUrl, layers, maxZoom, basemap)
         const map = new maplibregl.Map({
           container: containerRef.current,
           style,
@@ -270,7 +361,22 @@ export function MvtPreview({ urlTemplate, maxZoom = 14 }: MvtPreviewProps) {
         })
         map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right')
         map.on('load', () => {
-          if (!cancelled) setStatus('ready')
+          if (cancelled) return
+          setStatus('ready')
+          const c = (map.getCanvas() as HTMLCanvasElement)
+          console.log('[MvtPreview] map loaded, canvas size:', c.clientWidth, 'x', c.clientHeight)
+          // 若 TileJSON 提供 bounds，自动飞过去（用户没另外画选区时才飞）
+          if (result.bounds && !bounds) {
+            const [w, s, e, n] = result.bounds
+            console.log('[MvtPreview] fitBounds to', w, s, e, n, 'maxZoom', result.maxzoom ?? maxZoom)
+            map.fitBounds(
+              [
+                [w, s],
+                [e, n],
+              ],
+              { padding: 24, duration: 0, maxZoom: result.maxzoom ?? maxZoom },
+            )
+          }
         })
         map.on('error', (e) => {
           if (!cancelled) {
@@ -279,10 +385,14 @@ export function MvtPreview({ urlTemplate, maxZoom = 14 }: MvtPreviewProps) {
           }
         })
         mapRef.current = map
-        // 容器在表单内首次可见可能尺寸为 0，主动 resize
+        // 容器在表单内首次可见可能尺寸为 0，主动 resize（多次以防过渡动画）
         const ro = new ResizeObserver(() => map.resize())
         ro.observe(containerRef.current)
         ;(map as unknown as { __ro?: ResizeObserver }).__ro = ro
+        requestAnimationFrame(() => map.resize())
+        setTimeout(() => map.resize(), 50)
+        setTimeout(() => map.resize(), 250)
+        setTimeout(() => map.resize(), 600)
       })
       .catch((err) => {
         if (cancelled) return
@@ -314,9 +424,54 @@ export function MvtPreview({ urlTemplate, maxZoom = 14 }: MvtPreviewProps) {
     )
   }, [bounds, maxZoom])
 
+  // 切换底图：直接增删 source/layer，不重建整张地图
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || status !== 'ready') return
+    const def = BASEMAPS.find((b) => b.id === basemap) ?? BASEMAPS[0]
+    if (map.getLayer('basemap')) map.removeLayer('basemap')
+    if (map.getSource('basemap')) map.removeSource('basemap')
+    if (def.tiles.length > 0) {
+      map.addSource('basemap', {
+        type: 'raster',
+        tiles: def.tiles,
+        tileSize: 256,
+        attribution: def.attribution,
+        maxzoom: def.maxzoom ?? 19,
+      })
+      // 插到所有矢量图层下面
+      const firstMvt = map.getStyle().layers?.find((l) => l.id.startsWith('mvt-'))?.id
+      map.addLayer(
+        {
+          id: 'basemap',
+          type: 'raster',
+          source: 'basemap',
+          paint: { 'raster-opacity': 0.85 },
+        },
+        firstMvt,
+      )
+    }
+  }, [basemap, status])
+
   return (
-    <div className="relative h-[480px] w-full overflow-hidden rounded-md border border-border/60 bg-muted/30">
-      <div ref={containerRef} className="absolute inset-0" />
+    <div className="relative h-[480px] min-h-[300px] w-full overflow-hidden rounded-md border border-border/60 bg-muted/30 [&>div.maplibregl-map]:absolute [&>div.maplibregl-map]:inset-0">
+      <div ref={containerRef} className="absolute inset-0 h-full w-full" />
+      <div className="absolute right-2 top-2 z-10 flex gap-1 rounded bg-background/85 p-1 shadow-sm backdrop-blur">
+        {BASEMAPS.map((b) => (
+          <button
+            key={b.id}
+            type="button"
+            onClick={() => setBasemap(b.id)}
+            className={`rounded px-2 py-0.5 text-[11px] transition ${
+              basemap === b.id
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-muted'
+            }`}
+          >
+            {b.label}
+          </button>
+        ))}
+      </div>
       {status === 'idle' && (
         <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
           请选择 MVT 图源以预览
