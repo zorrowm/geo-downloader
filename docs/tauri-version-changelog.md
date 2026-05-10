@@ -157,6 +157,47 @@ src-tauri/src/
 
 ---
 
+## 未发布 — 任务管理与估算精度修复
+
+> 日期：待定（累积中）
+
+### 39. 下载预估大小重写（Issue #30）
+
+- 此前对所有图源统一按 20 KB/瓦片估算，且未考虑裁剪/金字塔/压缩，导致估算与实际可达 17 倍偏差。
+- 重写 `estimate_download`：新增 `SourceKind` 分类（卫星/矢量/标注/DEM）+ `avg_tile_size_kb(kind, zoom)` 分级 LUT + `compression_ratio(kind, comp)`。
+- 新公式：`raw_rgb_mb = tiles × 256² × channels(裁剪时 4) / 1MB`；`estimated_output_mb = raw_rgb_mb × pyramid_mul × comp_mul`。
+- 前端 `imagery` / `wayback` 估算调用补传 `cropToShape / buildPyramid / compression / sourceId`，UI 增加"估算依据"展示。
+- 修复 `download-api.ts::estimateDownload` 误用 snake_case key 导致 Tauri 2 静默丢字段；用户验证 407 GB 估算 ≈ 实际 408 GB。
+
+### 40. 任务暂停 / 取消状态修复
+
+- **暂停**：下载进度回调按 `progress.status` 映射 `paused/downloading`，避免回调把 `Paused` 覆盖为 `Downloading`；前端 TaskRow 计时器在 paused 时冻结。
+- **取消**：`cancel_task` 立即调用 `mark_cancelled`，emit `task-progress-{id}` 与 `task-list-updated`，UI 即时反映；`update_progress` 加终态保护（`Cancelled / Completed / Failed` 不再被后续回调覆盖）。
+
+### 41. 中断任务恢复支持 Wayback
+
+- `resume_task` 在静态图源注册表查不到 source 时，识别 `wayback_*` 前缀，从 `source_name` 末段解析日期，调 `wayback::make_tile_source` 动态构造，修复"未知图源：wayback_xxxxx"。
+
+### 42. 丢弃任务对话框拆两步 + 缓存可保留
+
+- `discard_resumable_task` 加 `delete_cache: Option<bool>` 参数（默认 true 兼容旧调用）。
+- 前端拆为两步对话框：
+  - 步 1：确定从列表中移除此任务？（否=取消）
+  - 步 2：是否同时删除已下载的瓦片缓存？（否=仅删任务条目，缓存保留供下次复用）
+
+### 43. 行政区下拉支持清空 + 加载全国边界
+
+- 三级下拉顶部分别加"全国 / 全部 / 全部"项，选中即将对应级别置空（联动清空下级）。
+- "加载行政边界"按钮放开 disabled 限制：三级都为空时直接加载全国边界（datav `100000.json`）。
+
+### 44. 部分失败任务的导出策略（设计中，详见 Issue #31）
+
+- 设计文档：`docs/partial-export-design.md`
+- 核心规则：默认有任意成功瓦片就自动导出，缺块以 NoData/透明留白；任务条目带缺块比例徽章，提供"补漏重导 / 强制按现状导出 / 删任务保留缓存"三种后续操作；新设置项 `min_export_success_ratio` 让用户调阈值。
+- 实现尚未开始。
+
+---
+
 ## v3.4.3 — 缓存清理与导出体验修复
 
 > 日期: 2026-05-06

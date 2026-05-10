@@ -37,6 +37,6 @@ export function resumeTask(taskId: string) {
   return invokeCommand<CreateTaskResult>('resume_task', { taskId })
 }
 
-export function discardResumableTask(taskId: string) {
-  return invokeCommand<void>('discard_resumable_task', { taskId })
+export function discardResumableTask(taskId: string, deleteCache = true) {
+  return invokeCommand<void>('discard_resumable_task', { taskId, deleteCache })
 }

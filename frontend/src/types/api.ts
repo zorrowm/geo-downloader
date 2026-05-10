@@ -130,6 +130,10 @@ export interface DownloadEstimate {
   budget_check?: Nullable<BudgetCheckResult>
   raw_size_mb?: Nullable<number>
   size_note?: Nullable<string>
+  /** 瓦片下载流量（MB） */
+  tile_download_mb?: number
+  /** 输出文件大小（MB），综合裁剪/金字塔/压缩后 */
+  estimated_output_mb?: number
   zoom?: number
   zoom_max?: Nullable<number>
   levels?: Array<{ zoom: number; tile_count: number; estimated_size_mb?: number }>

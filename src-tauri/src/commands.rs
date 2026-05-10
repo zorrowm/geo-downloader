@@ -83,6 +83,7 @@ pub struct EstimateResult {
     pub tile_count: u32,
     pub cols: u32,
     pub rows: u32,
+    /// 兼容字段：等同于 tile_download_mb（瓦片下载流量）
     pub estimated_size_mb: f64,
     pub allowed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,12 +91,80 @@ pub struct EstimateResult {
     /// 内存预算检查结果（前端可据此展示提示）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_check: Option<budget::BudgetCheckResult>,
-    /// GeoTIFF 未压缩原始大小（MB），用于提示用户实际文件大小
+    /// GeoTIFF 未压缩原始大小（MB）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_size_mb: Option<f64>,
     /// 大小说明（如压缩效率提示）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size_note: Option<String>,
+    /// 瓦片下载流量（MB）—— 来自图源的字节量
+    pub tile_download_mb: f64,
+    /// 输出文件大小（MB）—— 综合压缩/裁剪/金字塔后的最终文件大小
+    pub estimated_output_mb: f64,
+}
+
+/// 图源类型分类（用于估算）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceKind {
+    Satellite,
+    Vector,
+    Label,
+    Dem,
+}
+
+fn classify_source(source_id: &str) -> SourceKind {
+    let id = source_id.to_lowercase();
+    if id.starts_with("dem_") || id.contains("terrarium") || id.contains("terrain_rgb") {
+        SourceKind::Dem
+    } else if id.contains("label") || id.contains("annotation") || id.ends_with("_cva") || id.ends_with("_cia") {
+        SourceKind::Label
+    } else if id.contains("satellite") || id.contains("imagery") || id.contains("img") || id.ends_with("_arc") {
+        SourceKind::Satellite
+    } else {
+        SourceKind::Vector
+    }
+}
+
+/// 单瓦片平均字节大小估算（KB），按图源类型 × 缩放级别分档
+fn avg_tile_size_kb(kind: SourceKind, zoom: u8) -> f64 {
+    match kind {
+        SourceKind::Satellite => {
+            if zoom < 8 { 6.0 }
+            else if zoom < 12 { 14.0 }
+            else if zoom < 15 { 22.0 }
+            else if zoom < 18 { 38.0 }
+            else { 55.0 }
+        }
+        SourceKind::Vector => {
+            if zoom < 10 { 3.0 }
+            else if zoom < 14 { 6.0 }
+            else { 9.0 }
+        }
+        SourceKind::Label => {
+            if zoom < 10 { 2.0 }
+            else if zoom < 14 { 3.5 }
+            else { 5.0 }
+        }
+        SourceKind::Dem => 28.0,
+    }
+}
+
+/// GeoTIFF 压缩比（输出大小 / 未压缩 raw 大小）
+fn compression_ratio(kind: SourceKind, compression: &str) -> f64 {
+    let comp = compression.to_lowercase();
+    match (kind, comp.as_str()) {
+        (_, "none") => 1.00,
+        (SourceKind::Satellite, "lzw") => 0.95,
+        (SourceKind::Satellite, "deflate") => 0.85,
+        (SourceKind::Vector, "lzw") => 0.25,
+        (SourceKind::Vector, "deflate") => 0.20,
+        (SourceKind::Label, "lzw") => 0.18,
+        (SourceKind::Label, "deflate") => 0.15,
+        (SourceKind::Dem, "lzw") => 0.85,
+        (SourceKind::Dem, "deflate") => 0.75,
+        // 未知压缩按 lzw 处理
+        (kind, _) => compression_ratio(kind, "lzw"),
+    }
 }
 
 
@@ -158,7 +227,17 @@ pub fn get_system_memory() -> Option<budget::SystemMemoryInfo> {
 
 /// 估算下载大小
 #[tauri::command]
-pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format: Option<String>, crop_to_shape: Option<bool>, zoom_levels: Option<Vec<u8>>) -> EstimateResult {
+pub fn estimate_download(
+    bounds: Bounds,
+    zoom: u8,
+    zoom_max: Option<u8>,
+    format: Option<String>,
+    crop_to_shape: Option<bool>,
+    zoom_levels: Option<Vec<u8>>,
+    source_id: Option<String>,
+    build_pyramid: Option<bool>,
+    compression: Option<String>,
+) -> EstimateResult {
     let z_min = zoom;
     let z_max = zoom_max.unwrap_or(zoom).max(zoom);
     // 优先使用离散级别集合
@@ -176,15 +255,85 @@ pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format:
 
     // 当前最大级的矩阵作为预算/警告基准
     let (_x_min, _y_min, _x_max, _y_max, cols, rows) = tile::get_tile_matrix_size(&bounds, level_max);
-    // 跨级总瓦片数（按指定级别求和）
-    let tile_count: u32 = levels
-        .iter()
-        .map(|z| tile::estimate_tile_count(&bounds, *z))
-        .fold(0u32, |acc, n| acc.saturating_add(n));
-    let avg_tile_size_kb = 20.0;
-    let estimated_size_mb = (tile_count as f64 * avg_tile_size_kb) / 1024.0;
+
+    // 图源分类（用于 LUT）
+    let kind = source_id.as_deref()
+        .map(classify_source)
+        .unwrap_or(SourceKind::Satellite);
+
+    // 跨级总瓦片数（按指定级别求和）+ 按级别加权的下载流量
+    let mut tile_count: u32 = 0;
+    let mut tile_download_mb: f64 = 0.0;
+    for z in &levels {
+        let n = tile::estimate_tile_count(&bounds, *z);
+        tile_count = tile_count.saturating_add(n);
+        tile_download_mb += (n as f64 * avg_tile_size_kb(kind, *z)) / 1024.0;
+    }
+    // 兼容老前端：estimated_size_mb 等同于 tile_download_mb
+    let estimated_size_mb = tile_download_mb;
 
     let max_tiles = 500_000u32;
+
+    // 内存预算检查
+    let fmt = format.as_deref().unwrap_or("geotiff");
+    let has_crop = crop_to_shape.unwrap_or(false);
+    let format_class_export = ExportFormat::from_str(fmt);
+    let is_geotiff = format_class_export == ExportFormat::GeoTiff;
+    let is_tile_pack = matches!(
+        format_class_export,
+        ExportFormat::Mbtiles | ExportFormat::Tiles | ExportFormat::Gpkg | ExportFormat::Pbf
+    );
+    let pyramid_on = build_pyramid.unwrap_or(false);
+    let comp = compression.as_deref().unwrap_or("lzw");
+
+    // 输出文件大小估算
+    // - GeoTIFF：raw_rgb × pyramid_mul × comp_mul（裁剪走 RGBA 4 通道）
+    // - 单图栅格 (png/jpeg)：未压缩 raster 大小 × ~0.4（PNG/JPEG 压缩）
+    // - mbtiles/tiles：≈ tile_download_mb（直接打包瓦片）
+    let pyramid_mul = if pyramid_on { 1.33 } else { 1.0 };
+    let comp_mul = compression_ratio(kind, comp);
+    let channels = if has_crop { 4.0 } else { 3.0 };
+    let raw_rgb_mb = tile_count as f64 * 256.0 * 256.0 * channels / (1024.0 * 1024.0);
+
+    let estimated_output_mb: f64 = if is_geotiff {
+        raw_rgb_mb * pyramid_mul * comp_mul
+    } else if is_tile_pack {
+        tile_download_mb
+    } else {
+        // png/jpeg 单图：按 RGB 未压缩 × 0.4 简单估算
+        raw_rgb_mb * 0.4
+    };
+
+    // GeoTIFF raw_size_mb（仅当 GeoTIFF 时填充）
+    let raw_size_mb_opt = if is_geotiff { Some(raw_rgb_mb * pyramid_mul) } else { None };
+
+    // 大小说明
+    let mut notes: Vec<String> = Vec::new();
+    if is_geotiff {
+        match kind {
+            SourceKind::Satellite => {
+                if comp != "none" {
+                    notes.push("卫星影像压缩效率低（通常 0.85~0.95）".to_string());
+                }
+            }
+            SourceKind::Vector | SourceKind::Label => {
+                notes.push("矢量/标签地图压缩效率高（可达 1/5~1/8）".to_string());
+            }
+            SourceKind::Dem => {
+                notes.push("DEM 数据压缩效率中等".to_string());
+            }
+        }
+        if pyramid_on {
+            notes.push("已计入金字塔附加 ~33% 体积".to_string());
+        }
+        if has_crop {
+            notes.push("裁剪输出含 alpha 通道（RGBA）".to_string());
+        }
+    }
+    if multi_zoom {
+        notes.push(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", levels.len(), level_min, level_max));
+    }
+    let size_note = if notes.is_empty() { None } else { Some(notes.join("；")) };
 
     if tile_count > max_tiles {
         return EstimateResult {
@@ -200,15 +349,12 @@ pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format:
                 max_tiles
             )),
             budget_check: None,
-            raw_size_mb: None,
-            size_note: None,
+            raw_size_mb: raw_size_mb_opt,
+            size_note,
+            tile_download_mb,
+            estimated_output_mb,
         };
     }
-
-    // 内存预算检查
-    let fmt = format.as_deref().unwrap_or("geotiff");
-    let has_crop = crop_to_shape.unwrap_or(false);
-    let is_geotiff = ExportFormat::from_str(fmt) == ExportFormat::GeoTiff;
 
     // GeoTIFF 一律走流式路径（含裁剪），内存占用极低
     let format_class = if is_geotiff {
@@ -235,32 +381,12 @@ pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format:
             allowed: false,
             warning: Some("内存预算不足，请查看建议调整参数".to_string()),
             budget_check,
-            raw_size_mb: None,
-            size_note: None,
+            raw_size_mb: raw_size_mb_opt,
+            size_note,
+            tile_download_mb,
+            estimated_output_mb,
         };
     }
-
-    // GeoTIFF 预估未压缩原始大小 + 说明
-    let (raw_size_mb, size_note) = if is_geotiff {
-        // 多 zoom 时是各级文件之和；单 zoom 时即单文件大小
-        let raw = tile_count as f64 * 256.0 * 256.0 * 3.0 / (1024.0 * 1024.0);
-        let mut notes: Vec<String> = Vec::new();
-        if raw > 100.0 {
-            notes.push("卫星影像 LZW 压缩效率低，实际文件接近未压缩大小；矢量地图可压缩至 1/5~1/10".to_string());
-        }
-        if multi_zoom {
-            notes.push(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", levels.len(), level_min, level_max));
-        }
-        let note = if notes.is_empty() { None } else { Some(notes.join("；")) };
-        (Some(raw), note)
-    } else {
-        let note = if multi_zoom {
-            Some(format!("将生成 {} 个文件（z{}~z{}），按子目录分级保存", levels.len(), level_min, level_max))
-        } else {
-            None
-        };
-        (None, note)
-    };
 
     EstimateResult {
         tile_count,
@@ -270,8 +396,10 @@ pub fn estimate_download(bounds: Bounds, zoom: u8, zoom_max: Option<u8>, format:
         allowed: true,
         warning: None,
         budget_check,
-        raw_size_mb,
+        raw_size_mb: raw_size_mb_opt,
         size_note,
+        tile_download_mb,
+        estimated_output_mb,
     }
 }
 
@@ -575,10 +703,15 @@ async fn execute_zoom_level(
         
         let completed_global = completed_offset.saturating_add(progress.completed);
         let failed_global = failed_offset.saturating_add(progress.failed);
-        tm_c.update_progress(&tid, TaskStatus::Downloading, mapped, completed_global, failed_global, Some(display_msg.clone()));
+        // 根据 progress.status 映射回 TaskStatus，避免暂停状态被覆盖
+        let mapped_status = match progress.status.as_str() {
+            "paused" => TaskStatus::Paused,
+            _ => TaskStatus::Downloading,
+        };
+        tm_c.update_progress(&tid, mapped_status, mapped, completed_global, failed_global, Some(display_msg.clone()));
         let _ = app_c.emit(&en, TaskProgressPayload {
             task_id: tid.clone(),
-            status: "downloading".to_string(),
+            status: progress.status.clone(),
             progress: mapped,
             completed: completed_global,
             total: total_tiles,
@@ -1455,8 +1588,26 @@ pub async fn probe_tile(
 
 /// 取消任务
 #[tauri::command]
-pub fn cancel_task(task_manager: State<'_, Arc<TaskManager>>, task_id: String) -> bool {
-    task_manager.cancel_task(&task_id)
+pub fn cancel_task(
+    app: AppHandle,
+    task_manager: State<'_, Arc<TaskManager>>,
+    task_id: String,
+) -> bool {
+    let ok = task_manager.cancel_task(&task_id);
+    if ok {
+        // 立即将 UI 状态切到"已取消"，避免等待下载循环响应 token
+        task_manager.mark_cancelled(&task_id);
+        let _ = app.emit(&format!("task-progress-{}", task_id), TaskProgressPayload {
+            task_id: task_id.clone(),
+            status: "cancelled".to_string(),
+            progress: 0.0,
+            completed: 0,
+            total: 0,
+            message: Some("已取消".to_string()),
+        });
+        let _ = app.emit("task-list-updated", ());
+    }
+    ok
 }
 
 /// 暂停/恢复任务
@@ -1526,9 +1677,19 @@ pub async fn resume_task(
         .ok_or_else(|| "未指定保存路径".to_string())?;
     
     let sources = get_tile_sources(request.tianditu_token.clone());
-    let source = sources.get(&request.source)
-        .ok_or_else(|| format!("未知图源: {}", request.source))?.clone();
-    
+    let source = if let Some(src) = sources.get(&request.source) {
+        src.clone()
+    } else if let Some(version_id) = request.source.strip_prefix("wayback_") {
+        let date = source_name
+            .rsplit(' ')
+            .next()
+            .filter(|s| s.len() >= 8)
+            .unwrap_or("");
+        crate::wayback::make_tile_source(version_id, date)
+    } else {
+        return Err(format!("未知图源: {}", request.source));
+    };
+
     // 注册任务（复用原 task_id）
     let (cancel_token, pause_control) = task_manager.create_task(
         task_id.clone(),
@@ -1608,10 +1769,15 @@ pub async fn resume_task(
 }
 
 /// 丢弃可恢复的任务
+///
+/// `delete_cache=true`：连同 .partial 缓存目录一起删除（彻底清理）
+/// `delete_cache=false`：仅移除任务条目，保留缓存供下次复用
 #[tauri::command]
-pub fn discard_resumable_task(task_id: String) {
+pub fn discard_resumable_task(task_id: String, delete_cache: Option<bool>) {
     crate::task::remove_task_file(&task_id);
-    crate::task::cleanup_temp_dir(&task_id);
+    if delete_cache.unwrap_or(true) {
+        crate::task::cleanup_temp_dir(&task_id);
+    }
 }
 
 /// 获取省份列表

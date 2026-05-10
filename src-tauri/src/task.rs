@@ -167,6 +167,13 @@ impl TaskManager {
         message: Option<String>,
     ) {
         if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
+            // 终态保护：已取消 / 已完成 / 已失败的任务不再被进度回调覆盖
+            if matches!(
+                entry.info.status,
+                TaskStatus::Cancelled | TaskStatus::Completed | TaskStatus::Failed
+            ) {
+                return;
+            }
             entry.info.status = status;
             entry.info.progress = progress;
             entry.info.completed = completed;

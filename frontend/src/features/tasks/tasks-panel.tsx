@@ -224,11 +224,11 @@ function TaskRow({ task }: { task: TaskInfo }) {
   const [elapsed, setElapsed] = useState<number>(0)
   const inTauri = isTauriRuntime()
 
-  // 计时器：活动状态时滚动；结束后冻结最终时长
+  // 计时器：活动状态时滚动；暂停 / 结束后冻结当前时长
   useEffect(() => {
     const start = getStartTime(task.id)
     const status = String(task.status)
-    if (isFinished(status)) {
+    if (isFinished(status) || status === 'paused') {
       setElapsed(Date.now() - start)
       return
     }
@@ -411,12 +411,20 @@ function ResumableRow({ task }: { task: PersistedTask }) {
 
   const discardMutation = useMutation({
     mutationFn: async () => {
-      const ok = await askDialog('确定丢弃此任务？已下载的瓦片缓存将被删除。', {
+      const ok = await askDialog('确定从列表中移除此任务？', {
         title: '丢弃任务',
         kind: 'warning',
       })
       if (!ok) return false
-      await discardResumableTask(task.task_id)
+      // 第二步：是否同时删除已下载的瓦片缓存
+      const deleteCache = await askDialog(
+        '是否同时删除已下载的瓦片缓存？\n\n选"否"将保留缓存，下次重新创建相同任务时可复用，能少下不下。',
+        {
+          title: '清理缓存',
+          kind: 'warning',
+        },
+      )
+      await discardResumableTask(task.task_id, deleteCache)
       return true
     },
     onSuccess: (changed) => {

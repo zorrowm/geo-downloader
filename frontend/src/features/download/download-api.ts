@@ -17,14 +17,22 @@ export function estimateDownload(
   cropToShape = false,
   zoomMax: Nullable<number> = null,
   zoomLevels: Nullable<number[]> = null,
+  options: {
+    sourceId?: Nullable<string>
+    buildPyramid?: Nullable<boolean>
+    compression?: Nullable<string>
+  } = {},
 ) {
   return invokeCommand<DownloadEstimate>('estimate_download', {
     bounds,
     zoom,
-    zoom_max: zoomMax,
-    zoom_levels: zoomLevels,
+    zoomMax,
+    zoomLevels,
     format: format || null,
-    crop_to_shape: cropToShape,
+    cropToShape,
+    sourceId: options.sourceId ?? null,
+    buildPyramid: options.buildPyramid ?? null,
+    compression: options.compression ?? null,
   })
 }
 

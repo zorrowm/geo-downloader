@@ -98,6 +98,12 @@ function looksLikeFilePath(path: string, ext: string): boolean {
   return path.trim().toLowerCase().endsWith(`.${ext.toLowerCase()}`)
 }
 
+function formatBytes(mb?: number | null): string {
+  if (mb == null || !Number.isFinite(mb)) return '-'
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`
+  return `${mb.toFixed(2)} MB`
+}
+
 export function WaybackPage() {
   const inTauri = isTauriRuntime()
   const qc = useQueryClient()
@@ -270,13 +276,17 @@ export function WaybackPage() {
     }
     const t = window.setTimeout(() => {
       setEstimating(true)
-      estimateDownload(bounds, zoom, format, effectiveCropToShape, zMaxValue, zLevelsForApi)
+      estimateDownload(bounds, zoom, format, effectiveCropToShape, zMaxValue, zLevelsForApi, {
+        sourceId: 'wayback_satellite',
+        buildPyramid: format === 'geotiff' ? buildPyramid : false,
+        compression: format === 'geotiff' ? compression : 'none',
+      })
         .then((res) => setEstimate(res))
         .catch(() => setEstimate(null))
         .finally(() => setEstimating(false))
     }, 400)
     return () => window.clearTimeout(t)
-  }, [wbMode, bounds, zoom, zMaxValue, zLevelsForApi, format, cropToShape, effectiveCropToShape])
+  }, [wbMode, bounds, zoom, zMaxValue, zLevelsForApi, format, cropToShape, effectiveCropToShape, compression, buildPyramid])
 
   // ========== 单个下载 ==========
   const singleMutation = useMutation({
@@ -717,8 +727,17 @@ export function WaybackPage() {
             ) : estimate ? (
               <>
                 预计下载{' '}
-                <strong>{estimate.tile_count.toLocaleString()}</strong> 个瓦片 · 约{' '}
-                <strong>{estimate.estimated_size_mb?.toFixed(1) ?? '?'}</strong> MB
+                <strong>{estimate.tile_count.toLocaleString()}</strong> 个瓦片
+                {' · '}输出约{' '}
+                <strong>
+                  {formatBytes(
+                    estimate.estimated_output_mb ?? estimate.raw_size_mb ?? estimate.estimated_size_mb,
+                  )}
+                </strong>
+                {' · '}流量约{' '}
+                <span className="text-muted-foreground">
+                  {formatBytes(estimate.tile_download_mb ?? estimate.estimated_size_mb)}
+                </span>
                 {estimate.warning && (
                   <div className="mt-1 text-amber-600 dark:text-amber-400">
                     {estimate.warning}

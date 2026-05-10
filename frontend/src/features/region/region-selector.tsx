@@ -138,7 +138,8 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
   const onLoadSelectedBoundary = () => {
     const code = districtCode || cityCode || provinceCode
     if (!code) {
-      toast.warning('请先选择行政区划')
+      // 三级都为空 → 加载全国边界
+      void loadByCode('100000', '全国')
       return
     }
     const label =
@@ -311,11 +312,15 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
 
       {/* 三级联动 */}
       <div className="grid grid-cols-3 gap-1.5">
-        <Select value={provinceCode || undefined} onValueChange={(v) => setProvinceCode(v)}>
+        <Select
+          value={provinceCode || '__all__'}
+          onValueChange={(v) => setProvinceCode(v === '__all__' ? '' : v)}
+        >
           <SelectTrigger className="text-sm">
             <SelectValue placeholder="省份" />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="__all__">全国</SelectItem>
             {provincesQuery.data?.map((p) => (
               <SelectItem key={p.code} value={p.code}>
                 {p.name}
@@ -324,14 +329,15 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
           </SelectContent>
         </Select>
         <Select
-          value={cityCode || undefined}
-          onValueChange={(v) => setCityCode(v)}
+          value={cityCode || '__all__'}
+          onValueChange={(v) => setCityCode(v === '__all__' ? '' : v)}
           disabled={!provinceCode || citiesQuery.isLoading}
         >
           <SelectTrigger className="text-sm">
             <SelectValue placeholder="城市" />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="__all__">全部</SelectItem>
             {citiesQuery.data?.map((c) => (
               <SelectItem key={c.code} value={c.code}>
                 {c.name}
@@ -340,8 +346,8 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
           </SelectContent>
         </Select>
         <Select
-          value={districtCode || undefined}
-          onValueChange={(v) => setDistrictCode(v)}
+          value={districtCode || '__all__'}
+          onValueChange={(v) => setDistrictCode(v === '__all__' ? '' : v)}
           disabled={
             !cityCode ||
             districtsQuery.isLoading ||
@@ -358,6 +364,7 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
             />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="__all__">全部</SelectItem>
             {districtsQuery.data?.map((d) => (
               <SelectItem key={d.code} value={d.code}>
                 {d.name}
@@ -374,7 +381,7 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
           size="sm"
           className="flex-1"
           onClick={onLoadSelectedBoundary}
-          disabled={loadingBoundary || (!provinceCode && !cityCode && !districtCode)}
+          disabled={loadingBoundary}
         >
           {loadingBoundary ? (
             <Loader2 className="mr-1 size-3.5 animate-spin" />

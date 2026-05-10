@@ -565,7 +565,11 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
     }
     const handle = window.setTimeout(() => {
       const zMax = zoomMax > zoom ? zoomMax : null
-      estimateDownload(bounds, zoom, format, effectiveCropToShape, zMax, sortedLevels)
+      estimateDownload(bounds, zoom, format, effectiveCropToShape, zMax, sortedLevels, {
+        sourceId: source,
+        buildPyramid: format === 'geotiff' ? buildPyramid : false,
+        compression: format === 'geotiff' ? compression : 'none',
+      })
         .then((data) => setEstimate(data))
         .catch(() => {
           /* 自动估算失败不打扰用户 */
@@ -573,7 +577,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
     }, 400)
     return () => window.clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bounds, zoom, zoomMax, sortedLevels, format, cropToShape, polygon])
+  }, [bounds, zoom, zoomMax, sortedLevels, format, cropToShape, polygon, source, compression, buildPyramid])
 
   // 同步当前选中的图源到全局 store（按当前 mode 记忆），让地图预览跟随切换
   useEffect(() => {
@@ -792,9 +796,22 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
                   <div>
                     网格：{estimate.cols ?? '-'} × {estimate.rows ?? '-'}
                   </div>
-                  <div>预估大小：{formatBytes(estimate.estimated_size_mb)}</div>
-                  {estimate.raw_size_mb != null && (
-                    <div>原始未压缩：{formatBytes(estimate.raw_size_mb)}</div>
+                  <div className="col-span-2">
+                    输出文件大小：
+                    <span className="font-semibold">
+                      {formatBytes(
+                        estimate.estimated_output_mb ?? estimate.raw_size_mb ?? estimate.estimated_size_mb,
+                      )}
+                    </span>
+                  </div>
+                  <div className="col-span-2 text-muted-foreground">
+                    瓦片下载流量：
+                    {formatBytes(estimate.tile_download_mb ?? estimate.estimated_size_mb)}
+                  </div>
+                  {format === 'geotiff' && (
+                    <div className="col-span-2 text-[11px] text-muted-foreground/80">
+                      估算依据：裁剪 {effectiveCropToShape ? '开' : '关'} · 金字塔 {buildPyramid ? '开' : '关'} · 压缩 {compression ?? 'lzw'}
+                    </div>
                   )}
                 </div>
                 {estimate.size_note && (
@@ -851,19 +868,25 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
 
         {format === 'geotiff' && (
           <>
-            <TiffCompressionSelect
-              value={compression as DownloadFormValues['compression']}
-              onChange={(v) =>
-                setValue('compression', v, {
-                  shouldDirty: true,
-                })
-              }
+            <Controller
+              control={control}
+              name="compression"
+              render={({ field }) => (
+                <TiffCompressionSelect
+                  value={field.value as DownloadFormValues['compression']}
+                  onChange={(v) => field.onChange(v)}
+                />
+              )}
             />
-            <BuildPyramidToggle
-              checked={!!buildPyramid}
-              onChange={(checked) =>
-                setValue('build_pyramid', checked, { shouldDirty: true })
-              }
+            <Controller
+              control={control}
+              name="build_pyramid"
+              render={({ field }) => (
+                <BuildPyramidToggle
+                  checked={!!field.value}
+                  onChange={(checked) => field.onChange(checked)}
+                />
+              )}
             />
           </>
         )}
