@@ -21,6 +21,10 @@ pub enum TaskStatus {
     Processing,
     Exporting,
     Completed,
+    /// 部分失败但已自动导出（Issue #31）：成功率 ≥ `min_export_success_ratio`，
+    /// 导出已完成但存在缺块，需要在 UI 标缺块徽章供用户决定是否补漏重导。
+    #[serde(rename = "completed_with_gaps")]
+    CompletedWithGaps,
     Failed,
     Cancelled,
 }
@@ -40,6 +44,11 @@ pub struct TaskInfo {
     pub completed: u32,
     pub total: u32,
     pub failed_count: u32,
+    /// 成功瓦片数（completed - failed_count - no_data，Issue #31）。
+    /// TaskManager 在 update_progress 时按 completed/failed_count 自动推算，
+    /// 调用方无须显式传递。
+    #[serde(default)]
+    pub success_count: u32,
     pub file_size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -137,6 +146,7 @@ impl TaskManager {
             completed: 0,
             total,
             failed_count: 0,
+            success_count: 0,
             file_size: 0,
             message: None,
             error: None,
@@ -167,10 +177,13 @@ impl TaskManager {
         message: Option<String>,
     ) {
         if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
-            // 终态保护：已取消 / 已完成 / 已失败的任务不再被进度回调覆盖
+            // 终态保护：已取消 / 已完成（含缺块）/ 已失败的任务不再被进度回调覆盖
             if matches!(
                 entry.info.status,
-                TaskStatus::Cancelled | TaskStatus::Completed | TaskStatus::Failed
+                TaskStatus::Cancelled
+                    | TaskStatus::Completed
+                    | TaskStatus::CompletedWithGaps
+                    | TaskStatus::Failed
             ) {
                 return;
             }
@@ -178,6 +191,8 @@ impl TaskManager {
             entry.info.progress = progress;
             entry.info.completed = completed;
             entry.info.failed_count = failed_count;
+            // Issue #31：success_count 自动推算，避免调用方分散维护
+            entry.info.success_count = completed.saturating_sub(failed_count);
             entry.info.message = message;
         }
     }
@@ -204,6 +219,7 @@ impl TaskManager {
     pub fn cancel_task(&self, id: &str) -> bool {
         if let Some(entry) = self.tasks.lock().unwrap().get(id) {
             if entry.info.status != TaskStatus::Completed
+                && entry.info.status != TaskStatus::CompletedWithGaps
                 && entry.info.status != TaskStatus::Failed
                 && entry.info.status != TaskStatus::Cancelled
             {
@@ -266,7 +282,10 @@ impl TaskManager {
         if let Some(entry) = tasks.get(id) {
             if matches!(
                 entry.info.status,
-                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+                TaskStatus::Completed
+                    | TaskStatus::CompletedWithGaps
+                    | TaskStatus::Failed
+                    | TaskStatus::Cancelled
             ) {
                 tasks.remove(id);
             }

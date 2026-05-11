@@ -80,6 +80,14 @@ pub struct AppSettings {
     /// 瓦片缓存目录（None = 使用默认 data_local_dir）
     #[serde(default)]
     pub tile_cache_dir: Option<String>,
+    /// 自动导出的最低成功率阈值 (0.0 - 1.0)
+    ///
+    /// 任务下载结束后，成功率 ≥ 此值才自动走合并 / 导出流水线。
+    /// - `0.0`（默认）：只要有 1 张成功瓦片就尝试导出（即"睡醒就有 TIF"幸福路径）
+    /// - `1.0`：必须全部成功才导出，否则进入待决策 Paused 状态
+    /// - 中间值：例如 `0.95` 表示允许 5% 缺洞自动导出，超出则等用户决策
+    #[serde(default = "default_min_export_success_ratio")]
+    pub min_export_success_ratio: f32,
 }
 
 fn default_proxy_enabled() -> bool { false }
@@ -91,6 +99,7 @@ fn default_source() -> String { "osm".to_string() }
 fn default_memory_budget_mb() -> u64 { 2048 }
 fn default_tile_cache_enabled() -> bool { true }
 fn default_tile_cache_max_size_mb() -> u64 { 5120 }
+fn default_min_export_success_ratio() -> f32 { 0.0 }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -111,6 +120,7 @@ impl Default for AppSettings {
             tile_cache_enabled: default_tile_cache_enabled(),
             tile_cache_max_size_mb: default_tile_cache_max_size_mb(),
             tile_cache_dir: None,
+            min_export_success_ratio: default_min_export_success_ratio(),
         }
     }
 }
