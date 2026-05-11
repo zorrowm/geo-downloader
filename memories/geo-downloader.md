@@ -88,7 +88,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 |---|---|---|
 | #22 | 输出目录不生效 | ✅ **已关**（v3.4.4 `e4dc9fb` child timestamp dir 修复） |
 | #30 | 下载预估偏低 17x | ✅ **已关，待发版**（commit `3bbde23` 修完，Cargo.toml 仍 3.4.4） |
-| #31 | 部分失败任务的导出策略 | 🟡 设计稿 `docs/partial-export-design.md` 已出，实现未开始 |
+| #31 | 部分失败任务的导出策略 | 🟡 后端 + 前端全套实现已落地待实测（5 个 commit `1355a24` / `7889644` / `8fc461b` / `652246c` / `3b683f5`，42/42 tests + tsc 全过） |
 | #27 | 多 strip 并行解码 + 大内存缓冲 | 🟡 行内 rayon 已实现（4-6×），跨 strip 缓冲未做（P3 / v3.4.6） |
 | #25 | 换格式重导出走完整下载循环 | 🟡 主循环已实现并实测（1258 张全命中 480ms / SQL 3-5ms），retry 留后续；commit `213f3f8` + `d5c8679`；origin/main 已同步 |
 | #24 | zustand persist 启动恢复 | ❌ P1，3 个 store 未接 `persist` |
@@ -108,6 +108,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 - **2026-05-11 22:25** — 已 push origin/main，5 个 commits 同步，#25 已加 comment（保持 open 跟 retry）
 - `d10d96a` (2026-05-11 22:50) — 修复单 .shp 导入抛 `but-unzip~2`（shpjs 6.x 默认入口仅接 ZIP；改走 `parseShp + combine`），并把 `but-unzip~{1,2,3}` 翻译成中文友好提示；实测通过
 - `155d60b` (2026-05-11 23:13) — #26 `TileSource` enum 方案 A 落地，11 处函数签名迁移，缓存命中走 `Arc<Vec<u8>>` 完全跳过 temp_dir 写盘 IO；新增 6 个单测，42/42 全过；预期 #25 后 482ms 写盘 → <50ms 内存路径，待实测
+- `1355a24` / `7889644` / `8fc461b` / `652246c` / `3b683f5` (2026-05-11 23:30 ~ 2026-05-12 00:00) — #31 部分失败导出策略全套实现：C1 后端字段基建 + C2 ratio 分支判断 + C3 `export_partial_task` 命令 + C4 前端 UI（缺块徽章 / 强制导出 / 阈值滑块）+ C5 保留 CompletedWithGaps 缓存；待实测 4 个验收用例
 
 ## 历史决策摘要
 
