@@ -59,7 +59,9 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 - **QGIS 中文路径打不开 mbtiles/gpkg**：Windows narrow `fopen` + UTF-8 字节导致。对 sqlite 类输出用 ASCII id 命名（`tianditu_satellite_z11.mbtiles`）
 - **`multi_replace_string_in_file` 同形替换 bug**：跨文件相似 oldString 会拼接成乱码。必须 per-file 单次 replace + 立即 `cargo check`
 - **PowerShell UTF-8 输出**：执行 `gh` 等输出中文的命令前先 `$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8; chcp 65001 > $null`
+- **PowerShell stdout 截断（Cascade 终端）**：直调 `gh ... --json ... | Out-File / Set-Content / Out-Host` 经常截断或显示空输出，即使 exit 0。绕开：`cmd /c "gh ... 2>&1"` 包装 + 文件中转 + `Get-Content -Encoding UTF8` 读
 - **`gh api -f` 类型**：sub-issues 等需要整数参数时必须用 `-F`，`-f` 总是字符串会 422
+- **`gh issue comment` 传中文 body**：必须用 `--body-file <path>`，避免 ConvertTo-Json 中文转义坑
 
 ## 关键路径
 
@@ -79,22 +81,26 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 - 扫描双轨：`footprints`（旧）+ `releases`（新，含 `dominant_capture_date` / `coverage_ratio`）
 - metadata 文件缓存 7 天，cache key 已纳入 `scan_mode`
 
-## 待办索引（详情见 docs/worklog）
+## 待办索引（详情见 docs/worklog；2026-05-11 核查更新）
 
-| 来源 | 内容 | 优先级 |
+| 来源 | 内容 | 状态 / 优先级 |
 |---|---|---|
-| #22 | 输出目录不生效（用户已让试新版） | 待复现 |
-| #24 | zustand persist 启动恢复（图源 / 选区 / 视角） | enhancement |
-| #25 | 换格式重导出走完整下载循环，缓存命中应批量预过滤 | perf bug |
-| #26 | 缓存命中绕过 `temp_dir`，bytes 直接交 merger | perf |
-| #27 | 多 strip 并行解码 + 大内存缓冲提速大区导出 | perf |
-| #28 | 浏览期间新缓存的瓦片从待下载矩阵动态剔除 | enhancement |
-| #29 | Sentinel-2 / Landsat 集成（v3.5 规划，STAC + COG） | enhancement |
-| #30 | 下载预估偏低 17x，需重新设计估算公式 | bug |
-| #31 | 部分失败任务的导出策略：自动导出 + 缺块徽章 + 阈值 + 补漏 | enhancement |
+| #22 | 输出目录不生效 | ✅ **已关**（v3.4.4 `e4dc9fb` child timestamp dir 修复） |
+| #30 | 下载预估偏低 17x | ✅ **已关，待发版**（commit `3bbde23` 修完，Cargo.toml 仍 3.4.4） |
+| #31 | 部分失败任务的导出策略 | 🟡 设计稿 `docs/partial-export-design.md` 已出，实现未开始 |
+| #27 | 多 strip 并行解码 + 大内存缓冲 | 🟡 行内 rayon 已实现（4-6×），跨 strip 缓冲未做（P3 / v3.4.6） |
+| #25 | 换格式重导出走完整下载循环 | ❌ **P0 perf bug**，`downloader.rs` 无 `contains_batch`，per-tile SQL |
+| #24 | zustand persist 启动恢复 | ❌ P1，3 个 store 未接 `persist` |
+| #26 | 缓存命中绕过 `temp_dir`，bytes 直接交 merger | ❌ P2，无 `TileSource::Bytes` enum |
+| #29 | Sentinel-2 / Landsat 集成 | ❌ P2，`imagery_scene/` 模块未建 |
+| #28 | 浏览期间新缓存的瓦片从待下载矩阵动态剔除 | ❌ P4，`tile_cache/` 无事件总线 |
 | worklog 05-08 | 3D Tiles 末段卡死（`resolve_and_stream` 无 `tokio::time::timeout`） | 待复现日志 |
 | worklog 05-07 | MVT mbtiles/gpkg 在 QGIS 看不到图层（缺 `vector_layers` JSON metadata） | bug |
 | worklog 04-17 | exporter OOM（C3/C4，`Vec` 聚合未流式） | 单独 RFC |
+
+未发版本变更（main HEAD 领先 v3.4.4）：
+- `3bbde23` (2026-05-10) — 估算精度修复 + 部分失败设计稿 + 5 项顺手 bug 修
+- `97e9973` (2026-05-11) — 建立 memories/ 与 `.windsurf/rules/memory.md`
 
 ## 历史决策摘要
 
