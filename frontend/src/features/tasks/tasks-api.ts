@@ -40,3 +40,12 @@ export function resumeTask(taskId: string) {
 export function discardResumableTask(taskId: string, deleteCache = true) {
   return invokeCommand<void>('discard_resumable_task', { taskId, deleteCache })
 }
+
+/**
+ * Issue #31：强制按现状导出部分失败任务。
+ * 跳过下载循环，从 temp_dir 重建 tile_files 直接走流式导出，缺块在输出栅格中
+ * 表现为白底（PNG/GeoTIFF）或 NoData（DEM）。完成后任务标 CompletedWithGaps。
+ */
+export function exportPartialTask(taskId: string) {
+  return invokeCommand<void>('export_partial_task', { taskId })
+}

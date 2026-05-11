@@ -64,6 +64,12 @@ export interface AppSettings {
   tile_cache_max_size_mb?: number
   /** 瓦片缓存目录（null = 默认 data_local_dir） */
   tile_cache_dir?: Nullable<string>
+  /**
+   * 自动导出最低成功率阈值 (0.0 - 1.0)，Issue #31。
+   * 0.0 = 有 1 张成功就导出（默认幸福路径）；1.0 = 必须全成功才导出；
+   * 中间值 = 允许指定比例缺洞自动导出，超出则进 Paused 待用户决策。
+   */
+  min_export_success_ratio?: number
 }
 
 /** 自定义瓦片图源（与 Rust CustomTileSource 对齐） */
@@ -172,6 +178,8 @@ export type TaskStatus =
   | 'exporting'
   | 'building_pyramid'
   | 'completed'
+  /** Issue #31：部分失败但已自动导出（成功率 ≥ min_export_success_ratio + 含失败瓦片） */
+  | 'completed_with_gaps'
   | 'failed'
   | 'cancelled'
 
@@ -188,6 +196,8 @@ export interface TaskInfo {
   completed?: number
   total?: number
   failed_count?: number
+  /** Issue #31：成功瓦片数（completed - failed_count，由 TaskManager 自动推算） */
+  success_count?: number
   file_size?: number
   message?: string
   error?: string

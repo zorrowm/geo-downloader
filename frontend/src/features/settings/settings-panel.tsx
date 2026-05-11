@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { PanelSection } from '@/components/layout/panel-section'
 import { SourcesDialog } from '@/features/sources/sources-dialog'
@@ -45,6 +46,7 @@ const settingsSchema = z.object({
   tile_cache_enabled: z.boolean(),
   tile_cache_max_size_mb: z.number().int().min(0).max(1024 * 1024),
   tile_cache_dir: z.string().trim(),
+  min_export_success_ratio: z.number().min(0).max(1),
 })
 
 type SettingsFormValues = z.infer<typeof settingsSchema>
@@ -63,6 +65,7 @@ const DEFAULT_VALUES: SettingsFormValues = {
   tile_cache_enabled: true,
   tile_cache_max_size_mb: 5120,
   tile_cache_dir: '',
+  min_export_success_ratio: 0,
 }
 
 function fromAppSettings(s: AppSettings | undefined): SettingsFormValues {
@@ -85,6 +88,7 @@ function fromAppSettings(s: AppSettings | undefined): SettingsFormValues {
     tile_cache_enabled: s.tile_cache_enabled ?? true,
     tile_cache_max_size_mb: s.tile_cache_max_size_mb ?? 5120,
     tile_cache_dir: s.tile_cache_dir ?? '',
+    min_export_success_ratio: s.min_export_success_ratio ?? 0,
   }
 }
 
@@ -104,6 +108,7 @@ function toAppSettings(values: SettingsFormValues, base: AppSettings | undefined
     tile_cache_enabled: values.tile_cache_enabled,
     tile_cache_max_size_mb: values.tile_cache_max_size_mb,
     tile_cache_dir: values.tile_cache_dir.trim() || null,
+    min_export_success_ratio: values.min_export_success_ratio,
   }
 }
 
@@ -138,6 +143,7 @@ export function SettingsPanel() {
   const tileCacheEnabled = useWatch({ control, name: 'tile_cache_enabled' })
   const tileCacheMaxSizeMb = useWatch({ control, name: 'tile_cache_max_size_mb' })
   const tileCacheDir = useWatch({ control, name: 'tile_cache_dir' })
+  const minExportSuccessRatio = useWatch({ control, name: 'min_export_success_ratio' })
 
   const mutation = useMutation({
     mutationFn: (values: SettingsFormValues) =>
@@ -292,6 +298,33 @@ export function SettingsPanel() {
                   : ''}
               </p>
             )}
+          </div>
+          {/* Issue #31：自动导出最低成功率阈值 */}
+          <div className="space-y-1.5 sm:col-span-2">
+            <div className="flex items-center justify-between">
+              <Label>自动导出最低成功率</Label>
+              <span className="text-xs font-medium text-muted-foreground">
+                {Math.round((minExportSuccessRatio ?? 0) * 100)}%
+              </span>
+            </div>
+            <Slider
+              value={[Math.round((minExportSuccessRatio ?? 0) * 100)]}
+              min={0}
+              max={100}
+              step={5}
+              onValueChange={(arr) =>
+                setValue('min_export_success_ratio', (arr[0] ?? 0) / 100, {
+                  shouldDirty: true,
+                })
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              下载结束时成功率达到此值才自动导出。
+              <strong className="text-foreground/80">0%</strong>
+              （默认）= 有 1 张成功就导，
+              <strong className="text-foreground/80">100%</strong>
+              = 必须全成功才导，否则进入待决策状态。
+            </p>
           </div>
         </div>
       </PanelSection>

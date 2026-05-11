@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardCopy,
+  Download,
   Inbox,
   Pause,
   Play,
@@ -22,6 +23,7 @@ import { useAppStore } from '@/store/app-store'
 import {
   cancelTask,
   discardResumableTask,
+  exportPartialTask,
   getActiveTasks,
   getResumableTasks,
   getTaskLogs,
@@ -39,6 +41,9 @@ const ACTIVE_STATES: TaskStatus[] = [
   'exporting',
   'building_pyramid',
 ]
+// FINISHED_STATES：列入此集合的任务会从活动面板隐藏并转入历史。
+// `completed_with_gaps` 故意不列入 — 设计稿要求"显示在已完成区，带醒目缺块徽章"，
+// 让用户在主面板能立即看到并选择「补漏重导」/「删除」。
 const FINISHED_STATES: TaskStatus[] = ['completed', 'failed', 'cancelled']
 
 function isActive(s: string): boolean {
@@ -47,11 +52,14 @@ function isActive(s: string): boolean {
 function isFinished(s: string): boolean {
   return FINISHED_STATES.includes(s as TaskStatus)
 }
+function isCompletedWithGaps(s: string): boolean {
+  return s === 'completed_with_gaps'
+}
 
 function statusVariant(s: string): 'default' | 'secondary' | 'destructive' | 'outline' {
   if (s === 'completed') return 'default'
   if (s === 'failed' || s === 'cancelled') return 'destructive'
-  if (s === 'paused') return 'outline'
+  if (s === 'paused' || s === 'completed_with_gaps') return 'outline'
   return 'secondary'
 }
 
@@ -64,12 +72,30 @@ const STATUS_TEXT: Record<string, string> = {
   exporting: '导出中',
   building_pyramid: '构建金字塔',
   completed: '已完成',
+  completed_with_gaps: '部分完成',
   failed: '失败',
   cancelled: '已取消',
 }
 
 function statusLabel(s: string): string {
   return STATUS_TEXT[s] ?? s
+}
+
+/**
+ * Issue #31：按缺块比例返回 Tailwind 文字 / 边框色（绿黄橙红四档）。
+ * < 1% 绿，1-10% 黄，10-50% 橙，> 50% 红。
+ */
+function gapBadgeClasses(failedRatio: number): string {
+  if (failedRatio <= 0.01) {
+    return 'border-emerald-500/50 text-emerald-700 dark:text-emerald-400'
+  }
+  if (failedRatio <= 0.1) {
+    return 'border-amber-500/50 text-amber-700 dark:text-amber-400'
+  }
+  if (failedRatio <= 0.5) {
+    return 'border-orange-500/50 text-orange-700 dark:text-orange-400'
+  }
+  return 'border-red-500/50 text-red-700 dark:text-red-400'
 }
 
 function formatBytes(n?: number): string {
@@ -278,11 +304,33 @@ function TaskRow({ task }: { task: TaskInfo }) {
     },
     onError: (e) => toast.error(`删除失败：${String(e)}`),
   })
+  // Issue #31：强制按现状导出（paused 待决策时使用）
+  const exportPartialMutation = useMutation({
+    mutationFn: () => exportPartialTask(task.id),
+    onSuccess: () => {
+      toast.success('开始强制按现状导出，请等待完成')
+      refresh()
+    },
+    onError: (e) => toast.error(`强制导出失败：${String(e)}`),
+  })
+  // Issue #31：补漏重导（completed_with_gaps 时使用，复用 resumeTask 触发增量补下载）
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeTask(task.id),
+    onSuccess: () => {
+      toast.success('开始补漏重试，将仅下载缺失瓦片')
+      refresh()
+    },
+    onError: (e) => toast.error(`补漏失败：${String(e)}`),
+  })
 
   const status = String(task.status)
   const progress = typeof task.progress === 'number' ? task.progress : 0
   const total = task.total ?? 0
   const completed = task.completed ?? 0
+  const failedCount = task.failed_count ?? 0
+  // Issue #31：缺块比例（仅在 completed_with_gaps 状态展示徽章用）
+  const gapsRatio = total > 0 ? failedCount / total : 0
+  const showGapBadge = isCompletedWithGaps(status) && failedCount > 0
 
   return (
     <div className="rounded-md border p-2.5 text-sm">
@@ -293,6 +341,15 @@ function TaskRow({ task }: { task: TaskInfo }) {
         <Badge variant={statusVariant(status)} className="text-xs">
           {statusLabel(status)}
         </Badge>
+        {showGapBadge && (
+          <Badge
+            variant="outline"
+            className={`text-xs ${gapBadgeClasses(gapsRatio)}`}
+            title={`缺块 ${failedCount} / ${total}`}
+          >
+            缺块 {(gapsRatio * 100).toFixed(gapsRatio < 0.01 ? 2 : 1)}%
+          </Badge>
+        )}
         {task.source_name && (
           <Badge variant="outline" className="text-xs font-normal">
             {task.source_name}
@@ -336,6 +393,19 @@ function TaskRow({ task }: { task: TaskInfo }) {
                   <Pause className="size-3.5" />
                 )}
               </Button>
+              {/* Issue #31：暂停态加「强制按现状导出」入口 */}
+              {status === 'paused' && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => exportPartialMutation.mutate()}
+                  disabled={exportPartialMutation.isPending}
+                  className="size-7"
+                  title="强制按现状导出（缺块部分留白 / NoData）"
+                >
+                  <Download className="size-3.5" />
+                </Button>
+              )}
               <Button
                 size="icon"
                 variant="ghost"
@@ -345,6 +415,31 @@ function TaskRow({ task }: { task: TaskInfo }) {
                 title="取消"
               >
                 <X className="size-3.5" />
+              </Button>
+            </>
+          )}
+          {isCompletedWithGaps(status) && (
+            <>
+              {/* Issue #31：补漏重导（resume_task 增量下载缺失瓦片） */}
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => resumeMutation.mutate()}
+                disabled={resumeMutation.isPending}
+                className="size-7"
+                title="补漏重导（仅下载缺失瓦片，完成后覆盖原 TIF）"
+              >
+                <RefreshCw className="size-3.5" />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => removeMutation.mutate()}
+                disabled={removeMutation.isPending}
+                className="size-7"
+                title="从列表移除"
+              >
+                <Trash2 className="size-3.5" />
               </Button>
             </>
           )}
