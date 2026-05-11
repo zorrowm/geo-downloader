@@ -92,7 +92,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 | #27 | 多 strip 并行解码 + 大内存缓冲 | 🟡 行内 rayon 已实现（4-6×），跨 strip 缓冲未做（P3 / v3.4.6） |
 | #25 | 换格式重导出走完整下载循环 | 🟡 主循环已实现并实测（1258 张全命中 480ms / SQL 3-5ms），retry 留后续；commit `213f3f8` + `d5c8679`；origin/main 已同步 |
 | #24 | zustand persist 启动恢复 | ❌ P1，3 个 store 未接 `persist` |
-| #26 | 缓存命中绕过 `temp_dir`，bytes 直接交 merger | 🟡 已实现待实测（commit `155d60b`，方案 A `TileSource` enum + Arc<Vec<u8>>，42/42 tests 全过） |
+| #26 | 缓存命中绕过 `temp_dir`，bytes 直接交 merger | ✅ **已关**（commit `155d60b`，方案 A `TileSource` enum + Arc<Vec<u8>>，2026-05-11 用户实测体感优势达成） |
 | #29 | Sentinel-2 / Landsat 集成 | ❌ P2，`imagery_scene/` 模块未建 |
 | #28 | 浏览期间新缓存的瓦片从待下载矩阵动态剔除 | ❌ P4，`tile_cache/` 无事件总线 |
 | worklog 05-08 | 3D Tiles 末段卡死（`resolve_and_stream` 无 `tokio::time::timeout`） | 待复现日志 |
