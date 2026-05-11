@@ -2,6 +2,7 @@
 //!
 //! 仅在 `pool.rs` 中通过 Mutex 同步访问，store 层无需自己加锁。
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::{params, Connection, OpenFlags};
@@ -167,6 +168,69 @@ impl TileStore {
         Ok(())
     }
 
+    /// 批量判断哪些坐标已在缓存中。
+    ///
+    /// 分批 (300/批) 走 `WHERE (zoom_level, tile_column, tile_row) IN (VALUES ...)`
+    /// 单条 SQL，避免每张瓦片一次 prepare + query；命中检查走主键索引，
+    /// 整体复杂度 O(N log N)。批大小取 300 是为了把单语句占位符控制在
+    /// 300 × 3 = 900 个之内，留出余量给传统 SQLite 999 参数上限。
+    ///
+    /// 注意：传入的 `coords` 是 XYZ 坐标（左上角原点），内部自动转 TMS；
+    /// 返回的 `HashSet` 元素亦为原始 XYZ 坐标。
+    pub fn contains_batch(&self, coords: &[TileCoord]) -> Result<HashSet<TileCoord>, String> {
+        use std::collections::HashMap;
+        if coords.is_empty() {
+            return Ok(HashSet::new());
+        }
+        // (z, x, tms_y) -> 原始 XYZ TileCoord 的反查映射
+        let mut idx: HashMap<(u8, u32, u32), TileCoord> = HashMap::with_capacity(coords.len());
+        for &c in coords {
+            let tms_y = xyz_to_tms_row(c.z, c.y);
+            idx.insert((c.z, c.x, tms_y), c);
+        }
+
+        const BATCH_SIZE: usize = 300;
+        let mut found: HashSet<TileCoord> = HashSet::with_capacity(coords.len() / 2 + 1);
+
+        for chunk in coords.chunks(BATCH_SIZE) {
+            // 构造 SQL：WHERE (z,x,y) IN (VALUES (?,?,?), (?,?,?), ...)
+            let mut sql = String::with_capacity(96 + chunk.len() * 8);
+            sql.push_str(
+                "SELECT zoom_level, tile_column, tile_row FROM tiles \
+                 WHERE (zoom_level, tile_column, tile_row) IN (VALUES ",
+            );
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                sql.push_str("(?,?,?)");
+            }
+            sql.push(')');
+
+            let mut p: Vec<i64> = Vec::with_capacity(chunk.len() * 3);
+            for c in chunk {
+                let tms_y = xyz_to_tms_row(c.z, c.y);
+                p.push(c.z as i64);
+                p.push(c.x as i64);
+                p.push(tms_y as i64);
+            }
+
+            let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let mut rows = stmt
+                .query(rusqlite::params_from_iter(&p))
+                .map_err(|e| e.to_string())?;
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                let z: i64 = row.get(0).map_err(|e| e.to_string())?;
+                let x: i64 = row.get(1).map_err(|e| e.to_string())?;
+                let tms_y: i64 = row.get(2).map_err(|e| e.to_string())?;
+                if let Some(&orig) = idx.get(&(z as u8, x as u32, tms_y as u32)) {
+                    found.insert(orig);
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// 更新 last_used_at（不要在每次 get 都调用，性能敏感）。
     pub fn touch(&mut self) -> Result<(), String> {
         let now = chrono::Utc::now().to_rfc3339();
@@ -309,5 +373,105 @@ mod tests {
         }
         let stats = store.stats(0).unwrap();
         assert_eq!(stats.tile_count, 10);
+    }
+
+    /// 空入参直接返回空集，不应触碰 DB。
+    #[test]
+    fn contains_batch_empty_input() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.mbtiles");
+        let store = TileStore::open(&path, "empty").unwrap();
+        let got = store.contains_batch(&[]).unwrap();
+        assert!(got.is_empty());
+    }
+
+    /// 全命中：所有传入坐标都已 put 过。
+    #[test]
+    fn contains_batch_all_hit() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("all_hit.mbtiles");
+        let mut store = TileStore::open(&path, "all_hit").unwrap();
+        store.ensure_metadata(&SourceInfo::default()).unwrap();
+        let coords: Vec<TileCoord> = (0..20)
+            .map(|i| TileCoord { z: 6, x: i, y: i * 2 })
+            .collect();
+        let batch: Vec<_> = coords
+            .iter()
+            .map(|c| {
+                (
+                    *c,
+                    StoredTile {
+                        bytes: vec![c.x as u8; 3],
+                        content_type: "image/png".into(),
+                    },
+                )
+            })
+            .collect();
+        store.put_batch(&batch).unwrap();
+        let got = store.contains_batch(&coords).unwrap();
+        assert_eq!(got.len(), coords.len());
+        for c in &coords {
+            assert!(got.contains(c), "missing coord {:?}", c);
+        }
+    }
+
+    /// 部分命中：只 put 一半坐标，contains_batch 应只返回这一半。
+    #[test]
+    fn contains_batch_partial_hit() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("partial.mbtiles");
+        let mut store = TileStore::open(&path, "partial").unwrap();
+        store.ensure_metadata(&SourceInfo::default()).unwrap();
+        let all: Vec<TileCoord> = (0..30)
+            .map(|i| TileCoord { z: 7, x: i, y: 100 + i })
+            .collect();
+        // 偶数下标的 put 进去
+        let hit_subset: Vec<TileCoord> = all.iter().copied().step_by(2).collect();
+        let batch: Vec<_> = hit_subset
+            .iter()
+            .map(|c| (*c, StoredTile { bytes: vec![1], content_type: "image/png".into() }))
+            .collect();
+        store.put_batch(&batch).unwrap();
+
+        let got = store.contains_batch(&all).unwrap();
+        assert_eq!(got.len(), hit_subset.len());
+        for c in &hit_subset {
+            assert!(got.contains(c), "expected hit {:?}", c);
+        }
+        // 奇数下标都不应命中
+        for (i, c) in all.iter().enumerate() {
+            if i % 2 == 1 {
+                assert!(!got.contains(c), "unexpected hit {:?}", c);
+            }
+        }
+    }
+
+    /// 跨批切分：>300 个坐标（BATCH_SIZE）走多轮 SQL，应该都正确命中。
+    /// 同时覆盖 XYZ → TMS 行号转换在 chunks 跨越时不会错位。
+    #[test]
+    fn contains_batch_crosses_batch_boundary() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("cross.mbtiles");
+        let mut store = TileStore::open(&path, "cross").unwrap();
+        store.ensure_metadata(&SourceInfo::default()).unwrap();
+        // 750 个坐标，跨 3 个 batch（300 + 300 + 150）
+        let coords: Vec<TileCoord> = (0..750u32)
+            .map(|i| TileCoord { z: 8, x: i, y: i + 1 })
+            .collect();
+        let batch: Vec<_> = coords
+            .iter()
+            .map(|c| (*c, StoredTile { bytes: vec![0], content_type: "image/png".into() }))
+            .collect();
+        store.put_batch(&batch).unwrap();
+
+        let got = store.contains_batch(&coords).unwrap();
+        assert_eq!(got.len(), coords.len(), "all {} coords should hit", coords.len());
+
+        // 故意混入一些不存在的坐标，验证不会误报
+        let mut mixed: Vec<TileCoord> = coords.clone();
+        mixed.push(TileCoord { z: 8, x: 99999, y: 99999 });
+        mixed.push(TileCoord { z: 9, x: 0, y: 0 });
+        let got2 = store.contains_batch(&mixed).unwrap();
+        assert_eq!(got2.len(), coords.len(), "miss must not be reported");
     }
 }

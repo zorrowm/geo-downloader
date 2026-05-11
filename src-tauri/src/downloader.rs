@@ -308,6 +308,56 @@ impl TileDownloader {
             let _ = tcache::Store::global().ensure_source(&cache_src, (*cache_info).clone());
         }
 
+        // ===== 缓存命中批量预过滤（Issue #25）=====
+        // 在并发循环之前，先用一条 SQL 批量识别已缓存的瓦片，单线程拉 bytes 写 temp_dir，
+        // 避免每张瓦片占用一个并发槽位 + 一次 SQL prepare/query 的开销。
+        // 100% 命中场景下，1 万张瓦片应在秒级完成（原先需几分钟走完 buffer_unordered）。
+        let mut cache_hit_count = 0u32;
+        if tcache::get_config().enabled && !need_download.is_empty() {
+            let coords: Vec<CacheCoord> = need_download
+                .iter()
+                .map(|t| CacheCoord { z: t.z as u8, x: t.x, y: t.y })
+                .collect();
+            if let Ok(cached_set) = tcache::Store::global().contains_batch(&cache_src, &coords) {
+                if !cached_set.is_empty() {
+                    let (cached_tiles, real_need): (Vec<_>, Vec<_>) = need_download
+                        .into_iter()
+                        .partition(|t| {
+                            cached_set.contains(&CacheCoord {
+                                z: t.z as u8,
+                                x: t.x,
+                                y: t.y,
+                            })
+                        });
+
+                    // 同步把命中的 bytes 拉出来落到 temp_dir，让 merger 走原读文件路径
+                    for tile in cached_tiles {
+                        let coord = CacheCoord { z: tile.z as u8, x: tile.x, y: tile.y };
+                        if let Ok(Some(stored)) = tcache::Store::global().get(&cache_src, coord) {
+                            if !stored.bytes.is_empty() {
+                                let file_path = temp_dir.join(format!("{}_{}.png", tile.x, tile.y));
+                                if std::fs::write(&file_path, &stored.bytes).is_ok() {
+                                    tile_files.insert((tile.x, tile.y), file_path);
+                                    completed += 1;
+                                    cache_hit_count += 1;
+                                }
+                            }
+                        }
+                    }
+                    need_download = real_need;
+                }
+            }
+        }
+        if cache_hit_count > 0 {
+            progress_callback(DownloadProgress {
+                total,
+                completed,
+                failed,
+                no_data: 0,
+                status: format!("缓存命中 {} 个瓦片，剩余 {} 个走网络", cache_hit_count, need_download.len()),
+            });
+        }
+
         let all_futures = need_download.into_iter().map(|tile| {
             let url = self.get_tile_url(&tile);
             let headers = self.get_headers();

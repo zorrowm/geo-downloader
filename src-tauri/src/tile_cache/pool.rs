@@ -2,7 +2,7 @@
 //!
 //! 也实现了对外的 `Store` 入口，对调用方屏蔽连接复用与磁盘容量管理。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -182,6 +182,29 @@ impl Store {
             store.ensure_metadata(&info)?;
         }
         store.put_batch(&batch)
+    }
+
+    /// 批量判断哪些坐标已在缓存中。
+    ///
+    /// 用于下载循环开始前的预过滤：把已命中的瓦片从待下载列表里剔除，
+    /// 避免每张瓦片一次 `get` 单独走 SQL 占用并发槽位。
+    ///
+    /// 缓存禁用、文件不存在或入参为空时返回空集（不视为错误）。
+    pub fn contains_batch(
+        &self,
+        src: &SourceKey,
+        coords: &[TileCoord],
+    ) -> Result<HashSet<TileCoord>, String> {
+        if !get_config().enabled || coords.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let path = Self::path_for(src);
+        if !path.exists() {
+            return Ok(HashSet::new());
+        }
+        let handle = self.handle(src)?;
+        let store = handle.lock().map_err(|_| "store poisoned".to_string())?;
+        store.contains_batch(coords)
     }
 
     pub fn ensure_source(&self, src: &SourceKey, info: SourceInfo) -> Result<(), String> {

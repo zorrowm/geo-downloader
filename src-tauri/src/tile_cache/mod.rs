@@ -29,7 +29,7 @@ impl SourceKey {
 }
 
 /// XYZ 瓦片坐标（左上角原点）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TileCoord {
     pub z: u8,
     pub x: u32,
