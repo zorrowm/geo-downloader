@@ -106,6 +106,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 - `213f3f8` (2026-05-11) — #25 主循环批量预过滤（`contains_batch` + 4 单测）
 - `d5c8679` (2026-05-11) — #25 清理 prefilter eprintln 调试输出（实测通过后）
 - **2026-05-11 22:25** — 已 push origin/main，5 个 commits 同步，#25 已加 comment（保持 open 跟 retry）
+- `d10d96a` (2026-05-11 22:50) — 修复单 .shp 导入抛 `but-unzip~2`（shpjs 6.x 默认入口仅接 ZIP；改走 `parseShp + combine`），并把 `but-unzip~{1,2,3}` 翻译成中文友好提示；实测通过
 
 ## 历史决策摘要
 
