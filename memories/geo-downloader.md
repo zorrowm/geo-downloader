@@ -8,7 +8,7 @@
 - 仓库：`gaopengbin/geo-downloader`
 - 工作区：`g:/code/tif-downloader`
 - 产品名：GeoDownloader（原 tif-downloader，v3.0.0 更名）
-- 当前发布：v3.4.4（稳定）
+- 当前发布：v3.4.5（稳定，2026-05-12 00:14 CST tag push 自动 release workflow 构建中）
 - mem0：`app_id=geo-downloader`、`agent_id=copilot-vscode`、`userId=mem0-mcp`
 
 ## 技术栈速记
@@ -87,7 +87,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 | 来源 | 内容 | 状态 / 优先级 |
 |---|---|---|
 | #22 | 输出目录不生效 | ✅ **已关**（v3.4.4 `e4dc9fb` child timestamp dir 修复） |
-| #30 | 下载预估偏低 17x | ✅ **已关，待发版**（commit `3bbde23` 修完，Cargo.toml 仍 3.4.4） |
+| #30 | 下载预估偏低 17x | ✅ **已关并 v3.4.5 发版**（commit `3bbde23` 修完） |
 | #31 | 部分失败任务的导出策略 | 🟡 后端 + 前端全套实现已落地待实测（5 个 commit `1355a24` / `7889644` / `8fc461b` / `652246c` / `3b683f5`，42/42 tests + tsc 全过） |
 | #27 | 多 strip 并行解码 + 大内存缓冲 | 🟡 行内 rayon 已实现（4-6×），跨 strip 缓冲未做（P3 / v3.4.6） |
 | #25 | 换格式重导出走完整下载循环 | 🟡 主循环已实现并实测（1258 张全命中 480ms / SQL 3-5ms），retry 留后续；commit `213f3f8` + `d5c8679`；origin/main 已同步 |
@@ -99,7 +99,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 | worklog 05-07 | MVT mbtiles/gpkg 在 QGIS 看不到图层（缺 `vector_layers` JSON metadata） | bug |
 | worklog 04-17 | exporter OOM（C3/C4，`Vec` 聚合未流式） | 单独 RFC |
 
-未发版本变更（main HEAD 领先 v3.4.4）：
+**v3.4.5 已发布**（2026-05-12 00:14 CST，commit `31ac054`，tag push 自动 release workflow 构建中）。下面是 v3.4.4 → v3.4.5 之间的版本内变更：
 - `3bbde23` (2026-05-10) — 估算精度修复 + 部分失败设计稿 + 5 项顺手 bug 修
 - `97e9973` (2026-05-11) — 建立 memories/ 与 `.windsurf/rules/memory.md`
 - `f6f7a06` (2026-05-11) — 补充 PowerShell 截断踩坑 + 更新 issue 状态索引
@@ -109,6 +109,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 - `d10d96a` (2026-05-11 22:50) — 修复单 .shp 导入抛 `but-unzip~2`（shpjs 6.x 默认入口仅接 ZIP；改走 `parseShp + combine`），并把 `but-unzip~{1,2,3}` 翻译成中文友好提示；实测通过
 - `155d60b` (2026-05-11 23:13) — #26 `TileSource` enum 方案 A 落地，11 处函数签名迁移，缓存命中走 `Arc<Vec<u8>>` 完全跳过 temp_dir 写盘 IO；新增 6 个单测，42/42 全过；预期 #25 后 482ms 写盘 → <50ms 内存路径，待实测
 - `1355a24` / `7889644` / `8fc461b` / `652246c` / `3b683f5` (2026-05-11 23:30 ~ 2026-05-12 00:00) — #31 部分失败导出策略全套实现：C1 后端字段基建 + C2 ratio 分支判断 + C3 `export_partial_task` 命令 + C4 前端 UI（缺块徽章 / 强制导出 / 阈值滑块）+ C5 保留 CompletedWithGaps 缓存；待实测 4 个验收用例
+- `31ac054` (2026-05-12 00:14) — **release: v3.4.5** bump Cargo.toml + tauri.conf.json + README + release-notes-v3.4.5.md；tag push 已触发 GitHub Actions Release workflow，自动构建多平台二进制并创建 GitHub Release（约 10-15 分钟完成）
 
 ## 历史决策摘要
 
