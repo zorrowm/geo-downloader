@@ -38,15 +38,15 @@
 
 前往 [Releases](https://github.com/gaopengbin/geo-downloader/releases) 下载对应平台安装包：
 
-| 平台 | 稳定版 (v3.4.4) |
+| 平台 | 稳定版 (v3.4.5) |
 |---|---|
-| Windows x64 | [setup.exe](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_windows_x64-setup.exe) |
-| macOS Apple Silicon | [arm64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_macos_arm64.dmg) |
-| macOS Intel | [x64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_macos_x64.dmg) |
-| Linux (Debian/Ubuntu) | [.deb](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_linux_amd64.deb) |
-| Linux (AppImage) | [AppImage](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.4/GeoDownloader_3.4.4_linux_amd64.AppImage) |
+| Windows x64 | [setup.exe](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.5/GeoDownloader_3.4.5_windows_x64-setup.exe) |
+| macOS Apple Silicon | [arm64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.5/GeoDownloader_3.4.5_macos_arm64.dmg) |
+| macOS Intel | [x64.dmg](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.5/GeoDownloader_3.4.5_macos_x64.dmg) |
+| Linux (Debian/Ubuntu) | [.deb](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.5/GeoDownloader_3.4.5_linux_amd64.deb) |
+| Linux (AppImage) | [AppImage](https://github.com/gaopengbin/geo-downloader/releases/download/v3.4.5/GeoDownloader_3.4.5_linux_amd64.AppImage) |
 
-> **v3.4.4**：新增矢量瓦片（MVT/PBF）下载与 MapLibre GL 主地图直接渲染，新增天地图注记图层（cia_w/cva_w/cta_w）及"叠加注记"合成；DEM 模式新增分辨率信息卡；修复 mbtiles 在中文路径下 QGIS 报"无效图层"、MVT 输出 mbtiles 元信息错误、tiles/pbf 输出污染父目录等问题。详见 [Release Notes](https://github.com/gaopengbin/geo-downloader/releases/tag/v3.4.4)。
+> **v3.4.5**：缓存命中性能起飞（#25 + #26：1258 张全命中从 ~10s 降到 <50ms 量级）；部分失败任务导出策略（#31：少量失败默认仍生成 TIF + 缺块徽章 + 「补漏重导」/「强制按现状导出」按钮）；下载预估精度修复（#30：原 23GB 实际 408GB → 按图源 LUT 重算 + 双字段 UI）；shapefile 单 .shp 导入修复 + 5 项任务管理 UX 修复。详见 [Release Notes](https://github.com/gaopengbin/geo-downloader/releases/tag/v3.4.5)。
 
 > macOS 首次打开提示"无法验证开发者"时：右键安装包 → 打开，或在「系统设置 → 隐私与安全性」放行。
 
