@@ -1884,6 +1884,327 @@ pub async fn resume_task(
     Ok(CreateTaskResult { task_id, tile_count })
 }
 
+/// 扫描 temp_dir 下指定 zoom 级别已下载的瓦片文件，重建 tile_files HashMap
+/// （Issue #31 强制导出 / 多 zoom 级别支持子目录布局）
+fn scan_temp_dir_for_zoom(
+    base_temp_dir: &Path,
+    current_zoom: u8,
+    multi_zoom: bool,
+) -> HashMap<(u32, u32), crate::merger::TileSource> {
+    let zoom_dir = if multi_zoom {
+        base_temp_dir.join(format!("z{}", current_zoom))
+    } else {
+        base_temp_dir.to_path_buf()
+    };
+    let mut tile_files = HashMap::new();
+    if let Ok(entries) = std::fs::read_dir(&zoom_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let stem = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+            // 文件名格式: {x}_{y}.png
+            if let Some((xs, ys)) = stem.split_once('_') {
+                if let (Ok(x), Ok(y)) = (xs.parse::<u32>(), ys.parse::<u32>()) {
+                    if std::fs::metadata(&path).map_or(false, |m| m.len() > 0) {
+                        tile_files.insert((x, y), crate::merger::TileSource::from_path(path));
+                    }
+                }
+            }
+        }
+    }
+    tile_files
+}
+
+/// 强制按现状导出部分失败任务（Issue #31）
+///
+/// 适用场景：任务因成功率低于 `min_export_success_ratio` 停留在 `Paused` 待决策状态时，
+/// 用户主动选择"强制按现状导出"。跳过下载循环，从 temp_dir 重建 tile_files 直接走流式导出。
+/// 缺失瓦片在输出栅格中表现为白底（PNG/GeoTIFF）或 NoData（DEM）。
+///
+/// 完成后任务标 `CompletedWithGaps`，写历史记录，清理 temp_dir + 持久化文件。
+///
+/// 当前支持：GeoTIFF / DEM (Terrarium GeoTIFF) / PNG 三种流式格式。
+/// MBTiles / GPKG / 原始瓦片目录请走"补漏重试"路径补齐再导出。
+#[tauri::command]
+pub async fn export_partial_task(
+    app: AppHandle,
+    task_manager: State<'_, Arc<TaskManager>>,
+    task_id: String,
+) -> Result<(), String> {
+    // 1) 加载持久化任务
+    let tasks = crate::task::load_resumable_tasks();
+    let persisted = tasks
+        .into_iter()
+        .find(|t| t.task_id == task_id)
+        .ok_or_else(|| "未找到可恢复的任务".to_string())?;
+
+    let request = persisted.request.clone();
+    let task_name = persisted.task_name.clone();
+    let source_name = persisted.source_name.clone();
+    let total_estimated = persisted.tile_count;
+    let save_path = request
+        .save_path
+        .clone()
+        .ok_or_else(|| "未指定保存路径".to_string())?;
+
+    // 2) 校验格式（仅支持流式格式）
+    let format = ExportFormat::from_str(&request.format);
+    let is_dem = crate::dem::is_dem_source(&request.source);
+    if !matches!(format, ExportFormat::GeoTiff | ExportFormat::Png) && !is_dem {
+        return Err(format!(
+            "强制导出当前仅支持 GeoTIFF / DEM / PNG，请走「补漏重试」路径补齐缺块后导出 (当前格式 {})",
+            request.format
+        ));
+    }
+
+    // 3) 校验 temp_dir
+    let base_temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task_id));
+    if !base_temp_dir.exists() {
+        return Err("临时目录不存在，缓存已被清理，无法强制导出".to_string());
+    }
+
+    // 4) 推算 zoom 列表（同 execute_download_task）
+    let z_min = request.zoom;
+    let z_max = request.zoom_max.unwrap_or(z_min).max(z_min);
+    let zooms: Vec<u8> = if let Some(levels) = request
+        .zoom_levels
+        .as_ref()
+        .filter(|l| !l.is_empty())
+    {
+        let mut v: Vec<u8> = levels
+            .iter()
+            .copied()
+            .filter(|z| (1..=22).contains(z))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        if v.is_empty() {
+            (z_min..=z_max).collect()
+        } else {
+            v
+        }
+    } else {
+        (z_min..=z_max).collect()
+    };
+    let multi_zoom = zooms.len() > 1;
+
+    // 5) 注册任务（如未注册），让 UI 显示导出进度
+    let already_registered = task_manager
+        .get_all_tasks()
+        .iter()
+        .any(|t| t.id == task_id);
+    if !already_registered {
+        task_manager.create_task(
+            task_id.clone(),
+            task_name.clone(),
+            request.source.clone(),
+            source_name.clone(),
+            request.zoom,
+            request.format.clone(),
+            save_path.clone(),
+            total_estimated,
+        );
+    }
+
+    let event_name = format!("task-progress-{}", task_id);
+    let tm_arc = Arc::clone(&task_manager);
+    let app_clone = app.clone();
+    let tid = task_id.clone();
+    let req_clone = request.clone();
+    let task_name_for_record = task_name.clone();
+    let source_name_for_record = source_name.clone();
+    let save_path_for_record = save_path.clone();
+
+    // 6) spawn 后台导出
+    tokio::spawn(async move {
+        let start = std::time::Instant::now();
+        task_log(&app_clone, &tm_arc, &tid, "INFO", "=== 强制按现状导出任务开始 ===");
+        task_log(&app_clone, &tm_arc, &tid, "INFO", &format!(
+            "格式: {}, 级别: {:?}", req_clone.format, zooms
+        ));
+
+        let mut total_file_size = 0u64;
+        let mut total_exported = 0u32;
+        let mut zoom_failures: Vec<u8> = Vec::new();
+
+        for (idx, zoom) in zooms.iter().enumerate() {
+            tm_arc.update_progress(
+                &tid,
+                TaskStatus::Exporting,
+                (idx as f64 / zooms.len() as f64) * 100.0,
+                total_exported,
+                0,
+                Some(format!("强制导出 z{}（{}/{}）", zoom, idx + 1, zooms.len())),
+            );
+
+            let tile_files = scan_temp_dir_for_zoom(&base_temp_dir, *zoom, multi_zoom);
+            if tile_files.is_empty() {
+                task_log(&app_clone, &tm_arc, &tid, "WARN", &format!(
+                    "z{} 临时目录无可用瓦片，跳过", zoom
+                ));
+                zoom_failures.push(*zoom);
+                continue;
+            }
+
+            let level_save_path = if multi_zoom {
+                match zoom_level_save_path(&save_path_for_record, *zoom, multi_zoom) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        task_log(&app_clone, &tm_arc, &tid, "ERROR", &format!(
+                            "z{} 计算输出路径失败: {}", zoom, e
+                        ));
+                        zoom_failures.push(*zoom);
+                        continue;
+                    }
+                }
+            } else {
+                save_path_for_record.clone()
+            };
+
+            // 计算瓦片矩阵
+            let (x_min, y_min, x_max, y_max, _cols, _rows) =
+                tile::get_tile_matrix_size(&req_clone.bounds, *zoom);
+            let actual_count = tile_files.len() as u32;
+            task_log(&app_clone, &tm_arc, &tid, "INFO", &format!(
+                "z{} 强制导出 {} 张已下载瓦片，缺失部分留白/NoData", zoom, actual_count
+            ));
+
+            // 多边形裁剪：Vec<Vec<PolygonCoord>> → Vec<Vec<merger::PolygonPoint>>
+            let has_crop = req_clone.crop_to_shape && req_clone.polygon.is_some();
+            let polygons_owned: Option<Vec<Vec<merger::PolygonPoint>>> = if has_crop {
+                req_clone.polygon.as_ref().map(|polys| {
+                    polys
+                        .iter()
+                        .map(|ring| {
+                            ring.iter()
+                                .map(|p| merger::PolygonPoint { lat: p.lat, lng: p.lng })
+                                .collect()
+                        })
+                        .collect()
+                })
+            } else {
+                None
+            };
+            let compression = req_clone.compression.clone();
+            // 从 (x_min, y_min, x_max, y_max, zoom) 推算导出 TileBounds（与 execute_zoom_level 一致）
+            let merged_bounds = tile::get_merged_bounds(x_min, y_min, x_max, y_max, *zoom);
+            let save_p = std::path::PathBuf::from(&level_save_path);
+            let zoom_is_dem = is_dem;
+            let zoom_format = format;
+
+            let result = tokio::task::spawn_blocking(move || -> Result<u64, String> {
+                let polygons = polygons_owned.as_deref();
+                if zoom_is_dem {
+                    streaming_tiff::merge_and_export_dem_streaming(
+                        &tile_files, x_min, y_min, x_max, y_max,
+                        &merged_bounds, &save_p, &compression, polygons,
+                    )
+                } else if zoom_format == ExportFormat::GeoTiff {
+                    streaming_tiff::merge_and_export_streaming(
+                        &tile_files, x_min, y_min, x_max, y_max,
+                        &merged_bounds, &save_p, &compression, polygons,
+                    )
+                } else {
+                    streaming_raster::merge_and_export_streaming_png(
+                        &tile_files, x_min, y_min, x_max, y_max,
+                        &merged_bounds, &save_p, polygons,
+                    )
+                }
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking 失败: {}", e));
+
+            match result {
+                Ok(Ok(size)) => {
+                    total_file_size = total_file_size.saturating_add(size);
+                    total_exported = total_exported.saturating_add(actual_count);
+                    task_log(&app_clone, &tm_arc, &tid, "INFO", &format!(
+                        "z{} 强制导出完成，文件大小: {:.1} MB",
+                        zoom, size as f64 / 1024.0 / 1024.0
+                    ));
+                }
+                Ok(Err(e)) | Err(e) => {
+                    task_log(&app_clone, &tm_arc, &tid, "ERROR", &format!(
+                        "z{} 强制导出失败: {}", zoom, e
+                    ));
+                    zoom_failures.push(*zoom);
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+
+        if total_exported == 0 {
+            let err_msg = format!(
+                "强制导出全部失败：{} 个级别均未成功导出",
+                zoom_failures.len()
+            );
+            task_log(&app_clone, &tm_arc, &tid, "ERROR", &err_msg);
+            tm_arc.fail_task(&tid, err_msg.clone());
+            let _ = app_clone.emit(&event_name, TaskProgressPayload {
+                task_id: tid.clone(),
+                status: "failed".to_string(),
+                progress: 0.0,
+                completed: 0,
+                total: total_estimated,
+                message: Some(err_msg),
+            });
+            // 不清 temp_dir，方便用户重试
+            return;
+        }
+
+        task_log(&app_clone, &tm_arc, &tid, "INFO", &format!(
+            "=== 强制导出完成 === 文件大小: {:.1} MB，耗时: {:.1}s",
+            total_file_size as f64 / 1024.0 / 1024.0,
+            elapsed.as_secs_f64()
+        ));
+
+        // 清理临时目录 + 持久化文件
+        crate::task::remove_task_file(&tid);
+        crate::task::cleanup_temp_dir(&tid);
+
+        // 估算缺块数：tile_count - total_exported
+        let failed_estimate = total_estimated.saturating_sub(total_exported);
+        tm_arc.complete_task_with_gaps(&tid, total_file_size, failed_estimate);
+        let _ = app_clone.emit(&event_name, TaskProgressPayload {
+            task_id: tid.clone(),
+            status: "completed_with_gaps".to_string(),
+            progress: 100.0,
+            completed: total_exported,
+            total: total_estimated,
+            message: Some(format!("强制导出完成，缺失约 {} 张瓦片", failed_estimate)),
+        });
+
+        // 历史记录
+        let log_file_path = tm_arc.get_log_file_path(&tid);
+        let record = DownloadRecord::new(
+            task_name_for_record,
+            req_clone.source.clone(),
+            source_name_for_record,
+            req_clone.zoom,
+            req_clone.format.clone(),
+            save_path_for_record,
+            total_file_size,
+            total_estimated,
+            failed_estimate,
+            DownloadStatus::Completed,
+        )
+        .with_log_file(log_file_path)
+        .with_duration(elapsed.as_secs());
+        if let Ok(manager) = HistoryManager::new() {
+            let _ = manager.add(record);
+            let _ = app_clone.emit("download-history-updated", ());
+        }
+    });
+
+    Ok(())
+}
+
 /// 丢弃可恢复的任务
 ///
 /// `delete_cache=true`：连同 .partial 缓存目录一起删除（彻底清理）

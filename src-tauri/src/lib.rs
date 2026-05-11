@@ -102,6 +102,7 @@ pub fn run() {
             commands::get_resumable_tasks,
             commands::resume_task,
             commands::discard_resumable_task,
+            commands::export_partial_task,
             // 行政区划
             commands::get_provinces,
             commands::get_cities,
