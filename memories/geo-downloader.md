@@ -90,7 +90,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 | #30 | 下载预估偏低 17x | ✅ **已关，待发版**（commit `3bbde23` 修完，Cargo.toml 仍 3.4.4） |
 | #31 | 部分失败任务的导出策略 | 🟡 设计稿 `docs/partial-export-design.md` 已出，实现未开始 |
 | #27 | 多 strip 并行解码 + 大内存缓冲 | 🟡 行内 rayon 已实现（4-6×），跨 strip 缓冲未做（P3 / v3.4.6） |
-| #25 | 换格式重导出走完整下载循环 | 🟡 主循环已实现（commit `213f3f8`），retry 循环留后续 PR |
+| #25 | 换格式重导出走完整下载循环 | 🟡 主循环已实现并实测（1258 张全命中 480ms / SQL 3-5ms），retry 留后续；commit `213f3f8` + `d5c8679`；origin/main 已同步 |
 | #24 | zustand persist 启动恢复 | ❌ P1，3 个 store 未接 `persist` |
 | #26 | 缓存命中绕过 `temp_dir`，bytes 直接交 merger | ❌ P2，无 `TileSource::Bytes` enum |
 | #29 | Sentinel-2 / Landsat 集成 | ❌ P2，`imagery_scene/` 模块未建 |
@@ -104,6 +104,8 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 - `97e9973` (2026-05-11) — 建立 memories/ 与 `.windsurf/rules/memory.md`
 - `f6f7a06` (2026-05-11) — 补充 PowerShell 截断踩坑 + 更新 issue 状态索引
 - `213f3f8` (2026-05-11) — #25 主循环批量预过滤（`contains_batch` + 4 单测）
+- `d5c8679` (2026-05-11) — #25 清理 prefilter eprintln 调试输出（实测通过后）
+- **2026-05-11 22:25** — 已 push origin/main，5 个 commits 同步，#25 已加 comment（保持 open 跟 retry）
 
 ## 历史决策摘要
 
