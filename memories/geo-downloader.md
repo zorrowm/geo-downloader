@@ -92,7 +92,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 | #27 | 多 strip 并行解码 + 大内存缓冲 | 🟡 行内 rayon 已实现（4-6×），跨 strip 缓冲未做（P3 / v3.4.6） |
 | #25 | 换格式重导出走完整下载循环 | 🟡 主循环已实现并实测（1258 张全命中 480ms / SQL 3-5ms），retry 留后续；commit `213f3f8` + `d5c8679`；origin/main 已同步 |
 | #24 | zustand persist 启动恢复 | ❌ P1，3 个 store 未接 `persist` |
-| #26 | 缓存命中绕过 `temp_dir`，bytes 直接交 merger | ❌ P2，无 `TileSource::Bytes` enum |
+| #26 | 缓存命中绕过 `temp_dir`，bytes 直接交 merger | 🟡 已实现待实测（commit `155d60b`，方案 A `TileSource` enum + Arc<Vec<u8>>，42/42 tests 全过） |
 | #29 | Sentinel-2 / Landsat 集成 | ❌ P2，`imagery_scene/` 模块未建 |
 | #28 | 浏览期间新缓存的瓦片从待下载矩阵动态剔除 | ❌ P4，`tile_cache/` 无事件总线 |
 | worklog 05-08 | 3D Tiles 末段卡死（`resolve_and_stream` 无 `tokio::time::timeout`） | 待复现日志 |
@@ -107,6 +107,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 - `d5c8679` (2026-05-11) — #25 清理 prefilter eprintln 调试输出（实测通过后）
 - **2026-05-11 22:25** — 已 push origin/main，5 个 commits 同步，#25 已加 comment（保持 open 跟 retry）
 - `d10d96a` (2026-05-11 22:50) — 修复单 .shp 导入抛 `but-unzip~2`（shpjs 6.x 默认入口仅接 ZIP；改走 `parseShp + combine`），并把 `but-unzip~{1,2,3}` 翻译成中文友好提示；实测通过
+- `155d60b` (2026-05-11 23:13) — #26 `TileSource` enum 方案 A 落地，11 处函数签名迁移，缓存命中走 `Arc<Vec<u8>>` 完全跳过 temp_dir 写盘 IO；新增 6 个单测，42/42 全过；预期 #25 后 482ms 写盘 → <50ms 内存路径，待实测
 
 ## 历史决策摘要
 
