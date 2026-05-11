@@ -1553,14 +1553,16 @@ async fn execute_download_task(
     }
 
     // 全部级别均已导出，按 failed_total 决定 Completed / CompletedWithGaps
-    crate::task::remove_task_file(task_id);
-    crate::task::cleanup_temp_dir(task_id);
-
     let has_gaps = failed_total > 0;
     let (status_str, msg) = if has_gaps {
+        // Issue #31：CompletedWithGaps 保留 task_file + temp_dir 供「补漏重导」/
+        // 「强制按现状导出」复用；用户从列表移除时由 remove_task 统一清理
         tm.complete_task_with_gaps(task_id, total_file_size, failed_total);
         ("completed_with_gaps", format!("完成但有 {} 张缺块", failed_total))
     } else {
+        // 全成功：清理临时文件（原行为）
+        crate::task::remove_task_file(task_id);
+        crate::task::cleanup_temp_dir(task_id);
         tm.complete_task(task_id, total_file_size);
         ("completed", "完成!".to_string())
     };
@@ -1751,8 +1753,15 @@ pub fn toggle_pause_task(
 }
 
 /// 移除已完成的任务
+///
+/// Issue #31：CompletedWithGaps 状态的任务保留了 task_file + temp_dir
+/// 供「补漏重导」/「强制按现状导出」复用，用户从列表移除时由本命令统一清理。
+/// Completed / Failed / Cancelled 任务的 task_file + temp_dir 已在
+/// execute_download_task 末段清理过，这里调用为 no-op。
 #[tauri::command]
 pub fn remove_task(task_manager: State<'_, Arc<TaskManager>>, task_id: String) {
+    crate::task::remove_task_file(&task_id);
+    crate::task::cleanup_temp_dir(&task_id);
     task_manager.remove_finished(&task_id);
 }
 
@@ -2164,10 +2173,8 @@ pub async fn export_partial_task(
             elapsed.as_secs_f64()
         ));
 
-        // 清理临时目录 + 持久化文件
-        crate::task::remove_task_file(&tid);
-        crate::task::cleanup_temp_dir(&tid);
-
+        // Issue #31：保留 task_file + temp_dir 供「补漏重导」复用，
+        // 用户从列表「移除」时由 remove_task 命令统一清理
         // 估算缺块数：tile_count - total_exported
         let failed_estimate = total_estimated.saturating_sub(total_exported);
         tm_arc.complete_task_with_gaps(&tid, total_file_size, failed_estimate);
