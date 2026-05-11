@@ -207,6 +207,31 @@ impl TaskManager {
         }
     }
 
+    /// 标记任务完成但有缺块（Issue #31）
+    ///
+    /// 成功率 ≥ `min_export_success_ratio` 时走自动导出，若伴随失败瓦片则状态
+    /// 切到 `CompletedWithGaps` 而非 `Completed`，让 UI 展示缺块徽章。
+    pub fn complete_task_with_gaps(&self, id: &str, file_size: u64, failed_count: u32) {
+        if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
+            entry.info.status = TaskStatus::CompletedWithGaps;
+            entry.info.progress = 100.0;
+            entry.info.file_size = file_size;
+            entry.info.failed_count = failed_count;
+            entry.info.message = Some(format!("完成但有 {} 张缺块", failed_count));
+        }
+    }
+
+    /// 标记任务等待用户决策（Issue #31）
+    ///
+    /// 成功率 < `min_export_success_ratio` 时跳过导出，缓存保留供用户后续选择
+    /// 「补漏重试」(`resume_task`) 或「强制按现状导出」(`export_partial_task`)。
+    pub fn mark_pending_decision(&self, id: &str, reason: String) {
+        if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
+            entry.info.status = TaskStatus::Paused;
+            entry.info.message = Some(reason);
+        }
+    }
+
     /// 标记任务失败
     pub fn fail_task(&self, id: &str, error: String) {
         if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {

@@ -567,6 +567,11 @@ struct ZoomLevelResult {
     failed_count: u32,
     no_data: u32,
     pyramid_built: bool,
+    /// 成功瓦片数（Issue #31）：actual_count - failed_count，包含 no_data
+    /// 因为 no_data 是预期内的"该区域无数据"，不计入失败统计
+    success_count: u32,
+    /// 该级别是否已导出（Issue #31）：成功率 < 阈值时跳过导出停留为 Paused
+    exported: bool,
 }
 
 /// 执行单个 zoom 级别的下载（核心逻辑，被 execute_download_task 循环调用）
@@ -586,6 +591,8 @@ async fn execute_zoom_level(
     completed_offset: u32,
     failed_offset: u32,
     total_tiles: u32,
+    // Issue #31：本级别成功率低于此阈值时跳过导出，停留为待用户决策 Paused
+    min_export_success_ratio: f32,
 ) -> Result<ZoomLevelResult, String> {
     let event_name = format!("task-progress-{}", task_id);
     let level_start = std::time::Instant::now();
@@ -894,6 +901,47 @@ async fn execute_zoom_level(
                 composited = true;
             }
         }
+    }
+
+    // ===== Issue #31：成功率阈值判断 =====
+    // 在导出之前，根据 AppSettings.min_export_success_ratio 决定本级别去向：
+    // - success_count == 0：硬规则失败，return Err 让上层 mark Failed
+    // - success_ratio < min_ratio：跳过导出，缓存保留，标 exported=false（上层会 mark Paused 待用户决策）
+    // - 否则正常导出（即使有少量失败，仍走自动导出流水线，上层根据 failed_count 决定 Completed / CompletedWithGaps）
+    //
+    // 注：no_data 视为预期成功（"该区域无数据"是正常情况，不应计入失败率分母失败侧）
+    let level_success_count = actual_count.saturating_sub(failed_count);
+    let level_success_ratio = if actual_count > 0 {
+        level_success_count as f32 / actual_count as f32
+    } else {
+        1.0
+    };
+
+    if actual_count > 0 && level_success_count == 0 {
+        // 全失败（0 张成功），return Err 让上层 mark Failed
+        return Err(format!(
+            "z{} 全部 {} 张瓦片下载失败，无可导出内容",
+            current_zoom, actual_count
+        ));
+    }
+
+    if level_success_ratio < min_export_success_ratio {
+        // 低于阈值：跳过导出，缓存保留，让用户决策
+        task_log(app, tm, task_id, "WARN", &format!(
+            "z{} 成功率 {:.1}% 低于阈值 {:.0}%，跳过导出，缓存保留待用户决策",
+            current_zoom,
+            level_success_ratio * 100.0,
+            min_export_success_ratio * 100.0
+        ));
+        return Ok(ZoomLevelResult {
+            file_size: 0,
+            actual_count,
+            failed_count,
+            no_data: no_data_final,
+            pyramid_built: false,
+            success_count: level_success_count,
+            exported: false,
+        });
     }
 
     // 判断是否使用流式写入路径
@@ -1246,6 +1294,8 @@ async fn execute_zoom_level(
         failed_count,
         no_data: no_data_final,
         pyramid_built,
+        success_count: level_success_count,
+        exported: true,
     })
 }
 
@@ -1349,6 +1399,19 @@ async fn execute_download_task(
     std::fs::create_dir_all(&base_temp_dir)
         .map_err(|e| format!("创建临时目录失败: {}", e))?;
 
+    // Issue #31：读取自动导出阈值，clamp 到 [0.0, 1.0]
+    // 0.0（默认）= 有 1 张成功就导出，1.0 = 必须全成功才导出
+    let min_export_success_ratio = SettingsManager::new()
+        .and_then(|m| m.get())
+        .map(|s| s.min_export_success_ratio.clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+    if min_export_success_ratio > 0.0 {
+        task_log(app, tm, task_id, "INFO", &format!(
+            "自动导出阈值: {:.0}%（低于此值的级别将停留为待决策状态）",
+            min_export_success_ratio * 100.0
+        ));
+    }
+
     let mut progress_offset = 0.0;
     let mut completed_offset = 0u32;
     let mut failed_offset = 0u32;
@@ -1357,6 +1420,9 @@ async fn execute_download_task(
     let mut failed_total = 0u32;
     let mut no_data_total = 0u32;
     let mut pyramid_built = false;
+    // Issue #31：跟踪是否有任意级别因低成功率跳过导出，决定末段任务状态分支
+    let mut any_skipped_export = false;
+    let mut skipped_zooms: Vec<u8> = Vec::new();
 
     for (idx, zoom) in zooms.iter().enumerate() {
         if cancel_token.is_cancelled() {
@@ -1416,6 +1482,7 @@ async fn execute_download_task(
             completed_offset,
             failed_offset,
             total_tiles,
+            min_export_success_ratio,
         ).await?;
 
         total_file_size = total_file_size.saturating_add(result.file_size);
@@ -1427,16 +1494,26 @@ async fn execute_download_task(
         failed_offset = failed_offset.saturating_add(result.failed_count);
         progress_offset = (progress_offset + progress_span).min(100.0);
 
+        // Issue #31：低成功率级别跳过导出，记录待决策列表
+        if !result.exported {
+            any_skipped_export = true;
+            skipped_zooms.push(*zoom);
+        }
+
         if multi_zoom {
-            let msg = format!("z{} 完成（成功 {} 张，失败 {} 张）", zoom, result.actual_count.saturating_sub(result.failed_count), result.failed_count);
-            tm.update_progress(task_id, TaskStatus::Downloading, progress_offset.min(99.0), completed_offset, failed_offset, Some(msg.clone()));
+            let level_msg = if !result.exported {
+                format!("z{} 跳过导出（成功 {} 张 / 共 {} 张）", zoom, result.success_count, result.actual_count)
+            } else {
+                format!("z{} 完成（成功 {} 张，失败 {} 张）", zoom, result.actual_count.saturating_sub(result.failed_count), result.failed_count)
+            };
+            tm.update_progress(task_id, TaskStatus::Downloading, progress_offset.min(99.0), completed_offset, failed_offset, Some(level_msg.clone()));
             let _ = app.emit(&event_name, TaskProgressPayload {
                 task_id: task_id.to_string(),
                 status: "downloading".to_string(),
                 progress: progress_offset.min(99.0),
                 completed: completed_offset,
                 total: total_tiles,
-                message: Some(msg),
+                message: Some(level_msg),
             });
         }
     }
@@ -1452,18 +1529,52 @@ async fn execute_download_task(
     }
     task_log(app, tm, task_id, "INFO", &done_msg);
 
+    // ===== Issue #31：按 any_skipped_export / failed_total 分支决定任务终态 =====
+    if any_skipped_export {
+        // 有级别成功率低于阈值，跳过导出，缓存保留待用户决策
+        // 不调 remove_task_file / cleanup_temp_dir，让 export_partial_task / resume_task 可用
+        let zooms_str = skipped_zooms.iter().map(|z| format!("z{}", z)).collect::<Vec<_>>().join(", ");
+        let pause_msg = format!(
+            "{} 级别成功率低于阈值 {:.0}%，缓存已保留，请选择「补漏重试」或「强制按现状导出」",
+            zooms_str, min_export_success_ratio * 100.0
+        );
+        task_log(app, tm, task_id, "WARN", &pause_msg);
+        tm.mark_pending_decision(task_id, pause_msg.clone());
+        let _ = app.emit(&event_name, TaskProgressPayload {
+            task_id: task_id.to_string(),
+            status: "paused".to_string(),
+            progress: progress_offset.min(99.0),
+            completed: actual_total.saturating_sub(failed_total),
+            total: actual_total,
+            message: Some(pause_msg),
+        });
+        // 不写历史记录（任务尚未完成）
+        return Ok(());
+    }
+
+    // 全部级别均已导出，按 failed_total 决定 Completed / CompletedWithGaps
     crate::task::remove_task_file(task_id);
     crate::task::cleanup_temp_dir(task_id);
-    tm.complete_task(task_id, total_file_size);
+
+    let has_gaps = failed_total > 0;
+    let (status_str, msg) = if has_gaps {
+        tm.complete_task_with_gaps(task_id, total_file_size, failed_total);
+        ("completed_with_gaps", format!("完成但有 {} 张缺块", failed_total))
+    } else {
+        tm.complete_task(task_id, total_file_size);
+        ("completed", "完成!".to_string())
+    };
+
     let _ = app.emit(&event_name, TaskProgressPayload {
         task_id: task_id.to_string(),
-        status: "completed".to_string(),
+        status: status_str.to_string(),
         progress: 100.0,
         completed: actual_total.saturating_sub(failed_total),
         total: actual_total,
-        message: Some("完成!".to_string()),
+        message: Some(msg),
     });
 
+    // 历史记录：CompletedWithGaps 仍记 DownloadStatus::Completed，前端按 failed_count > 0 区分
     let log_file_path = tm.get_log_file_path(task_id);
     let record = DownloadRecord::new(
         task_name.to_string(),
