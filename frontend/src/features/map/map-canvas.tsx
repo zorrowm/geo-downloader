@@ -103,11 +103,55 @@ function probeImageUrl(url: string, timeoutMs = 4500): Promise<boolean> {
   })
 }
 
+const MAP_VIEW_STORAGE_KEY = 'geo-downloader:map-view'
+
+interface PersistedMapView {
+  center: { lat: number; lng: number }
+  zoom: number
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function readPersistedMapView(): PersistedMapView | null {
+  try {
+    if (typeof localStorage === 'undefined') return null
+    const raw = localStorage.getItem(MAP_VIEW_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PersistedMapView>
+    if (
+      !parsed.center ||
+      !isFiniteNumber(parsed.center.lat) ||
+      !isFiniteNumber(parsed.center.lng) ||
+      !isFiniteNumber(parsed.zoom)
+    ) {
+      return null
+    }
+    if (parsed.center.lat < -90 || parsed.center.lat > 90) return null
+    if (parsed.center.lng < -180 || parsed.center.lng > 180) return null
+    if (parsed.zoom < 0 || parsed.zoom > 24) return null
+    return { center: parsed.center, zoom: parsed.zoom }
+  } catch {
+    return null
+  }
+}
+
+function writePersistedMapView(view: PersistedMapView) {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(MAP_VIEW_STORAGE_KEY, JSON.stringify(view))
+  } catch {
+    // localStorage may be unavailable in restricted environments.
+  }
+}
+
 export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const drawnRef = useRef<L.FeatureGroup | null>(null)
-  const lastRevRef = useRef(-1)
+  const lastSelectionSyncKeyRef = useRef<string | null>(null)
+  const mapViewSaveTimerRef = useRef<number | null>(null)
   // 图层管理
   const baseLayersRef = useRef<Map<string, L.TileLayer>>(new Map())
   const waybackLayersRef = useRef<Map<string, L.TileLayer>>(new Map())
@@ -162,13 +206,18 @@ export function MapCanvas() {
     enabled: mode === 'wayback',
     staleTime: 5 * 60 * 1000,
   })
+  const selectionSyncKey = useMemo(
+    () => JSON.stringify({ externalRevision, bounds, polygon }),
+    [externalRevision, bounds, polygon],
+  )
 
   // 初始化地图
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
+    const restoredView = readPersistedMapView()
     const map = L.map(containerRef.current, { zoomControl: true }).setView(
-      [35.8617, 104.1954],
-      4,
+      [restoredView?.center.lat ?? 35.8617, restoredView?.center.lng ?? 104.1954],
+      restoredView?.zoom ?? 4,
     )
     // 占位底图，等图源列表加载后会切换
     const fallback = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -254,6 +303,23 @@ export function MapCanvas() {
     mapRef.current = map
     drawnRef.current = drawn
 
+    const persistCurrentView = () => {
+      const center = map.getCenter()
+      writePersistedMapView({
+        center: { lat: center.lat, lng: center.lng },
+        zoom: map.getZoom(),
+      })
+    }
+    const schedulePersistCurrentView = () => {
+      if (mapViewSaveTimerRef.current !== null) {
+        window.clearTimeout(mapViewSaveTimerRef.current)
+      }
+      mapViewSaveTimerRef.current = window.setTimeout(() => {
+        persistCurrentView()
+        mapViewSaveTimerRef.current = null
+      }, 1000)
+    }
+
     // 状态栏：鼠标经纬度 + 缩放级别
     setStatusZoom(`缩放: ${map.getZoom()}`)
     map.on('mousemove', (e: L.LeafletMouseEvent) => {
@@ -262,7 +328,11 @@ export function MapCanvas() {
       )
     })
     map.on('mouseout', () => setStatusCoords('经度: --  纬度: --'))
-    map.on('zoomend', () => setStatusZoom(`缩放: ${map.getZoom()}`))
+    map.on('moveend', schedulePersistCurrentView)
+    map.on('zoomend', () => {
+      setStatusZoom(`缩放: ${map.getZoom()}`)
+      schedulePersistCurrentView()
+    })
 
     // 容器尺寸晚到时刷新
     requestAnimationFrame(() => map.invalidateSize())
@@ -271,9 +341,15 @@ export function MapCanvas() {
 
     return () => {
       ro.disconnect()
+      if (mapViewSaveTimerRef.current !== null) {
+        window.clearTimeout(mapViewSaveTimerRef.current)
+        mapViewSaveTimerRef.current = null
+      }
+      persistCurrentView()
       map.remove()
       mapRef.current = null
       drawnRef.current = null
+      lastSelectionSyncKeyRef.current = null
     }
   }, [setSelection])
 
@@ -282,8 +358,8 @@ export function MapCanvas() {
     const map = mapRef.current
     const drawn = drawnRef.current
     if (!map || !drawn) return
-    if (externalRevision === lastRevRef.current) return
-    lastRevRef.current = externalRevision
+    if (selectionSyncKey === lastSelectionSyncKeyRef.current) return
+    lastSelectionSyncKeyRef.current = selectionSyncKey
 
     drawn.clearLayers()
     if (polygon && polygon.length > 0) {
@@ -302,7 +378,7 @@ export function MapCanvas() {
       drawn.addLayer(rect)
       map.fitBounds(rect.getBounds(), { animate: false, maxZoom: 14 })
     }
-  }, [externalRevision, bounds, polygon])
+  }, [selectionSyncKey, bounds, polygon])
 
   // 升序版本：oldest → newest（与 timeline 一致）
   const ascendingWaybackVersions = useMemo(() => {

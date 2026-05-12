@@ -1,4 +1,7 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
+
+import { createSafeJSONStorage } from '@/store/persist-storage'
 
 export type AppMode = 'imagery' | 'dem' | 'wayback' | 'tiles3d' | 'vector' | 'mvt'
 export type SidebarTab = 'download' | 'history' | 'settings'
@@ -17,29 +20,116 @@ export interface AppState {
   /** 当前选中的行政区划代码（街道/区县/城市/省），用于边界下载 */
   currentAdminCode: string | null
   setCurrentAdminCode: (code: string | null) => void
+  /** 行政区下拉的三段式选择，分别持久化（避免直辖市这种省直接挂区县的场景被错误回填） */
+  adminSelection: { provinceCode: string; cityCode: string; districtCode: string }
+  setAdminSelection: (sel: { provinceCode: string; cityCode: string; districtCode: string }) => void
 }
 
-export const useAppStore = create<AppState>((set) => ({
-  mode: 'imagery',
-  setMode: (mode) => set({ mode }),
-  tab: 'download',
-  setTab: (tab) => set({ tab }),
-  selectedSourceByMode: {},
-  setSelectedSourceForMode: (mode, key) =>
-    set((s) => ({
-      selectedSourceByMode: { ...s.selectedSourceByMode, [mode]: key },
-    })),
-  overlayVisibilityByMode: {},
-  setOverlayVisibility: (mode, key, visible) =>
-    set((s) => {
-      const cur = s.overlayVisibilityByMode[mode] ?? {}
-      return {
-        overlayVisibilityByMode: {
-          ...s.overlayVisibilityByMode,
-          [mode]: { ...cur, [key]: visible },
+const APP_STORAGE_KEY = 'geo-downloader:app'
+const APP_MODES: AppMode[] = ['imagery', 'dem', 'wayback', 'tiles3d', 'vector', 'mvt']
+const SIDEBAR_TABS: SidebarTab[] = ['download', 'history', 'settings']
+
+type PersistedAppState = Partial<
+  Pick<
+    AppState,
+    | 'mode'
+    | 'tab'
+    | 'selectedSourceByMode'
+    | 'overlayVisibilityByMode'
+    | 'currentAdminCode'
+    | 'adminSelection'
+  >
+>
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readPersistedAppState(): PersistedAppState {
+  try {
+    if (typeof localStorage === 'undefined') return {}
+    const raw = localStorage.getItem(APP_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as { state?: PersistedAppState } & Record<string, unknown>
+    const state = parsed.state ?? parsed
+    if (!state || !isPlainObject(state)) return {}
+    return {
+      mode: APP_MODES.includes(state.mode as AppMode) ? (state.mode as AppMode) : undefined,
+      tab: SIDEBAR_TABS.includes(state.tab as SidebarTab)
+        ? (state.tab as SidebarTab)
+        : undefined,
+      selectedSourceByMode: isPlainObject(state.selectedSourceByMode)
+        ? (state.selectedSourceByMode as Partial<Record<AppMode, string | null>>)
+        : undefined,
+      overlayVisibilityByMode: isPlainObject(state.overlayVisibilityByMode)
+        ? (state.overlayVisibilityByMode as Partial<Record<AppMode, Record<string, boolean>>>)
+        : undefined,
+      currentAdminCode:
+        typeof state.currentAdminCode === 'string' ? state.currentAdminCode : null,
+      adminSelection:
+        isPlainObject(state.adminSelection) &&
+        typeof (state.adminSelection as Record<string, unknown>).provinceCode === 'string' &&
+        typeof (state.adminSelection as Record<string, unknown>).cityCode === 'string' &&
+        typeof (state.adminSelection as Record<string, unknown>).districtCode === 'string'
+          ? (state.adminSelection as {
+              provinceCode: string
+              cityCode: string
+              districtCode: string
+            })
+          : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+const restoredAppState = readPersistedAppState()
+
+export const useAppStore = create<AppState>()(
+  persist(
+    (set) => ({
+      mode: restoredAppState.mode ?? 'imagery',
+      setMode: (mode) => set({ mode }),
+      tab: restoredAppState.tab ?? 'download',
+      setTab: (tab) => set({ tab }),
+      selectedSourceByMode: restoredAppState.selectedSourceByMode ?? {},
+      setSelectedSourceForMode: (mode, key) =>
+        set((s) => ({
+          selectedSourceByMode: { ...s.selectedSourceByMode, [mode]: key },
+        })),
+      overlayVisibilityByMode: restoredAppState.overlayVisibilityByMode ?? {},
+      setOverlayVisibility: (mode, key, visible) =>
+        set((s) => {
+          const cur = s.overlayVisibilityByMode[mode] ?? {}
+          return {
+            overlayVisibilityByMode: {
+              ...s.overlayVisibilityByMode,
+              [mode]: { ...cur, [key]: visible },
+            },
+          }
+        }),
+      currentAdminCode: restoredAppState.currentAdminCode ?? null,
+      setCurrentAdminCode: (code) => set({ currentAdminCode: code }),
+      adminSelection:
+        restoredAppState.adminSelection ?? {
+          provinceCode: '',
+          cityCode: '',
+          districtCode: '',
         },
-      }
+      setAdminSelection: (sel) => set({ adminSelection: sel }),
     }),
-  currentAdminCode: null,
-  setCurrentAdminCode: (code) => set({ currentAdminCode: code }),
-}))
+    {
+      name: 'geo-downloader:app',
+      version: 1,
+      storage: createSafeJSONStorage(),
+      partialize: (state) => ({
+        mode: state.mode,
+        tab: state.tab,
+        selectedSourceByMode: state.selectedSourceByMode,
+        overlayVisibilityByMode: state.overlayVisibilityByMode,
+        currentAdminCode: state.currentAdminCode,
+        adminSelection: state.adminSelection,
+      }),
+    },
+  ),
+)

@@ -339,10 +339,12 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
   } = form
 
   const [initedForMode, setInitedForMode] = useState<AppMode | null>(null)
+  const [cropToShape, setCropToShape] = useState(true)
   useEffect(() => {
     if (initedForMode === mode) return
     if (!settingsQuery.data || !sourcesQuery.data || sourceList.length === 0) return
     const s = settingsQuery.data
+    const persistedParams = useImageryParamsStore.getState()
     // 优先从 store 中取本 mode 上次选中的图源（切换 tab 后回来要还原）
     const remembered = useAppStore.getState().selectedSourceByMode[mode] ?? null
     const isValidRemembered =
@@ -371,8 +373,15 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
         ''
     }
     setValue('source', firstSourceId ?? '')
-    if (typeof s.default_concurrency === 'number') setValue('concurrency', s.default_concurrency)
+    if (typeof persistedParams.concurrency === 'number') {
+      setValue('concurrency', Math.min(100, Math.max(1, persistedParams.concurrency)))
+    } else if (typeof s.default_concurrency === 'number') {
+      setValue('concurrency', s.default_concurrency)
+    }
     if (typeof s.default_zoom === 'number') setValue('zoom_levels', [s.default_zoom])
+    setValue('compression', persistedParams.compression)
+    setValue('build_pyramid', persistedParams.buildPyramid)
+    setCropToShape(persistedParams.cropToShape)
     // 不再还原上次保存路径——每次默认为空，避免意外覆盖之前的下载。
     if (isDemMode) {
       setValue('format', 'geotiff')
@@ -380,7 +389,7 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
       setValue('format', 'pbf')
       setValue('zoom_levels', [10, 11, 12, 13, 14])
     } else {
-      const fmt = (s.default_format ?? 'geotiff') as OutputFormat
+      const fmt = (persistedParams.format ?? s.default_format ?? 'geotiff') as OutputFormat
       if (['geotiff', 'png', 'jpeg', 'tiles', 'mbtiles', 'gpkg'].includes(fmt as string)) {
         setValue('format', fmt as DownloadFormValues['format'])
       }
@@ -401,7 +410,6 @@ export function ImageryPage({ mode = 'imagery' }: { mode?: 'imagery' | 'dem' | '
   const concurrency = useWatch({ control, name: 'concurrency' })
 
   const [estimate, setEstimate] = useState<DownloadEstimate | null>(null)
-  const [cropToShape, setCropToShape] = useState(true)
   const qc = useQueryClient()
   const dispatchCtx = useMultiFeatureSubmit()
   const supportsSelectionCrop = (format === 'geotiff' || format === 'png') && !isMvtMode

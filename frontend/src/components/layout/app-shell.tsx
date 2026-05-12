@@ -54,8 +54,8 @@ export function AppShell({ children, modeSlot, headerExtras }: AppShellProps) {
               </svg>
             </div>
             <span data-tauri-drag-region className="text-sm font-semibold tracking-tight">
-              <span className="text-primary">Geo</span>
-              <span className="text-foreground/85">Downloader</span>
+              <span className="text-primary">GeoD</span>
+              <span className="text-foreground/85">ownloader</span>
             </span>
           </div>
           <div className="ml-1 flex items-center gap-0.5">

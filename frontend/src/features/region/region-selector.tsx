@@ -74,25 +74,53 @@ function boundsFromRings(rings: LatLngRing[]): MapBounds | null {
   return { north: n, south: s, east: e, west: w }
 }
 
+function splitAdminCode(code: string | null): {
+  provinceCode: string
+  cityCode: string
+  districtCode: string
+} {
+  // 旧版本仅持久化了单个 code，迁移期降级方案：按 6 位编码模板拆分。
+  // 注意：直辖市（北京/天津/上海/重庆）DataV 把区县直接挂在省下，
+  // 此处拆出的虚拟 city（如 "110100"）在城市下拉里并不存在，
+  // 因此首次迁移后建议优先使用 store 里的 adminSelection 三元组。
+  if (!code || code.length < 6 || code === '100000') {
+    return { provinceCode: '', cityCode: '', districtCode: '' }
+  }
+  const provinceCode = `${code.slice(0, 2)}0000`
+  const cityCode = code.slice(2, 4) === '00' ? '' : `${code.slice(0, 4)}00`
+  const districtCode = code.slice(4, 6) === '00' ? '' : code
+  return { provinceCode, cityCode, districtCode }
+}
+
 export function RegionSelector({ extras }: { extras?: import('react').ReactNode } = {}) {
   const inTauri = isTauriRuntime()
   const setExternalSelection = useSelectionStore((s) => s.setExternalSelection)
   const setCurrentAdminCode = useAppStore((s) => s.setCurrentAdminCode)
+  const setAdminSelection = useAppStore((s) => s.setAdminSelection)
+  // 优先使用 store 里持久化的 adminSelection（三元组），兼容旧版本只存了 currentAdminCode 的情况
+  const initialSelection = (() => {
+    const stored = useAppStore.getState().adminSelection
+    if (stored && (stored.provinceCode || stored.cityCode || stored.districtCode)) {
+      return stored
+    }
+    return splitAdminCode(useAppStore.getState().currentAdminCode)
+  })()
 
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<GeocodeResult[]>([])
   const [searching, setSearching] = useState(false)
 
-  const [provinceCode, setProvinceCode] = useState<string>('')
-  const [cityCode, setCityCode] = useState<string>('')
-  const [districtCode, setDistrictCode] = useState<string>('')
+  const [provinceCode, setProvinceCode] = useState<string>(initialSelection.provinceCode)
+  const [cityCode, setCityCode] = useState<string>(initialSelection.cityCode)
+  const [districtCode, setDistrictCode] = useState<string>(initialSelection.districtCode)
   const [loadingBoundary, setLoadingBoundary] = useState(false)
 
-  // 选中的行政区代码（街道/区县/市/省，按从细到粗的优先级）→ 同步到 store
+  // 三段值 → 同步到 store（持久化）+ 派生 currentAdminCode 给其它消费者
   useEffect(() => {
+    setAdminSelection({ provinceCode, cityCode, districtCode })
     const code = districtCode || cityCode || provinceCode || null
     setCurrentAdminCode(code)
-  }, [provinceCode, cityCode, districtCode, setCurrentAdminCode])
+  }, [provinceCode, cityCode, districtCode, setAdminSelection, setCurrentAdminCode])
 
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: getSettings, enabled: inTauri })
 
@@ -251,14 +279,10 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
     }
   }
 
-  // 省/市切换时清子项
-  useEffect(() => {
-    setCityCode('')
-    setDistrictCode('')
-  }, [provinceCode])
-  useEffect(() => {
-    setDistrictCode('')
-  }, [cityCode])
+  // 注意：省/市切换清子项已在下方 Select onValueChange 里直接处理。
+  // 不要在这里写 useEffect [provinceCode] 清空 cityCode/districtCode，
+  // 因为 React StrictMode 下双挂载会让 hasMountedRef 守卫失效，
+  // 第二次挂载时把刚刚从 localStorage 恢复的子级清掉。
 
   if (!inTauri) {
     return (
@@ -314,7 +338,11 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
       <div className="grid grid-cols-3 gap-1.5">
         <Select
           value={provinceCode || '__all__'}
-          onValueChange={(v) => setProvinceCode(v === '__all__' ? '' : v)}
+          onValueChange={(v) => {
+            setProvinceCode(v === '__all__' ? '' : v)
+            setCityCode('')
+            setDistrictCode('')
+          }}
         >
           <SelectTrigger className="text-sm">
             <SelectValue placeholder="省份" />
@@ -330,7 +358,10 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
         </Select>
         <Select
           value={cityCode || '__all__'}
-          onValueChange={(v) => setCityCode(v === '__all__' ? '' : v)}
+          onValueChange={(v) => {
+            setCityCode(v === '__all__' ? '' : v)
+            setDistrictCode('')
+          }}
           disabled={!provinceCode || citiesQuery.isLoading}
         >
           <SelectTrigger className="text-sm">
