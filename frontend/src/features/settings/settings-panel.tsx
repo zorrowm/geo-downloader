@@ -47,6 +47,7 @@ const settingsSchema = z.object({
   tile_cache_max_size_mb: z.number().int().min(0).max(1024 * 1024),
   tile_cache_dir: z.string().trim(),
   min_export_success_ratio: z.number().min(0).max(1),
+  export_buffer_mb: z.number().int().min(16).max(512),
 })
 
 type SettingsFormValues = z.infer<typeof settingsSchema>
@@ -66,6 +67,7 @@ const DEFAULT_VALUES: SettingsFormValues = {
   tile_cache_max_size_mb: 5120,
   tile_cache_dir: '',
   min_export_success_ratio: 0,
+  export_buffer_mb: 64,
 }
 
 function fromAppSettings(s: AppSettings | undefined): SettingsFormValues {
@@ -89,6 +91,7 @@ function fromAppSettings(s: AppSettings | undefined): SettingsFormValues {
     tile_cache_max_size_mb: s.tile_cache_max_size_mb ?? 5120,
     tile_cache_dir: s.tile_cache_dir ?? '',
     min_export_success_ratio: s.min_export_success_ratio ?? 0,
+    export_buffer_mb: s.export_buffer_mb ?? 64,
   }
 }
 
@@ -109,6 +112,7 @@ function toAppSettings(values: SettingsFormValues, base: AppSettings | undefined
     tile_cache_max_size_mb: values.tile_cache_max_size_mb,
     tile_cache_dir: values.tile_cache_dir.trim() || null,
     min_export_success_ratio: values.min_export_success_ratio,
+    export_buffer_mb: values.export_buffer_mb,
   }
 }
 
@@ -144,6 +148,7 @@ export function SettingsPanel() {
   const tileCacheMaxSizeMb = useWatch({ control, name: 'tile_cache_max_size_mb' })
   const tileCacheDir = useWatch({ control, name: 'tile_cache_dir' })
   const minExportSuccessRatio = useWatch({ control, name: 'min_export_success_ratio' })
+  const exportBufferMb = useWatch({ control, name: 'export_buffer_mb' })
 
   const mutation = useMutation({
     mutationFn: (values: SettingsFormValues) =>
@@ -324,6 +329,30 @@ export function SettingsPanel() {
               （默认）= 有 1 张成功就导，
               <strong className="text-foreground/80">100%</strong>
               = 必须全成功才导，否则进入待决策状态。
+            </p>
+          </div>
+          {/* Issue #27：流式导出并行流水线缓冲 */}
+          <div className="space-y-1.5 sm:col-span-2">
+            <div className="flex items-center justify-between">
+              <Label>导出流水线缓冲</Label>
+              <span className="text-xs font-medium text-muted-foreground">
+                {exportBufferMb ?? 64} MB
+              </span>
+            </div>
+            <Slider
+              value={[exportBufferMb ?? 64]}
+              min={16}
+              max={512}
+              step={16}
+              onValueChange={(arr) =>
+                setValue('export_buffer_mb', arr[0] ?? 64, { shouldDirty: true })
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              跨 strip 并行解码/压缩的总内存上限。越大越能让 IO 与 CPU 重叠，
+              大区导出提速，代价是内存峰值上升。默认
+              <strong className="text-foreground/80"> 64 MB</strong>，
+              瓦片量大、内存充足时可调到 128~256。
             </p>
           </div>
         </div>

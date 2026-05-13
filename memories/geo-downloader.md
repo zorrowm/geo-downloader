@@ -89,7 +89,7 @@ npx --yes wrangler@latest pages deploy site --project-name=geodownloader --branc
 | #22 | 输出目录不生效 | ✅ **已关**（v3.4.4 `e4dc9fb` child timestamp dir 修复） |
 | #30 | 下载预估偏低 17x | ✅ **已关并 v3.4.5 发版**（commit `3bbde23` 修完） |
 | #31 | 部分失败任务的导出策略 | 🟡 后端 + 前端全套实现已落地待实测（5 个 commit `1355a24` / `7889644` / `8fc461b` / `652246c` / `3b683f5`，42/42 tests + tsc 全过） |
-| #27 | 多 strip 并行解码 + 大内存缓冲 | 🟡 行内 rayon 已实现（4-6×），跨 strip 缓冲未做（P3 / v3.4.6） |
+| #27 | 多 strip 并行解码 + 大内存缓冲 | ✅ **跨 strip 并行落地**（`try_for_each_with` + `sync_channel(slot_count)` + `BTreeMap` 按 strip_idx 重排序；`export_buffer_mb` 默认 64，范围 16–512；RGB+DEM 双路径，46/46 tests 过） |
 | #25 | 换格式重导出走完整下载循环 | 🟡 主循环已实现并实测（1258 张全命中 480ms / SQL 3-5ms），retry 留后续；commit `213f3f8` + `d5c8679`；origin/main 已同步 |
 | #24 | zustand persist 启动恢复 | ❌ P1，3 个 store 未接 `persist` |
 | #26 | 缓存命中绕过 `temp_dir`，bytes 直接交 merger | ✅ **已关**（commit `155d60b`，方案 A `TileSource` enum + Arc<Vec<u8>>，2026-05-11 用户实测体感优势达成） |

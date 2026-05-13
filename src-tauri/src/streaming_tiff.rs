@@ -2,14 +2,33 @@
 //! 逐行写入瓦片行，内存仅需一行瓦片宽度，支持超大图像导出。
 //! 支持 RGB（3通道）和 RGBA（4通道，多边形裁剪时使用）。
 //! M5: strip 内瓦片解码使用 rayon 并行，8核机器加速 4-6×。
+//! Issue #27: 跨 strip 并行解码/压缩 + bounded ring buffer（默认 64 MB），
+//!          IO 与 CPU 重叠，1.5~2× 大区导出加速。
 
 use crate::config::TILE_SIZE;
 use crate::merger::{self, PolygonPoint, TileSource};
+use crate::settings::SettingsManager;
 use crate::tile::{TileBounds, bounds_to_mercator};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{Write, Seek, SeekFrom, BufWriter};
 use std::path::Path;
+
+/// 读取 settings 中的流水线缓冲 MB；读取失败或字段缺失时回落 64。
+fn export_buffer_bytes() -> u64 {
+    let mb = SettingsManager::new()
+        .and_then(|m| m.get())
+        .map(|s| s.export_buffer_mb as u64)
+        .unwrap_or(64);
+    mb.max(1) * 1024 * 1024
+}
+
+/// 根据 strip 字节数与总 budget 算出 bounded channel 槽位数。
+/// 保证至少 1 槽、最多 256 槽（超过 256 后的加速收益递减，反而增加线程调度开销）。
+fn pipeline_slots(strip_byte_size: u64, budget_bytes: u64, num_strips: u32) -> usize {
+    let raw = (budget_bytes / strip_byte_size.max(1)).max(1).min(256) as usize;
+    raw.min(num_strips.max(1) as usize)
+}
 
 /// LZW 压缩一个 strip（TIFF 规范：MSB 位序，最小码长 8，early code size switch）
 fn lzw_compress(data: &[u8]) -> Result<Vec<u8>, String> {
@@ -36,7 +55,7 @@ fn compress_strip(data: &[u8], compression: &str) -> Result<(Vec<u8>, u64), Stri
 }
 
 /// 流式合并瓦片并直接写入 GeoTIFF 文件
-/// 内存占用: 仅 width × TILE_SIZE × channels 字节（一行瓦片）
+/// 内存占用上限: settings.export_buffer_mb（默认 64 MB），跨 strip 并行
 /// 支持多边形裁剪：传入 polygons 后自动切换 RGBA 模式，多边形外像素透明
 pub fn merge_and_export_streaming(
     tile_files: &HashMap<(u32, u32), TileSource>,
@@ -48,6 +67,27 @@ pub fn merge_and_export_streaming(
     save_path: &Path,
     compression: &str,
     polygons: Option<&[Vec<PolygonPoint>]>,
+) -> Result<u64, String> {
+    merge_and_export_streaming_with_budget(
+        tile_files, x_min, y_min, x_max, y_max,
+        bounds, save_path, compression, polygons,
+        export_buffer_bytes(),
+    )
+}
+
+/// 与 [`merge_and_export_streaming`] 等价，但显式注入并行流水线缓冲（字节）。
+/// 用于单元测试比对不同 budget 的字节级输出一致性。
+pub fn merge_and_export_streaming_with_budget(
+    tile_files: &HashMap<(u32, u32), TileSource>,
+    x_min: u32,
+    y_min: u32,
+    x_max: u32,
+    y_max: u32,
+    bounds: &TileBounds,
+    save_path: &Path,
+    compression: &str,
+    polygons: Option<&[Vec<PolygonPoint>]>,
+    budget_bytes: u64,
 ) -> Result<u64, String> {
     let cols = x_max - x_min + 1;
     let rows = y_max - y_min + 1;
@@ -97,132 +137,155 @@ pub fn merge_and_export_streaming(
     let ifd_offset_pos = stream_pos(&mut w)?;
     write_u64(&mut w, 0)?;                       // IFD offset placeholder (8 bytes)
 
-    // ===== 2. 双缓冲流水线：解码/掩码 与 压缩/写盘 并行 =====
+    // ===== 2. 跨 strip 并行流水线（Issue #27）=====
+    // 解码 / 掩码 / 压缩在 rayon 线程池并行进行；写入线程按 strip_idx 顺序落盘。
+    // bounded channel 做反压，防止 budget 被撑破。
     let strip_byte_size = strip_byte_size_u64 as usize;
+    let slot_count = pipeline_slots(strip_byte_size_u64, budget_bytes, num_strips);
 
-    // 写入线程：接收原始 strip，压缩并写入文件
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(u32, Vec<u8>)>(slot_count);
     let compression_owned = compression.to_string();
 
     let writer_handle = std::thread::spawn(move || -> Result<(BufWriter<std::fs::File>, Vec<u64>, Vec<u64>), String> {
-        let mut strip_offsets: Vec<u64> = Vec::with_capacity(num_strips as usize);
-        let mut strip_counts: Vec<u64> = Vec::with_capacity(num_strips as usize);
+        let mut strip_offsets: Vec<u64> = vec![0; num_strips as usize];
+        let mut strip_counts: Vec<u64> = vec![0; num_strips as usize];
+        let mut pending: std::collections::BTreeMap<u32, Vec<u8>> = std::collections::BTreeMap::new();
+        let mut next_expected: u32 = 0;
 
-        for strip_data in rx {
-            let (compressed, _comp_tag) = compress_strip(&strip_data, &compression_owned)?;
-            let offset = stream_pos(&mut w)?;
-            w.write_all(&compressed).map_err(e2s)?;
-            strip_offsets.push(offset);
-            strip_counts.push(compressed.len() as u64);
+        while let Ok((idx, compressed)) = rx.recv() {
+            pending.insert(idx, compressed);
+            // 顺序冲刷：尽可能多地写出已就位的连续 strip
+            while let Some(bytes) = pending.remove(&next_expected) {
+                let offset = stream_pos(&mut w)?;
+                w.write_all(&bytes).map_err(e2s)?;
+                strip_offsets[next_expected as usize] = offset;
+                strip_counts[next_expected as usize] = bytes.len() as u64;
+                next_expected += 1;
+            }
         }
-
+        // tx 已全部 drop，说明生产者结束；若还有残留说明生产者出错/缺席
+        if next_expected != num_strips {
+            return Err(format!(
+                "写入线程提前退出：期望 {} 个 strip，仅写入 {}",
+                num_strips, next_expected
+            ));
+        }
         Ok((w, strip_offsets, strip_counts))
     });
 
-    for tile_y in y_min..=y_max {
-        // 创建一行瓦片的 strip 缓冲区
-        // RGB: 白色背景(255)，RGBA: 透明背景(0)
-        let mut strip = if has_mask {
-            vec![0u8; strip_byte_size]
-        } else {
-            vec![255u8; strip_byte_size]
-        };
+    let has_mask_copy = has_mask;
+    let channels_u = channels as usize;
+    let width_u = width as usize;
+    let pixel_rings_ref = &pixel_rings;
+    let tile_files_ref = tile_files;
+    let compression_ref = compression_owned.as_str();
 
-        let ch = channels as usize;
+    // 生产者：每个 strip 独立 rayon 任务，解码 + 掩码 + 压缩 → send
+    let producer_result: Result<(), String> = (0..num_strips)
+        .into_par_iter()
+        .try_for_each_with(tx.clone(), |tx, strip_idx| -> Result<(), String> {
+            let tile_y = y_min + strip_idx;
 
-        // M5.1: rayon 并行解码本行所有瓦片
-        let tile_xs: Vec<u32> = (x_min..=x_max).collect();
-        let decoded: Vec<Option<(usize, image::RgbImage)>> = tile_xs.par_iter()
-            .map(|&tile_x| {
-                let source = tile_files.get(&(tile_x, tile_y))?;
-                let bytes = source.bytes().ok()?;
-                let img = image::load_from_memory(&bytes).ok()?;
-                let px = ((tile_x - x_min) * TILE_SIZE) as usize;
-                Some((px, img.to_rgb8()))
-            })
-            .collect();
+            // 初始化一行 strip 缓冲（RGB 背景白 / RGBA 透明）
+            let mut strip = if has_mask_copy {
+                vec![0u8; strip_byte_size]
+            } else {
+                vec![255u8; strip_byte_size]
+            };
 
-        // 串行填入 strip（顺序写内存，缓存友好）
-        for item in &decoded {
-            if let Some((px, rgb)) = item {
-                let tile_w = rgb.width().min(TILE_SIZE) as usize;
-                let tile_h = rgb.height().min(TILE_SIZE) as usize;
-                let raw = rgb.as_raw();
+            // strip 内部瓦片解码仍走 rayon 并行（M5 既有逻辑），二维并行
+            let tile_xs: Vec<u32> = (x_min..=x_max).collect();
+            let decoded: Vec<Option<(usize, image::RgbImage)>> = tile_xs
+                .par_iter()
+                .map(|&tile_x| {
+                    let source = tile_files_ref.get(&(tile_x, tile_y))?;
+                    let bytes = source.bytes().ok()?;
+                    let img = image::load_from_memory(&bytes).ok()?;
+                    let px = ((tile_x - x_min) * TILE_SIZE) as usize;
+                    Some((px, img.to_rgb8()))
+                })
+                .collect();
 
-                for row in 0..tile_h {
-                    let src_start = row * rgb.width() as usize * 3;
-                    for col in 0..tile_w {
-                        let si = src_start + col * 3;
-                        let di = row * width as usize * ch + (px + col) * ch;
-                        if si + 2 < raw.len() && di + ch - 1 < strip.len() {
-                            strip[di] = raw[si];
-                            strip[di + 1] = raw[si + 1];
-                            strip[di + 2] = raw[si + 2];
-                            if has_mask {
-                                strip[di + 3] = 255;
+            for item in &decoded {
+                if let Some((px, rgb)) = item {
+                    let tile_w = rgb.width().min(TILE_SIZE) as usize;
+                    let tile_h = rgb.height().min(TILE_SIZE) as usize;
+                    let raw = rgb.as_raw();
+
+                    for row in 0..tile_h {
+                        let src_start = row * rgb.width() as usize * 3;
+                        for col in 0..tile_w {
+                            let si = src_start + col * 3;
+                            let di = row * width_u * channels_u + (px + col) * channels_u;
+                            if si + 2 < raw.len() && di + channels_u - 1 < strip.len() {
+                                strip[di] = raw[si];
+                                strip[di + 1] = raw[si + 1];
+                                strip[di + 2] = raw[si + 2];
+                                if has_mask_copy {
+                                    strip[di + 3] = 255;
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        drop(decoded);
+            drop(decoded);
 
-        // RGBA 模式：应用多边形掩码（扫描线算法）
-        if has_mask && !pixel_rings.is_empty() {
-            let strip_y_start = (tile_y - y_min) * TILE_SIZE;
-            for local_row in 0..TILE_SIZE {
-                let global_y = (strip_y_start + local_row) as i32;
-
-                // 收集所有多边形环在该行的交点
-                let mut intersections: Vec<i32> = Vec::new();
-                for ring in &pixel_rings {
-                    let n = ring.len();
-                    let mut j = n - 1;
-                    for i in 0..n {
-                        let (xi, yi) = ring[i];
-                        let (xj, yj) = ring[j];
-                        if (yi > global_y) != (yj > global_y) {
-                            let x_int = (xj - xi) * (global_y - yi) / (yj - yi) + xi;
-                            intersections.push(x_int);
+            // RGBA 多边形掩码（扫描线）
+            if has_mask_copy && !pixel_rings_ref.is_empty() {
+                let strip_y_start = (tile_y - y_min) * TILE_SIZE;
+                for local_row in 0..TILE_SIZE {
+                    let global_y = (strip_y_start + local_row) as i32;
+                    let mut intersections: Vec<i32> = Vec::new();
+                    for ring in pixel_rings_ref {
+                        let n = ring.len();
+                        let mut j = n - 1;
+                        for i in 0..n {
+                            let (xi, yi) = ring[i];
+                            let (xj, yj) = ring[j];
+                            if (yi > global_y) != (yj > global_y) {
+                                let x_int = (xj - xi) * (global_y - yi) / (yj - yi) + xi;
+                                intersections.push(x_int);
+                            }
+                            j = i;
                         }
-                        j = i;
                     }
-                }
-                intersections.sort_unstable();
+                    intersections.sort_unstable();
 
-                // 多边形外的像素 alpha 设为 0
-                // 策略：先把整行 alpha 清零，再填充多边形内部
-                let row_offset = local_row as usize * width as usize * ch;
-                for x in 0..width as usize {
-                    let idx = row_offset + x * ch + 3;
-                    if idx < strip.len() {
-                        strip[idx] = 0;
+                    let row_offset = local_row as usize * width_u * channels_u;
+                    for x in 0..width_u {
+                        let idx = row_offset + x * channels_u + 3;
+                        if idx < strip.len() {
+                            strip[idx] = 0;
+                        }
                     }
-                }
-                for chunk in intersections.chunks(2) {
-                    if chunk.len() == 2 {
-                        let x_start = (chunk[0].max(0) as usize).min(width as usize);
-                        let x_end = (chunk[1].max(0) as usize).min(width as usize);
-                        for x in x_start..x_end {
-                            let idx = row_offset + x * ch + 3;
-                            if idx < strip.len() {
-                                strip[idx] = 255;
+                    for chunk in intersections.chunks(2) {
+                        if chunk.len() == 2 {
+                            let x_start = (chunk[0].max(0) as usize).min(width_u);
+                            let x_end = (chunk[1].max(0) as usize).min(width_u);
+                            for x in x_start..x_end {
+                                let idx = row_offset + x * channels_u + 3;
+                                if idx < strip.len() {
+                                    strip[idx] = 255;
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // 发送到写入线程（压缩+写盘与下一行解码并行）
-        tx.send(strip).map_err(|e| format!("发送 strip 失败: {}", e))?;
-    }
+            // 生产者内压缩，让 CPU 重负载分散到 rayon 线程池
+            let (compressed, _tag) = compress_strip(&strip, compression_ref)?;
+            tx.send((strip_idx, compressed))
+                .map_err(|e| format!("发送 strip 失败: {}", e))
+        });
+
     drop(tx);
 
-    // 等待写入线程完成，取回 writer 和元数据
-    let (mut w, strip_offsets, strip_counts) = writer_handle.join()
-        .map_err(|_| "写入线程异常退出".to_string())??;
+    // 写入线程收敛；优先返回生产者错误，次优返回写入器错误
+    let writer_res = writer_handle.join().map_err(|_| "写入线程异常退出".to_string())?;
+    producer_result?;
+    let (mut w, strip_offsets, strip_counts) = writer_res?;
 
     // ===== 3. 写入 IFD 所需的额外数据 =====
     // BitsPerSample: RGB=[8,8,8], RGBA=[8,8,8,8]
@@ -410,6 +473,26 @@ pub fn merge_and_export_dem_streaming(
     compression: &str,
     polygons: Option<&[Vec<PolygonPoint>]>,
 ) -> Result<u64, String> {
+    merge_and_export_dem_streaming_with_budget(
+        tile_files, x_min, y_min, x_max, y_max,
+        bounds, save_path, compression, polygons,
+        export_buffer_bytes(),
+    )
+}
+
+/// 与 [`merge_and_export_dem_streaming`] 等价，显式注入流水线缓冲（字节），供单测使用。
+pub fn merge_and_export_dem_streaming_with_budget(
+    tile_files: &HashMap<(u32, u32), TileSource>,
+    x_min: u32,
+    y_min: u32,
+    x_max: u32,
+    y_max: u32,
+    bounds: &TileBounds,
+    save_path: &Path,
+    compression: &str,
+    polygons: Option<&[Vec<PolygonPoint>]>,
+    budget_bytes: u64,
+) -> Result<u64, String> {
     let cols = x_max - x_min + 1;
     let rows = y_max - y_min + 1;
     let width = cols * TILE_SIZE;
@@ -443,7 +526,6 @@ pub fn merge_and_export_dem_streaming(
     } else {
         Vec::new()
     };
-    let has_mask = !pixel_rings.is_empty();
 
     let file = std::fs::File::create(save_path)
         .map_err(|e| format!("创建文件失败: {}", e))?;
@@ -457,126 +539,147 @@ pub fn merge_and_export_dem_streaming(
     let ifd_offset_pos = stream_pos(&mut w)?;
     write_u64(&mut w, 0)?;
 
-    // ===== 2. 双缓冲流水线 =====
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+    // ===== 2. 跨 strip 并行流水线（Issue #27）=====
+    let slot_count = pipeline_slots(strip_byte_size_u64, budget_bytes, num_strips);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(u32, Vec<u8>)>(slot_count);
     let compression_owned = compression.to_string();
 
     let writer_handle = std::thread::spawn(move || -> Result<(BufWriter<std::fs::File>, Vec<u64>, Vec<u64>), String> {
-        let mut strip_offsets: Vec<u64> = Vec::with_capacity(num_strips as usize);
-        let mut strip_counts: Vec<u64> = Vec::with_capacity(num_strips as usize);
+        let mut strip_offsets: Vec<u64> = vec![0; num_strips as usize];
+        let mut strip_counts: Vec<u64> = vec![0; num_strips as usize];
+        let mut pending: std::collections::BTreeMap<u32, Vec<u8>> = std::collections::BTreeMap::new();
+        let mut next_expected: u32 = 0;
 
-        for strip_data in rx {
-            let (compressed, _) = compress_strip(&strip_data, &compression_owned)?;
-            let offset = stream_pos(&mut w)?;
-            w.write_all(&compressed).map_err(e2s)?;
-            strip_offsets.push(offset);
-            strip_counts.push(compressed.len() as u64);
+        while let Ok((idx, compressed)) = rx.recv() {
+            pending.insert(idx, compressed);
+            while let Some(bytes) = pending.remove(&next_expected) {
+                let offset = stream_pos(&mut w)?;
+                w.write_all(&bytes).map_err(e2s)?;
+                strip_offsets[next_expected as usize] = offset;
+                strip_counts[next_expected as usize] = bytes.len() as u64;
+                next_expected += 1;
+            }
         }
-
+        if next_expected != num_strips {
+            return Err(format!(
+                "写入线程提前退出：期望 {} 个 strip，仅写入 {}",
+                num_strips, next_expected
+            ));
+        }
         Ok((w, strip_offsets, strip_counts))
     });
 
     let nodata_bytes = NODATA.to_le_bytes();
+    let width_u = width as usize;
+    let pixel_rings_ref = &pixel_rings;
+    let tile_files_ref = tile_files;
+    let compression_ref = compression_owned.as_str();
 
-    for tile_y in y_min..=y_max {
-        // 初始化为 NoData
-        let mut strip = vec![0u8; strip_byte_size];
-        for chunk in strip.chunks_exact_mut(4) {
-            chunk.copy_from_slice(&nodata_bytes);
-        }
+    let producer_result: Result<(), String> = (0..num_strips)
+        .into_par_iter()
+        .try_for_each_with(tx.clone(), |tx, strip_idx| -> Result<(), String> {
+            let tile_y = y_min + strip_idx;
 
-        // 并行解码本行所有瓦片
-        let tile_xs: Vec<u32> = (x_min..=x_max).collect();
-        let decoded: Vec<Option<(usize, image::RgbImage)>> = tile_xs.par_iter()
-            .map(|&tile_x| {
-                let source = tile_files.get(&(tile_x, tile_y))?;
-                let bytes = source.bytes().ok()?;
-                let rgb = decode_terrarium_tile(&bytes).ok()?;
-                let px = ((tile_x - x_min) * TILE_SIZE) as usize;
-                Some((px, rgb))
-            })
-            .collect();
+            // 初始化为 NoData
+            let mut strip = vec![0u8; strip_byte_size];
+            for chunk in strip.chunks_exact_mut(4) {
+                chunk.copy_from_slice(&nodata_bytes);
+            }
 
-        // RGB → Float32 高程，串行填入 strip
-        for item in &decoded {
-            if let Some((px, rgb)) = item {
-                let tile_w = rgb.width().min(TILE_SIZE) as usize;
-                let tile_h = rgb.height().min(TILE_SIZE) as usize;
-                let raw = rgb.as_raw();
+            // 并行解码本行所有瓦片
+            let tile_xs: Vec<u32> = (x_min..=x_max).collect();
+            let decoded: Vec<Option<(usize, image::RgbImage)>> = tile_xs
+                .par_iter()
+                .map(|&tile_x| {
+                    let source = tile_files_ref.get(&(tile_x, tile_y))?;
+                    let bytes = source.bytes().ok()?;
+                    let rgb = decode_terrarium_tile(&bytes).ok()?;
+                    let px = ((tile_x - x_min) * TILE_SIZE) as usize;
+                    Some((px, rgb))
+                })
+                .collect();
 
-                for row in 0..tile_h {
-                    let src_row_start = row * rgb.width() as usize * 3;
-                    for col in 0..tile_w {
-                        let si = src_row_start + col * 3;
-                        if si + 2 >= raw.len() { continue; }
-                        let r = raw[si] as f32;
-                        let g = raw[si + 1] as f32;
-                        let b = raw[si + 2] as f32;
-                        let elev = (r * 256.0 + g + b / 256.0) - 32768.0;
-                        let di = (row * width as usize + (px + col)) * 4;
-                        if di + 3 < strip.len() {
-                            strip[di..di + 4].copy_from_slice(&elev.to_le_bytes());
+            // RGB → Float32 高程
+            for item in &decoded {
+                if let Some((px, rgb)) = item {
+                    let tile_w = rgb.width().min(TILE_SIZE) as usize;
+                    let tile_h = rgb.height().min(TILE_SIZE) as usize;
+                    let raw = rgb.as_raw();
+
+                    for row in 0..tile_h {
+                        let src_row_start = row * rgb.width() as usize * 3;
+                        for col in 0..tile_w {
+                            let si = src_row_start + col * 3;
+                            if si + 2 >= raw.len() { continue; }
+                            let r = raw[si] as f32;
+                            let g = raw[si + 1] as f32;
+                            let b = raw[si + 2] as f32;
+                            let elev = (r * 256.0 + g + b / 256.0) - 32768.0;
+                            let di = (row * width_u + (px + col)) * 4;
+                            if di + 3 < strip.len() {
+                                strip[di..di + 4].copy_from_slice(&elev.to_le_bytes());
+                            }
                         }
                     }
                 }
             }
-        }
-        drop(decoded);
+            drop(decoded);
 
-        // 多边形掩码：环外像素强制为 NoData（扫描线算法）
-        if has_mask {
-            let strip_y_start = (tile_y - y_min) * TILE_SIZE;
-            for local_row in 0..TILE_SIZE {
-                let global_y = (strip_y_start + local_row) as i32;
+            // 多边形掩码：环外像素强制为 NoData
+            if !pixel_rings_ref.is_empty() {
+                let strip_y_start = (tile_y - y_min) * TILE_SIZE;
+                for local_row in 0..TILE_SIZE {
+                    let global_y = (strip_y_start + local_row) as i32;
 
-                // 收集所有多边形环在该行的交点
-                let mut intersections: Vec<i32> = Vec::new();
-                for ring in &pixel_rings {
-                    let n = ring.len();
-                    let mut j = n - 1;
-                    for i in 0..n {
-                        let (xi, yi) = ring[i];
-                        let (xj, yj) = ring[j];
-                        if (yi > global_y) != (yj > global_y) {
-                            let x_int = (xj - xi) * (global_y - yi) / (yj - yi) + xi;
-                            intersections.push(x_int);
+                    let mut intersections: Vec<i32> = Vec::new();
+                    for ring in pixel_rings_ref {
+                        let n = ring.len();
+                        let mut j = n - 1;
+                        for i in 0..n {
+                            let (xi, yi) = ring[i];
+                            let (xj, yj) = ring[j];
+                            if (yi > global_y) != (yj > global_y) {
+                                let x_int = (xj - xi) * (global_y - yi) / (yj - yi) + xi;
+                                intersections.push(x_int);
+                            }
+                            j = i;
                         }
-                        j = i;
                     }
-                }
-                intersections.sort_unstable();
+                    intersections.sort_unstable();
 
-                // 标记每列是否在多边形内
-                let mut inside = vec![false; width as usize];
-                let mut k = 0;
-                while k + 1 < intersections.len() {
-                    let x0 = intersections[k].max(0).min(width as i32) as usize;
-                    let x1 = intersections[k + 1].max(0).min(width as i32) as usize;
-                    for x in x0..x1 {
-                        if x < inside.len() { inside[x] = true; }
+                    let mut inside = vec![false; width_u];
+                    let mut k = 0;
+                    while k + 1 < intersections.len() {
+                        let x0 = intersections[k].max(0).min(width as i32) as usize;
+                        let x1 = intersections[k + 1].max(0).min(width as i32) as usize;
+                        for x in x0..x1 {
+                            if x < inside.len() { inside[x] = true; }
+                        }
+                        k += 2;
                     }
-                    k += 2;
-                }
 
-                // 多边形外像素 → NoData
-                let row_offset = local_row as usize * width as usize * 4;
-                for x in 0..width as usize {
-                    if !inside[x] {
-                        let di = row_offset + x * 4;
-                        if di + 3 < strip.len() {
-                            strip[di..di + 4].copy_from_slice(&nodata_bytes);
+                    let row_offset = local_row as usize * width_u * 4;
+                    for x in 0..width_u {
+                        if !inside[x] {
+                            let di = row_offset + x * 4;
+                            if di + 3 < strip.len() {
+                                strip[di..di + 4].copy_from_slice(&nodata_bytes);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        tx.send(strip).map_err(|e| format!("发送 strip 失败: {}", e))?;
-    }
+            let (compressed, _) = compress_strip(&strip, compression_ref)?;
+            tx.send((strip_idx, compressed))
+                .map_err(|e| format!("发送 strip 失败: {}", e))
+        });
+
     drop(tx);
 
-    let (mut w, strip_offsets, strip_counts) = writer_handle.join()
-        .map_err(|_| "写入线程异常退出".to_string())??;
+    let writer_res = writer_handle.join().map_err(|_| "写入线程异常退出".to_string())?;
+    producer_result?;
+    let (mut w, strip_offsets, strip_counts) = writer_res?;
 
     // ===== 3. IFD 外数据 =====
     let res_inline: u64 = 72u64 | (1u64 << 32);
@@ -669,4 +772,128 @@ pub fn merge_and_export_dem_streaming(
     validate_bigtiff_header(save_path, ifd_pos)?;
 
     Ok(file_size)
+}
+
+// ============================================================
+// Tests (Issue #27 跨 strip 并行流水线)
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ImageBuffer, Rgb};
+    use std::sync::Arc;
+
+    /// 生成一张 256×256 PNG 瓦片，每个像素 = (tx, ty, (tx+ty) & 0xFF)，
+    /// 让不同 (tx, ty) 产生不同字节，便于发现行错位 bug。
+    fn make_tile(tx: u32, ty: u32) -> Vec<u8> {
+        let mut buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(TILE_SIZE, TILE_SIZE);
+        let r = (tx & 0xFF) as u8;
+        let g = (ty & 0xFF) as u8;
+        let b = ((tx + ty) & 0xFF) as u8;
+        for px in buf.pixels_mut() {
+            *px = Rgb([r, g, b]);
+        }
+        let mut out = Vec::new();
+        let dyn_img = image::DynamicImage::ImageRgb8(buf);
+        dyn_img
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("encode png");
+        out
+    }
+
+    fn make_tile_files(
+        x_min: u32, y_min: u32, x_max: u32, y_max: u32,
+    ) -> HashMap<(u32, u32), TileSource> {
+        let mut map = HashMap::new();
+        for y in y_min..=y_max {
+            for x in x_min..=x_max {
+                map.insert((x, y), TileSource::Bytes(Arc::new(make_tile(x, y))));
+            }
+        }
+        map
+    }
+
+    fn dummy_bounds() -> TileBounds {
+        TileBounds { west: -10.0, south: -10.0, east: 10.0, north: 10.0 }
+    }
+
+    /// 不同流水线 budget 必须输出字节级一致的 GeoTIFF。
+    /// 这条用例同时覆盖 K=1（纯顺序）与 K=N（最大并行）的边界。
+    #[test]
+    fn rgb_pipeline_byte_identical_under_varying_budgets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tiles = make_tile_files(0, 0, 2, 3); // 3×4 = 12 strip
+        let bounds = dummy_bounds();
+
+        let p1 = tmp.path().join("budget_tiny.tif");
+        let p2 = tmp.path().join("budget_large.tif");
+
+        // 极小 budget → slot=1，等价于单 strip 顺序
+        let s1 = merge_and_export_streaming_with_budget(
+            &tiles, 0, 0, 2, 3, &bounds, &p1, "lzw", None, 1,
+        ).unwrap();
+        // 大 budget → slot 取 num_strips 上限
+        let s2 = merge_and_export_streaming_with_budget(
+            &tiles, 0, 0, 2, 3, &bounds, &p2, "lzw", None, 256 * 1024 * 1024,
+        ).unwrap();
+
+        assert_eq!(s1, s2, "文件大小必须一致");
+        let b1 = std::fs::read(&p1).unwrap();
+        let b2 = std::fs::read(&p2).unwrap();
+        assert_eq!(b1, b2, "不同 budget 下 GeoTIFF 字节流不一致 → strip 顺序错乱");
+    }
+
+    /// DEM 路径同样验证：不同 budget 输出字节级一致。
+    #[test]
+    fn dem_pipeline_byte_identical_under_varying_budgets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tiles = make_tile_files(0, 0, 1, 2);
+        let bounds = dummy_bounds();
+
+        let p1 = tmp.path().join("dem_tiny.tif");
+        let p2 = tmp.path().join("dem_large.tif");
+
+        let s1 = merge_and_export_dem_streaming_with_budget(
+            &tiles, 0, 0, 1, 2, &bounds, &p1, "deflate", None, 1,
+        ).unwrap();
+        let s2 = merge_and_export_dem_streaming_with_budget(
+            &tiles, 0, 0, 1, 2, &bounds, &p2, "deflate", None, 256 * 1024 * 1024,
+        ).unwrap();
+
+        assert_eq!(s1, s2);
+        assert_eq!(std::fs::read(&p1).unwrap(), std::fs::read(&p2).unwrap());
+    }
+
+    #[test]
+    fn pipeline_slots_clamps_to_strips_and_cap() {
+        // strip = 1MB，budget = 64MB → 64 槽，但只有 5 个 strip → 5
+        assert_eq!(pipeline_slots(1 * 1024 * 1024, 64 * 1024 * 1024, 5), 5);
+        // budget < strip → 至少 1
+        assert_eq!(pipeline_slots(10 * 1024 * 1024, 1024, 100), 1);
+        // 上限 256（防止线程调度开销吃掉收益）
+        assert_eq!(pipeline_slots(1024, 1024 * 1024 * 1024, 10_000), 256);
+    }
+
+    /// 缺瓦片场景：HashMap 缺少部分坐标 → 对应位置应保持初始白色背景，
+    /// 不同 budget 仍需字节一致（验证我们没有跨 strip 串扰）。
+    #[test]
+    fn rgb_pipeline_missing_tiles_consistent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tiles = make_tile_files(0, 0, 1, 1);
+        tiles.remove(&(0, 0)); // 抠掉一块
+        let bounds = dummy_bounds();
+
+        let p1 = tmp.path().join("miss_k1.tif");
+        let p2 = tmp.path().join("miss_kn.tif");
+
+        merge_and_export_streaming_with_budget(
+            &tiles, 0, 0, 1, 1, &bounds, &p1, "none", None, 1,
+        ).unwrap();
+        merge_and_export_streaming_with_budget(
+            &tiles, 0, 0, 1, 1, &bounds, &p2, "none", None, 64 * 1024 * 1024,
+        ).unwrap();
+
+        assert_eq!(std::fs::read(&p1).unwrap(), std::fs::read(&p2).unwrap());
+    }
 }

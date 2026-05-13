@@ -88,6 +88,13 @@ pub struct AppSettings {
     /// - 中间值：例如 `0.95` 表示允许 5% 缺洞自动导出，超出则等用户决策
     #[serde(default = "default_min_export_success_ratio")]
     pub min_export_success_ratio: f32,
+    /// 流式导出并行流水线的 strip 缓冲 (MB)
+    ///
+    /// 控制 `streaming_tiff` 跨 strip 并行解码/压缩时最多同时持有的 strip 总字节数。
+    /// 较大的缓冲能让 IO 与 CPU 更好地重叠，加速大区导出，代价是内存峰值上升。
+    /// 范围 16 - 512，默认 64。issue #27。
+    #[serde(default = "default_export_buffer_mb")]
+    pub export_buffer_mb: u32,
 }
 
 fn default_proxy_enabled() -> bool { false }
@@ -100,6 +107,7 @@ fn default_memory_budget_mb() -> u64 { 2048 }
 fn default_tile_cache_enabled() -> bool { true }
 fn default_tile_cache_max_size_mb() -> u64 { 5120 }
 fn default_min_export_success_ratio() -> f32 { 0.0 }
+fn default_export_buffer_mb() -> u32 { 64 }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -121,6 +129,7 @@ impl Default for AppSettings {
             tile_cache_max_size_mb: default_tile_cache_max_size_mb(),
             tile_cache_dir: None,
             min_export_success_ratio: default_min_export_success_ratio(),
+            export_buffer_mb: default_export_buffer_mb(),
         }
     }
 }

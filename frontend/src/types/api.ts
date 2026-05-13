@@ -70,6 +70,11 @@ export interface AppSettings {
    * 中间值 = 允许指定比例缺洞自动导出，超出则进 Paused 待用户决策。
    */
   min_export_success_ratio?: number
+  /**
+   * 流式导出并行流水线的 strip 缓冲 MB，范围 16 - 512，默认 64。Issue #27。
+   * 越大越能重叠 IO 与 CPU，代价是内存峰值上升。
+   */
+  export_buffer_mb?: number
 }
 
 /** 自定义瓦片图源（与 Rust CustomTileSource 对齐） */
