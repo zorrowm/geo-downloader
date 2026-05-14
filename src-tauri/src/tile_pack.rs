@@ -641,6 +641,49 @@ pub fn write_raw_tiles_folder(
     Ok(total)
 }
 
+/// Issue #32：瓦片已直接下载到 `save_dir`（平铺 `{x}_{y}.png`），
+/// 就地重组为 `{z}/{x}/{y}.<ext>` 目录结构。
+/// - Path 变体：`fs::rename`（同文件系统 O(1)，无数据拷贝）
+/// - Bytes 变体（缓存命中）：`fs::write` 写入目标路径
+pub fn rename_raw_tiles_in_place(
+    save_dir: &Path,
+    z: u8,
+    tile_files: &HashMap<(u32, u32), TileSource>,
+    extension: &str,
+) -> Result<u64, String> {
+    let ext = extension.trim_start_matches('.');
+    let z_dir = save_dir.join(z.to_string());
+    std::fs::create_dir_all(&z_dir)
+        .map_err(|e| format!("创建目录失败 {}: {}", z_dir.display(), e))?;
+    let mut total: u64 = 0;
+    for ((x, y), source) in tile_files.iter() {
+        let x_dir = z_dir.join(x.to_string());
+        std::fs::create_dir_all(&x_dir)
+            .map_err(|e| format!("创建目录失败 {}: {}", x_dir.display(), e))?;
+        let dst = if ext.is_empty() {
+            x_dir.join(y.to_string())
+        } else {
+            x_dir.join(format!("{}.{}", y, ext))
+        };
+        match source {
+            TileSource::Path(src) => {
+                let len = std::fs::metadata(src)
+                    .map_err(|e| format!("读取元数据失败 {}: {}", src.display(), e))?
+                    .len();
+                std::fs::rename(src, &dst)
+                    .map_err(|e| format!("重命名失败 {} -> {}: {}", src.display(), dst.display(), e))?;
+                total = total.saturating_add(len);
+            }
+            TileSource::Bytes(b) => {
+                std::fs::write(&dst, b.as_slice())
+                    .map_err(|e| format!("写入瓦片失败 -> {}: {}", dst.display(), e))?;
+                total = total.saturating_add(b.len() as u64);
+            }
+        }
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

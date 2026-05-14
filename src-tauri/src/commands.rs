@@ -485,14 +485,25 @@ pub async fn create_download_task(
             request, source, save_path.clone(),
             tile_count, &task_name, &source_name,
         ).await;
-        
+
+        // Issue #32：raw tiles 直接下载到目标目录，取消/失败时不清理
+        let is_raw_fmt = matches!(
+            ExportFormat::from_str(&req_format),
+            ExportFormat::Tiles | ExportFormat::Pbf
+        );
+
         match result {
             Ok(_) => {},
             Err(e) => {
                 if tm.is_cancelled(&tid) {
                     task_log(&app, &tm, &tid, "WARN", "任务已取消");
+                    if is_raw_fmt {
+                        task_log(&app, &tm, &tid, "INFO", "已下载的瓦片保留在目标目录，可重新提交任务续传");
+                    }
                     crate::task::remove_task_file(&tid);
-                    crate::task::cleanup_temp_dir(&tid);
+                    if !is_raw_fmt {
+                        crate::task::cleanup_temp_dir(&tid);
+                    }
                     tm.mark_cancelled(&tid);
                     let _ = app.emit(&format!("task-progress-{}", tid), TaskProgressPayload {
                         task_id: tid,
@@ -505,7 +516,9 @@ pub async fn create_download_task(
                 } else {
                     task_log(&app, &tm, &tid, "ERROR", &format!("任务失败: {}", e));
                     crate::task::remove_task_file(&tid);
-                    crate::task::cleanup_temp_dir(&tid);
+                    if !is_raw_fmt {
+                        crate::task::cleanup_temp_dir(&tid);
+                    }
                     // 失败也记录到历史（failed_count=0 因为是整体失败而非逐瓦片失败）
                     let log_file_path = tm.get_log_file_path(&tid);
                     let record = DownloadRecord::new(
@@ -1022,10 +1035,11 @@ async fn execute_zoom_level(
         let sp = save_path.clone();
         let cz = current_zoom;
         let tile_files_clone = tile_files.clone();
+        // Issue #32：瓦片已直接下载到 save_path，就地 rename 重组目录结构
         file_size = tokio::task::spawn_blocking(move || -> Result<u64, String> {
             let dir = std::path::Path::new(&sp);
             std::fs::create_dir_all(dir).map_err(|e| format!("创建输出目录失败 {}: {}", dir.display(), e))?;
-            crate::tile_pack::write_raw_tiles_folder(dir, cz, &tile_files_clone, ext)
+            crate::tile_pack::rename_raw_tiles_in_place(dir, cz, &tile_files_clone, ext)
         }).await.map_err(|e| format!("原始瓦片写盘失败: {}", e))??;
     } else if is_pack {
         // ===== MBTiles / GPKG 直接打包瓦片（不拼接、不重投影）=====
@@ -1395,9 +1409,15 @@ async fn execute_download_task(
         ));
     }
 
+    // Issue #32：raw tiles 直接下载到目标目录，不需要 temp_dir
+    let req_format_enum = ExportFormat::from_str(&request.format);
+    let is_raw_tiles_task = matches!(req_format_enum, ExportFormat::Tiles | ExportFormat::Pbf);
+
     let base_temp_dir = std::env::temp_dir().join(format!("tif-dl-{}", task_id));
-    std::fs::create_dir_all(&base_temp_dir)
-        .map_err(|e| format!("创建临时目录失败: {}", e))?;
+    if !is_raw_tiles_task {
+        std::fs::create_dir_all(&base_temp_dir)
+            .map_err(|e| format!("创建临时目录失败: {}", e))?;
+    }
 
     // Issue #31：读取自动导出阈值，clamp 到 [0.0, 1.0]
     // 0.0（默认）= 有 1 张成功就导出，1.0 = 必须全成功才导出
@@ -1447,7 +1467,13 @@ async fn execute_download_task(
         } else {
             zoom_level_save_path(&save_path, *zoom, multi_zoom)?
         };
-        let level_temp_dir = if multi_zoom {
+        // Issue #32：raw tiles 直接下载到目标目录，跳过 temp
+        let level_temp_dir = if is_raw_tiles_task {
+            let p = std::path::PathBuf::from(&level_save_path);
+            std::fs::create_dir_all(&p)
+                .map_err(|e| format!("创建目标目录失败: {}", e))?;
+            p
+        } else if multi_zoom {
             base_temp_dir.join(format!("z{}", zoom))
         } else {
             base_temp_dir.clone()
@@ -1561,8 +1587,11 @@ async fn execute_download_task(
         ("completed_with_gaps", format!("完成但有 {} 张缺块", failed_total))
     } else {
         // 全成功：清理临时文件（原行为）
+        // Issue #32：raw tiles 没有 temp_dir 可清理
         crate::task::remove_task_file(task_id);
-        crate::task::cleanup_temp_dir(task_id);
+        if !is_raw_tiles_task {
+            crate::task::cleanup_temp_dir(task_id);
+        }
         tm.complete_task(task_id, total_file_size);
         ("completed", "完成!".to_string())
     };
