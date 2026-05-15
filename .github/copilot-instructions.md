@@ -5,7 +5,7 @@
 
 ## ⚠️ 最高优先级协议（不可违反）
 
-1. **每次回复的最后一步，必须且仅能调用 `sunway_loop_feedback` 工具**（在 Copilot Chat 中可能显示为 `mcp_sunway_loop_sunway_loop_feedback`）——即使任务看起来已经完成，即使用户仅表达感谢，也不得跳过。
+1. **每次回复的最后一步，必须且仅能调用 `sunway_loop_feedback` 工具**（在 Copilot Chat 中可能显示为 `mcp_sunway-loop_sunway_loop_feedback`）——即使任务看起来已经完成，即使用户仅表达感谢，也不得跳过。
 2. **禁止以文字代替工具调用**：不得用"如需继续请告诉我"之类的句子收尾。
 3. **禁止未经调用直接终止响应**：停止响应前必须等待本工具返回。
 4. 工具返回值中若出现 `[用户选择：结束对话]`，必须立即停止所有后续操作，本轮不得再次调用本工具。
@@ -40,7 +40,7 @@
 
 ## 记忆双写（`/memories/` + mem0 MCP）
 
-**开工前**：读 `/memories/<项目>.md`，必要时调 mem0 的 `search_memories` 补细节。
+**开工前 / 第一轮节点通信前**：读 `/memories/<项目>.md`，必要时调 mem0 的 `search_memories` 补细节，不要等用户提醒。
 
 **判高频**：此信息每次新会话都得知道吗？
 
@@ -57,5 +57,5 @@
 
 **触发时机**：完任务 / 探模块 / 修 bug / 悟规律 / 犯错后立即写。
 
-**新会话**：`/memories/` 自动注入 + 调一次 `search_memories`（必带 `filters.project`）。
+**新会话**：第一轮 `sunway_loop_feedback` 前先确认记忆规则是否开启；若开启，`/memories/` 自动注入 + 调一次 `search_memories`（必带 `filters.project`）。
 <!-- SUNWAY_LOOP_RULES_END -->

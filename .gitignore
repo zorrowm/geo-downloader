@@ -41,3 +41,6 @@ output/
 
 /test-batch*.geojson
 /target/
+
+# Local Claude Code settings
+.claude/
