@@ -9,13 +9,14 @@ import type {
   WaybackScanProgress,
   WaybackScanRequest,
   WaybackVersion,
+  WaybackVersionsResponse,
 } from '@/types/api'
 
 export const WAYBACK_TILE_BASE_URL =
   'https://wayback-a.maptiles.arcgis.com/arcgis/rest/services/world_imagery/mapserver/tile'
 
 export function getWaybackVersions(proxy: Nullable<string>) {
-  return invokeCommand<WaybackVersion[]>('get_wayback_versions', { proxy: proxy || null })
+  return invokeCommand<WaybackVersionsResponse>('get_wayback_versions', { proxy: proxy || null })
 }
 
 export function buildWaybackTileUrl(

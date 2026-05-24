@@ -3330,8 +3330,8 @@ pub async fn start_tile_proxy(
 #[tauri::command]
 pub async fn get_wayback_versions(
     proxy: Option<String>,
-) -> Result<Vec<crate::wayback::WaybackVersion>, String> {
-    crate::wayback::fetch_versions(proxy.as_deref()).await
+) -> Result<crate::wayback::WaybackVersionsResponse, String> {
+    crate::wayback::fetch_versions_with_fallback(proxy.as_deref()).await
 }
 
 /// 探测某个 Wayback 版本在指定位置的最大可用缩放级别

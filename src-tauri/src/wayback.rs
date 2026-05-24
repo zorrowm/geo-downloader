@@ -6,6 +6,7 @@
 use crate::config::TileSource;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
@@ -13,6 +14,9 @@ use tokio::sync::Mutex as AsyncMutex;
 /// fetch_releases_raw 的进程内缓存：TTL 1 小时
 static RELEASES_CACHE: OnceLock<AsyncMutex<Option<(Instant, HashMap<String, WaybackReleaseRaw>)>>> = OnceLock::new();
 const RELEASES_CACHE_TTL: Duration = Duration::from_secs(3600);
+
+/// 网络请求超时（用于版本列表获取）
+const VERSIONS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wayback 配置 API 地址
 const WAYBACK_CONFIG_URL: &str =
@@ -49,7 +53,7 @@ pub struct WaybackReleaseRaw {
 }
 
 /// 前端可显示的 Wayback 版本信息
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WaybackVersion {
     /// 内部标识（layerId，如 "22869"）
     pub id: String,
@@ -61,10 +65,43 @@ pub struct WaybackVersion {
     pub layer_id: String,
 }
 
+/// get_wayback_versions 命令的返回值
+#[derive(Debug, Clone, Serialize)]
+pub struct WaybackVersionsResponse {
+    pub versions: Vec<WaybackVersion>,
+    pub from_cache: bool,
+}
+
+/// 版本列表磁盘缓存路径
+fn versions_cache_path() -> Result<PathBuf, String> {
+    dirs::data_local_dir()
+        .map(|p| p.join("geo-downloader").join("wayback_versions.json"))
+        .ok_or_else(|| "无法获取数据目录".to_string())
+}
+
+/// 将版本列表持久化到磁盘
+fn persist_versions(versions: &[WaybackVersion]) {
+    if let Ok(path) = versions_cache_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(versions) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+}
+
+/// 从磁盘加载缓存的版本列表
+fn load_cached_versions() -> Option<Vec<WaybackVersion>> {
+    let path = versions_cache_path().ok()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 /// 从 Esri S3 获取所有 Wayback 版本
 pub async fn fetch_versions(proxy: Option<&str>) -> Result<Vec<WaybackVersion>, String> {
     let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15));
+        .timeout(VERSIONS_FETCH_TIMEOUT);
     if let Some(p) = proxy {
         if !p.is_empty() {
             builder = builder.proxy(
@@ -107,7 +144,35 @@ pub async fn fetch_versions(proxy: Option<&str>) -> Result<Vec<WaybackVersion>, 
     // 按日期降序排列（最新在前）
     versions.sort_by(|a, b| b.date.cmp(&a.date));
 
+    // 持久化到磁盘
+    persist_versions(&versions);
+
     Ok(versions)
+}
+
+/// 获取版本列表，网络失败时回退到磁盘缓存
+pub async fn fetch_versions_with_fallback(
+    proxy: Option<&str>,
+) -> Result<WaybackVersionsResponse, String> {
+    match fetch_versions(proxy).await {
+        Ok(versions) => Ok(WaybackVersionsResponse {
+            versions,
+            from_cache: false,
+        }),
+        Err(e) => {
+            log::warn!("Wayback 版本列表网络获取失败，尝试磁盘缓存: {}", e);
+            match load_cached_versions() {
+                Some(versions) => {
+                    log::info!("使用磁盘缓存的版本列表 ({} 个版本)", versions.len());
+                    Ok(WaybackVersionsResponse {
+                        versions,
+                        from_cache: true,
+                    })
+                }
+                None => Err(format!("网络不可用且无本地缓存: {}", e)),
+            }
+        }
+    }
 }
 
 /// 获取所有 release 的"原始详细信息"（供元数据扫描复用）

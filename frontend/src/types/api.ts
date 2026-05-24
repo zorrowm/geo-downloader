@@ -264,6 +264,11 @@ export interface WaybackVersion {
   [key: string]: unknown
 }
 
+export interface WaybackVersionsResponse {
+  versions: WaybackVersion[]
+  from_cache: boolean
+}
+
 export interface WaybackScanRequest {
   bbox: [number, number, number, number]
   zoom_min: number

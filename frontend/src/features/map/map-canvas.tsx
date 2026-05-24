@@ -205,7 +205,10 @@ export function MapCanvas() {
     queryFn: () => getWaybackVersions(proxyUrl),
     enabled: mode === 'wayback',
     staleTime: 5 * 60 * 1000,
+    select: (data) => data,
   })
+  const waybackVersions = waybackVersionsQuery.data?.versions ?? []
+  const waybackFromCache = waybackVersionsQuery.data?.from_cache ?? false
   const selectionSyncKey = useMemo(
     () => JSON.stringify({ externalRevision, bounds, polygon }),
     [externalRevision, bounds, polygon],
@@ -382,9 +385,8 @@ export function MapCanvas() {
 
   // 升序版本：oldest → newest（与 timeline 一致）
   const ascendingWaybackVersions = useMemo(() => {
-    const list = waybackVersionsQuery.data ?? []
-    return [...list].reverse()
-  }, [waybackVersionsQuery.data])
+    return [...waybackVersions].reverse()
+  }, [waybackVersions])
 
   const waybackProbeVersionId = useMemo(() => {
     return waybackPreviewId ?? ascendingWaybackVersions.at(-1)?.id ?? null
@@ -931,6 +933,13 @@ export function MapCanvas() {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="absolute inset-0" />
+      {waybackFromCache && mode === 'wayback' && (
+        <div className="pointer-events-none absolute left-1/2 top-2 z-10 -translate-x-1/2">
+          <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-1 text-xs text-yellow-700 shadow-sm backdrop-blur dark:text-yellow-400">
+            离线模式 · 版本列表来自缓存
+          </div>
+        </div>
+      )}
       {error && (
         <div className="pointer-events-none absolute right-3 top-3 z-10 flex flex-col items-end gap-2">
           <div className="pointer-events-auto rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive shadow-sm">

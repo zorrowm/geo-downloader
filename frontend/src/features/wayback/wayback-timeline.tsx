@@ -34,7 +34,7 @@ export function WaybackTimeline() {
 
   // 升序版本：oldest → newest（与旧版一致）
   const ascending = useMemo(() => {
-    const list = versionsQuery.data ?? []
+    const list = versionsQuery.data?.versions ?? []
     return [...list].reverse()
   }, [versionsQuery.data])
 

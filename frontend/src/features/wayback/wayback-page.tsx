@@ -173,7 +173,7 @@ export function WaybackPage() {
 
   // 默认选第一个版本
   useEffect(() => {
-    const list = versionsQuery.data
+    const list = versionsQuery.data?.versions
     if (list && list.length > 0 && !versionId) {
       setVersionId(list[0].id)
     }
@@ -202,7 +202,7 @@ export function WaybackPage() {
   }, [setPreviewVersionId])
 
   const sortedVersions: WaybackVersion[] = useMemo(
-    () => versionsQuery.data ?? [],
+    () => versionsQuery.data?.versions ?? [],
     [versionsQuery.data],
   )
 
