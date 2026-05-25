@@ -133,6 +133,7 @@ export function WaybackPage() {
   const [coverageThreshold, setCoverageThreshold] = useState<number>(5)
   const [dominantThreshold, setDominantThreshold] = useState<number>(50)
   const [onlyLatestPerYear, setOnlyLatestPerYear] = useState<boolean>(false)
+  const [hideUnchanged, setHideUnchanged] = useState<boolean>(false)
   const [scanReleases, setScanReleases] = useState<WaybackReleaseSummary[]>([])
   const [scanReleasesScanned, setScanReleasesScanned] = useState<number>(0)
   const [scanProgress, setScanProgress] = useState<{
@@ -512,8 +513,14 @@ export function WaybackPage() {
         (a, b) => (b.release_num ?? 0) - (a.release_num ?? 0),
       )
     }
+    if (hideUnchanged) {
+      items = items.filter((r, i, arr) => {
+        const next = arr[i + 1]
+        return !next || r.dominant_capture_date !== next.dominant_capture_date
+      })
+    }
     return items
-  }, [scanReleases, coverageThreshold, dominantThreshold, onlyLatestPerYear])
+  }, [scanReleases, coverageThreshold, dominantThreshold, onlyLatestPerYear, hideUnchanged])
 
   // 选中默认全选
   useEffect(() => {
@@ -1087,6 +1094,15 @@ export function WaybackPage() {
                     />
                     每年只保留最新 release
                   </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={hideUnchanged}
+                      onChange={(e) => setHideUnchanged(e.target.checked)}
+                      className="size-3.5"
+                    />
+                    隐藏无变化版本
+                  </label>
                 </div>
 
                 <div className="flex items-center gap-2 text-xs">
@@ -1117,16 +1133,18 @@ export function WaybackPage() {
                   {filteredReleases.length === 0 ? (
                     <div className="py-3 text-center text-muted-foreground">无符合条件的 release</div>
                   ) : (
-                    filteredReleases.map((r) => {
+                    filteredReleases.map((r, idx) => {
                       const cov = Math.round((r.coverage_ratio ?? 0) * 100)
                       const dom = Math.round((r.dominant_ratio ?? 0) * 100)
+                      const nextRelease = filteredReleases[idx + 1]
+                      const isUnchanged = nextRelease && r.dominant_capture_date === nextRelease.dominant_capture_date
                       const dotColor = (r.source_name ?? '').includes('Vivid')
                         ? '#4caf50'
                         : (r.source_name ?? '').includes('Maxar')
                           ? '#2196f3'
                           : '#9e9e9e'
                       return (
-                        <label key={r.release_id} className="flex cursor-pointer items-start gap-2">
+                        <label key={r.release_id} className={`flex cursor-pointer items-start gap-2${isUnchanged ? ' opacity-45' : ''}`}>
                           <input
                             type="checkbox"
                             checked={incSelected.has(r.release_id)}
@@ -1154,7 +1172,9 @@ export function WaybackPage() {
                               {r.captures.length > 1 && ` · 共 ${r.captures.length} 个日期`}
                             </div>
                           </span>
-                          <span className="shrink-0 text-muted-foreground">覆盖 {cov}%</span>
+                          <span className="shrink-0 text-muted-foreground">
+                            {isUnchanged ? '无新影像' : `区域覆盖 ${cov}%`}
+                          </span>
                         </label>
                       )
                     })

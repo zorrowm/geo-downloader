@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -23,6 +23,8 @@ import { SourcesDialog } from '@/features/sources/sources-dialog'
 import { AboutDialog } from '@/features/about/about-dialog'
 import { getSettings, getSystemMemory, saveSettings } from './settings-api'
 import { TileCacheSection } from './tile-cache-section'
+import { useImageryParamsStore } from '@/store/imagery-params-store'
+import { isTauriRuntime } from '@/lib/tauri'
 import type { AppSettings } from '@/types/api'
 
 const FORMAT_OPTIONS = [
@@ -140,6 +142,29 @@ export function SettingsPanel() {
     if (settingsQuery.data) reset(fromAppSettings(settingsQuery.data))
   }, [settingsQuery.data, reset])
 
+  const isDirtyRef = useRef(isDirty)
+  isDirtyRef.current = isDirty
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    let unlisten: (() => void) | undefined
+    ;(async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      const appWindow = getCurrentWindow()
+      unlisten = await appWindow.onCloseRequested(async (event) => {
+        if (isDirtyRef.current) {
+          const { ask } = await import('@tauri-apps/plugin-dialog')
+          const ok = await ask('设置有未保存的更改，确定要退出吗？', {
+            title: '未保存更改',
+            kind: 'warning',
+          })
+          if (!ok) event.preventDefault()
+        }
+      })
+    })()
+    return () => { unlisten?.() }
+  }, [])
+
   const proxyEnabled = useWatch({ control, name: 'proxy_enabled' })
   const debugMode = useWatch({ control, name: 'debug_mode' })
   const allowInvalidCerts = useWatch({ control, name: 'allow_invalid_certs' })
@@ -157,6 +182,10 @@ export function SettingsPanel() {
       toast.success('设置已保存')
       queryClient.invalidateQueries({ queryKey: ['settings'] })
       queryClient.invalidateQueries({ queryKey: ['tile-cache-stats'] })
+      const prevFormat = settingsQuery.data?.default_format
+      if (values.default_format !== prevFormat) {
+        useImageryParamsStore.getState().set({ format: values.default_format })
+      }
       reset(values)
     },
     onError: (err: unknown) => {
