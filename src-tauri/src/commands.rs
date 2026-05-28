@@ -3749,6 +3749,60 @@ pub async fn cache_put_tile(req: CachePutTileRequest) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+pub struct FetchAndCacheTileRequest {
+    pub url: String,
+    pub source: String,
+    pub z: u8,
+    pub x: u32,
+    pub y: u32,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub url_template: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[tauri::command]
+pub async fn fetch_and_cache_tile(req: FetchAndCacheTileRequest) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(config::allow_invalid_certs())
+        .timeout(std::time::Duration::from_secs(config::TIMEOUT_SECS))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&req.url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/png")
+        .to_string();
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
+        return Ok(());
+    }
+    let src = SourceKey::new(req.source);
+    let coord = TileCoord { z: req.z, x: req.x, y: req.y };
+    let fmt = req.format.unwrap_or_else(|| mime_to_format(&content_type).to_string());
+    let info = SourceInfo {
+        display_name: req.display_name.unwrap_or_default(),
+        url_template: req.url_template.unwrap_or_default(),
+        format: fmt,
+        ..Default::default()
+    };
+    let tile = StoredTile { bytes: bytes.to_vec(), content_type };
+    tokio::task::spawn_blocking(move || {
+        tile_cache::Store::global().put(&src, coord, tile, Some(info))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn cache_stats() -> Result<CacheStatsResponse, String> {
     let cfg = tile_cache::get_config();

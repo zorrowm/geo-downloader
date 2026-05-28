@@ -104,30 +104,43 @@ const CachedTileLayerImpl = L.TileLayer.extend({
     coords: L.Coords,
   ): Promise<void> {
     const url = this.getTileUrl(coords)
-    let blob: Blob
+    let blob: Blob | null = null
     try {
       const resp = await fetch(url, { cache: 'force-cache' })
-      if (!resp.ok) return
-      blob = await resp.blob()
+      if (resp.ok) blob = await resp.blob()
     } catch {
-      return
+      // CORS or network error — fall through to backend fetch
     }
-    if (blob.size === 0 || blob.size > 4 * 1024 * 1024) return
-    const base64 = await blobToBase64(blob)
-    if (!base64) return
-    await invokeCommand('cache_put_tile', {
-      req: {
-        source: this._cacheSourceKey,
-        z: coords.z,
-        x: coords.x,
-        y: coords.y,
-        contentType: blob.type || 'image/png',
-        base64,
-        displayName: this._cacheDisplayName,
-        urlTemplate: this._cacheUrlTemplate,
-        format: this._cacheFormat,
-      },
-    })
+    if (blob && blob.size > 0 && blob.size <= 4 * 1024 * 1024) {
+      const base64 = await blobToBase64(blob)
+      if (!base64) return
+      await invokeCommand('cache_put_tile', {
+        req: {
+          source: this._cacheSourceKey,
+          z: coords.z,
+          x: coords.x,
+          y: coords.y,
+          contentType: blob.type || 'image/png',
+          base64,
+          displayName: this._cacheDisplayName,
+          urlTemplate: this._cacheUrlTemplate,
+          format: this._cacheFormat,
+        },
+      })
+    } else {
+      await invokeCommand('fetch_and_cache_tile', {
+        req: {
+          url,
+          source: this._cacheSourceKey,
+          z: coords.z,
+          x: coords.x,
+          y: coords.y,
+          displayName: this._cacheDisplayName,
+          urlTemplate: this._cacheUrlTemplate,
+          format: this._cacheFormat,
+        },
+      })
+    }
   },
 })
 

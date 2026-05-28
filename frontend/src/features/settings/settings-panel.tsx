@@ -182,6 +182,8 @@ export function SettingsPanel() {
       toast.success('设置已保存')
       queryClient.invalidateQueries({ queryKey: ['settings'] })
       queryClient.invalidateQueries({ queryKey: ['tile-cache-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['tile-sources-merged'] })
+      queryClient.invalidateQueries({ queryKey: ['builtin-sources'] })
       const prevFormat = settingsQuery.data?.default_format
       if (values.default_format !== prevFormat) {
         useImageryParamsStore.getState().set({ format: values.default_format })

@@ -142,6 +142,7 @@ pub fn run() {
             // 瓦片缓存
             commands::cache_get_tile,
             commands::cache_put_tile,
+            commands::fetch_and_cache_tile,
             commands::cache_stats,
             commands::cache_clear,
             commands::cache_set_max_size_mb,

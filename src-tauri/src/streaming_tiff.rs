@@ -2,8 +2,8 @@
 //! 逐行写入瓦片行，内存仅需一行瓦片宽度，支持超大图像导出。
 //! 支持 RGB（3通道）和 RGBA（4通道，多边形裁剪时使用）。
 //! M5: strip 内瓦片解码使用 rayon 并行，8核机器加速 4-6×。
-//! Issue #27: 跨 strip 并行解码/压缩 + bounded ring buffer（默认 64 MB），
-//!          IO 与 CPU 重叠，1.5~2× 大区导出加速。
+//! Issue #27: 串行遍历 strip + 每 strip 内 rayon 并行解码/压缩，
+//!          writer 线程异步落盘实现 IO/CPU 重叠。
 
 use crate::config::TILE_SIZE;
 use crate::merger::{self, PolygonPoint, TileSource};
@@ -137,14 +137,11 @@ pub fn merge_and_export_streaming_with_budget(
     let ifd_offset_pos = stream_pos(&mut w)?;
     write_u64(&mut w, 0)?;                       // IFD offset placeholder (8 bytes)
 
-    // ===== 2. 跨 strip 并行流水线（Issue #27）=====
-    // 解码 / 掩码 / 压缩在 rayon 线程池并行进行；写入线程按 strip_idx 顺序落盘。
-    // bounded channel 做反压，防止 budget 被撑破。
+    // ===== 2. 流水线：strip 内 rayon 并行 + writer 线程异步落盘 =====
     let strip_byte_size = strip_byte_size_u64 as usize;
     let slot_count = pipeline_slots(strip_byte_size_u64, budget_bytes, num_strips);
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<(u32, Vec<u8>)>(slot_count);
-    let compression_owned = compression.to_string();
 
     let writer_handle = std::thread::spawn(move || -> Result<(BufWriter<std::fs::File>, Vec<u64>, Vec<u64>), String> {
         let mut strip_offsets: Vec<u64> = vec![0; num_strips as usize];
@@ -173,116 +170,109 @@ pub fn merge_and_export_streaming_with_budget(
         Ok((w, strip_offsets, strip_counts))
     });
 
-    let has_mask_copy = has_mask;
     let channels_u = channels as usize;
     let width_u = width as usize;
-    let pixel_rings_ref = &pixel_rings;
-    let tile_files_ref = tile_files;
-    let compression_ref = compression_owned.as_str();
 
-    // 生产者：每个 strip 独立 rayon 任务，解码 + 掩码 + 压缩 → send
-    let producer_result: Result<(), String> = (0..num_strips)
-        .into_par_iter()
-        .try_for_each_with(tx.clone(), |tx, strip_idx| -> Result<(), String> {
-            let tile_y = y_min + strip_idx;
+    // 生产者：串行遍历 strip，每个 strip 内部 rayon 并行解码瓦片。
+    // sync_channel 实现 IO/CPU 重叠；同一时刻仅 1 个 strip 缓冲在内存中，避免 OOM。
+    let producer_result: Result<(), String> = (|| {
+      for strip_idx in 0..num_strips {
+        let tile_y = y_min + strip_idx;
 
-            // 初始化一行 strip 缓冲（RGB 背景白 / RGBA 透明）
-            let mut strip = if has_mask_copy {
-                vec![0u8; strip_byte_size]
-            } else {
-                vec![255u8; strip_byte_size]
-            };
+        let mut strip = if has_mask {
+            vec![0u8; strip_byte_size]
+        } else {
+            vec![255u8; strip_byte_size]
+        };
 
-            // strip 内部瓦片解码仍走 rayon 并行（M5 既有逻辑），二维并行
-            let tile_xs: Vec<u32> = (x_min..=x_max).collect();
-            let decoded: Vec<Option<(usize, image::RgbImage)>> = tile_xs
-                .par_iter()
-                .map(|&tile_x| {
-                    let source = tile_files_ref.get(&(tile_x, tile_y))?;
-                    let bytes = source.bytes().ok()?;
-                    let img = image::load_from_memory(&bytes).ok()?;
-                    let px = ((tile_x - x_min) * TILE_SIZE) as usize;
-                    Some((px, img.to_rgb8()))
-                })
-                .collect();
+        let tile_xs: Vec<u32> = (x_min..=x_max).collect();
+        let decoded: Vec<Option<(usize, image::RgbImage)>> = tile_xs
+            .par_iter()
+            .map(|&tile_x| {
+                let source = tile_files.get(&(tile_x, tile_y))?;
+                let bytes = source.bytes().ok()?;
+                let img = image::load_from_memory(&bytes).ok()?;
+                let px = ((tile_x - x_min) * TILE_SIZE) as usize;
+                Some((px, img.to_rgb8()))
+            })
+            .collect();
 
-            for item in &decoded {
-                if let Some((px, rgb)) = item {
-                    let tile_w = rgb.width().min(TILE_SIZE) as usize;
-                    let tile_h = rgb.height().min(TILE_SIZE) as usize;
-                    let raw = rgb.as_raw();
+        for item in &decoded {
+            if let Some((px, rgb)) = item {
+                let tile_w = rgb.width().min(TILE_SIZE) as usize;
+                let tile_h = rgb.height().min(TILE_SIZE) as usize;
+                let raw = rgb.as_raw();
 
-                    for row in 0..tile_h {
-                        let src_start = row * rgb.width() as usize * 3;
-                        for col in 0..tile_w {
-                            let si = src_start + col * 3;
-                            let di = row * width_u * channels_u + (px + col) * channels_u;
-                            if si + 2 < raw.len() && di + channels_u - 1 < strip.len() {
-                                strip[di] = raw[si];
-                                strip[di + 1] = raw[si + 1];
-                                strip[di + 2] = raw[si + 2];
-                                if has_mask_copy {
-                                    strip[di + 3] = 255;
-                                }
+                for row in 0..tile_h {
+                    let src_start = row * rgb.width() as usize * 3;
+                    for col in 0..tile_w {
+                        let si = src_start + col * 3;
+                        let di = row * width_u * channels_u + (px + col) * channels_u;
+                        if si + 2 < raw.len() && di + channels_u - 1 < strip.len() {
+                            strip[di] = raw[si];
+                            strip[di + 1] = raw[si + 1];
+                            strip[di + 2] = raw[si + 2];
+                            if has_mask {
+                                strip[di + 3] = 255;
                             }
                         }
                     }
                 }
             }
-            drop(decoded);
+        }
+        drop(decoded);
 
-            // RGBA 多边形掩码（扫描线）
-            if has_mask_copy && !pixel_rings_ref.is_empty() {
-                let strip_y_start = (tile_y - y_min) * TILE_SIZE;
-                for local_row in 0..TILE_SIZE {
-                    let global_y = (strip_y_start + local_row) as i32;
-                    let mut intersections: Vec<i32> = Vec::new();
-                    for ring in pixel_rings_ref {
-                        let n = ring.len();
-                        let mut j = n - 1;
-                        for i in 0..n {
-                            let (xi, yi) = ring[i];
-                            let (xj, yj) = ring[j];
-                            if (yi > global_y) != (yj > global_y) {
-                                let x_int = (xj - xi) * (global_y - yi) / (yj - yi) + xi;
-                                intersections.push(x_int);
-                            }
-                            j = i;
+        if has_mask && !pixel_rings.is_empty() {
+            let strip_y_start = (tile_y - y_min) * TILE_SIZE;
+            for local_row in 0..TILE_SIZE {
+                let global_y = (strip_y_start + local_row) as i32;
+                let mut intersections: Vec<i32> = Vec::new();
+                for ring in &pixel_rings {
+                    let n = ring.len();
+                    let mut j = n - 1;
+                    for i in 0..n {
+                        let (xi, yi) = ring[i];
+                        let (xj, yj) = ring[j];
+                        if (yi > global_y) != (yj > global_y) {
+                            let x_int = (xj - xi) * (global_y - yi) / (yj - yi) + xi;
+                            intersections.push(x_int);
                         }
+                        j = i;
                     }
-                    intersections.sort_unstable();
+                }
+                intersections.sort_unstable();
 
-                    let row_offset = local_row as usize * width_u * channels_u;
-                    for x in 0..width_u {
-                        let idx = row_offset + x * channels_u + 3;
-                        if idx < strip.len() {
-                            strip[idx] = 0;
-                        }
+                let row_offset = local_row as usize * width_u * channels_u;
+                for x in 0..width_u {
+                    let idx = row_offset + x * channels_u + 3;
+                    if idx < strip.len() {
+                        strip[idx] = 0;
                     }
-                    for chunk in intersections.chunks(2) {
-                        if chunk.len() == 2 {
-                            let x_start = (chunk[0].max(0) as usize).min(width_u);
-                            let x_end = (chunk[1].max(0) as usize).min(width_u);
-                            for x in x_start..x_end {
-                                let idx = row_offset + x * channels_u + 3;
-                                if idx < strip.len() {
-                                    strip[idx] = 255;
-                                }
+                }
+                for chunk in intersections.chunks(2) {
+                    if chunk.len() == 2 {
+                        let x_start = (chunk[0].max(0) as usize).min(width_u);
+                        let x_end = (chunk[1].max(0) as usize).min(width_u);
+                        for x in x_start..x_end {
+                            let idx = row_offset + x * channels_u + 3;
+                            if idx < strip.len() {
+                                strip[idx] = 255;
                             }
                         }
                     }
                 }
             }
+        }
 
-            // 生产者内压缩，让 CPU 重负载分散到 rayon 线程池
-            let (compressed, _tag) = compress_strip(&strip, compression_ref)?;
-            tx.send((strip_idx, compressed))
-                .map_err(|e| format!("发送 strip 失败: {}", e))
-        });
+        let (compressed, _tag) = compress_strip(&strip, compression)?;
+        tx.send((strip_idx, compressed))
+            .map_err(|e| format!("发送 strip 失败: {}", e))?;
+      }
+      Ok(())
+    })();
 
     drop(tx);
 
-    // 写入线程收敛；优先返回生产者错误，次优返回写入器错误
     let writer_res = writer_handle.join().map_err(|_| "写入线程异常退出".to_string())?;
     producer_result?;
     let (mut w, strip_offsets, strip_counts) = writer_res?;
@@ -539,10 +529,9 @@ pub fn merge_and_export_dem_streaming_with_budget(
     let ifd_offset_pos = stream_pos(&mut w)?;
     write_u64(&mut w, 0)?;
 
-    // ===== 2. 跨 strip 并行流水线（Issue #27）=====
+    // ===== 2. 流水线：strip 内 rayon 并行 + writer 线程异步落盘 =====
     let slot_count = pipeline_slots(strip_byte_size_u64, budget_bytes, num_strips);
     let (tx, rx) = std::sync::mpsc::sync_channel::<(u32, Vec<u8>)>(slot_count);
-    let compression_owned = compression.to_string();
 
     let writer_handle = std::thread::spawn(move || -> Result<(BufWriter<std::fs::File>, Vec<u64>, Vec<u64>), String> {
         let mut strip_offsets: Vec<u64> = vec![0; num_strips as usize];
@@ -571,109 +560,103 @@ pub fn merge_and_export_dem_streaming_with_budget(
 
     let nodata_bytes = NODATA.to_le_bytes();
     let width_u = width as usize;
-    let pixel_rings_ref = &pixel_rings;
-    let tile_files_ref = tile_files;
-    let compression_ref = compression_owned.as_str();
 
-    let producer_result: Result<(), String> = (0..num_strips)
-        .into_par_iter()
-        .try_for_each_with(tx.clone(), |tx, strip_idx| -> Result<(), String> {
-            let tile_y = y_min + strip_idx;
+    let producer_result: Result<(), String> = (|| {
+      for strip_idx in 0..num_strips {
+        let tile_y = y_min + strip_idx;
 
-            // 初始化为 NoData
-            let mut strip = vec![0u8; strip_byte_size];
-            for chunk in strip.chunks_exact_mut(4) {
-                chunk.copy_from_slice(&nodata_bytes);
-            }
+        let mut strip = vec![0u8; strip_byte_size];
+        for chunk in strip.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&nodata_bytes);
+        }
 
-            // 并行解码本行所有瓦片
-            let tile_xs: Vec<u32> = (x_min..=x_max).collect();
-            let decoded: Vec<Option<(usize, image::RgbImage)>> = tile_xs
-                .par_iter()
-                .map(|&tile_x| {
-                    let source = tile_files_ref.get(&(tile_x, tile_y))?;
-                    let bytes = source.bytes().ok()?;
-                    let rgb = decode_terrarium_tile(&bytes).ok()?;
-                    let px = ((tile_x - x_min) * TILE_SIZE) as usize;
-                    Some((px, rgb))
-                })
-                .collect();
+        let tile_xs: Vec<u32> = (x_min..=x_max).collect();
+        let decoded: Vec<Option<(usize, image::RgbImage)>> = tile_xs
+            .par_iter()
+            .map(|&tile_x| {
+                let source = tile_files.get(&(tile_x, tile_y))?;
+                let bytes = source.bytes().ok()?;
+                let rgb = decode_terrarium_tile(&bytes).ok()?;
+                let px = ((tile_x - x_min) * TILE_SIZE) as usize;
+                Some((px, rgb))
+            })
+            .collect();
 
-            // RGB → Float32 高程
-            for item in &decoded {
-                if let Some((px, rgb)) = item {
-                    let tile_w = rgb.width().min(TILE_SIZE) as usize;
-                    let tile_h = rgb.height().min(TILE_SIZE) as usize;
-                    let raw = rgb.as_raw();
+        for item in &decoded {
+            if let Some((px, rgb)) = item {
+                let tile_w = rgb.width().min(TILE_SIZE) as usize;
+                let tile_h = rgb.height().min(TILE_SIZE) as usize;
+                let raw = rgb.as_raw();
 
-                    for row in 0..tile_h {
-                        let src_row_start = row * rgb.width() as usize * 3;
-                        for col in 0..tile_w {
-                            let si = src_row_start + col * 3;
-                            if si + 2 >= raw.len() { continue; }
-                            let r = raw[si] as f32;
-                            let g = raw[si + 1] as f32;
-                            let b = raw[si + 2] as f32;
-                            let elev = (r * 256.0 + g + b / 256.0) - 32768.0;
-                            let di = (row * width_u + (px + col)) * 4;
-                            if di + 3 < strip.len() {
-                                strip[di..di + 4].copy_from_slice(&elev.to_le_bytes());
-                            }
+                for row in 0..tile_h {
+                    let src_row_start = row * rgb.width() as usize * 3;
+                    for col in 0..tile_w {
+                        let si = src_row_start + col * 3;
+                        if si + 2 >= raw.len() { continue; }
+                        let r = raw[si] as f32;
+                        let g = raw[si + 1] as f32;
+                        let b = raw[si + 2] as f32;
+                        let elev = (r * 256.0 + g + b / 256.0) - 32768.0;
+                        let di = (row * width_u + (px + col)) * 4;
+                        if di + 3 < strip.len() {
+                            strip[di..di + 4].copy_from_slice(&elev.to_le_bytes());
                         }
                     }
                 }
             }
-            drop(decoded);
+        }
+        drop(decoded);
 
-            // 多边形掩码：环外像素强制为 NoData
-            if !pixel_rings_ref.is_empty() {
-                let strip_y_start = (tile_y - y_min) * TILE_SIZE;
-                for local_row in 0..TILE_SIZE {
-                    let global_y = (strip_y_start + local_row) as i32;
+        if !pixel_rings.is_empty() {
+            let strip_y_start = (tile_y - y_min) * TILE_SIZE;
+            for local_row in 0..TILE_SIZE {
+                let global_y = (strip_y_start + local_row) as i32;
 
-                    let mut intersections: Vec<i32> = Vec::new();
-                    for ring in pixel_rings_ref {
-                        let n = ring.len();
-                        let mut j = n - 1;
-                        for i in 0..n {
-                            let (xi, yi) = ring[i];
-                            let (xj, yj) = ring[j];
-                            if (yi > global_y) != (yj > global_y) {
-                                let x_int = (xj - xi) * (global_y - yi) / (yj - yi) + xi;
-                                intersections.push(x_int);
-                            }
-                            j = i;
+                let mut intersections: Vec<i32> = Vec::new();
+                for ring in &pixel_rings {
+                    let n = ring.len();
+                    let mut j = n - 1;
+                    for i in 0..n {
+                        let (xi, yi) = ring[i];
+                        let (xj, yj) = ring[j];
+                        if (yi > global_y) != (yj > global_y) {
+                            let x_int = (xj - xi) * (global_y - yi) / (yj - yi) + xi;
+                            intersections.push(x_int);
                         }
+                        j = i;
                     }
-                    intersections.sort_unstable();
+                }
+                intersections.sort_unstable();
 
-                    let mut inside = vec![false; width_u];
-                    let mut k = 0;
-                    while k + 1 < intersections.len() {
-                        let x0 = intersections[k].max(0).min(width as i32) as usize;
-                        let x1 = intersections[k + 1].max(0).min(width as i32) as usize;
-                        for x in x0..x1 {
-                            if x < inside.len() { inside[x] = true; }
-                        }
-                        k += 2;
+                let mut inside = vec![false; width_u];
+                let mut k = 0;
+                while k + 1 < intersections.len() {
+                    let x0 = intersections[k].max(0).min(width as i32) as usize;
+                    let x1 = intersections[k + 1].max(0).min(width as i32) as usize;
+                    for x in x0..x1 {
+                        if x < inside.len() { inside[x] = true; }
                     }
+                    k += 2;
+                }
 
-                    let row_offset = local_row as usize * width_u * 4;
-                    for x in 0..width_u {
-                        if !inside[x] {
-                            let di = row_offset + x * 4;
-                            if di + 3 < strip.len() {
-                                strip[di..di + 4].copy_from_slice(&nodata_bytes);
-                            }
+                let row_offset = local_row as usize * width_u * 4;
+                for x in 0..width_u {
+                    if !inside[x] {
+                        let di = row_offset + x * 4;
+                        if di + 3 < strip.len() {
+                            strip[di..di + 4].copy_from_slice(&nodata_bytes);
                         }
                     }
                 }
             }
+        }
 
-            let (compressed, _) = compress_strip(&strip, compression_ref)?;
-            tx.send((strip_idx, compressed))
-                .map_err(|e| format!("发送 strip 失败: {}", e))
-        });
+        let (compressed, _) = compress_strip(&strip, compression)?;
+        tx.send((strip_idx, compressed))
+            .map_err(|e| format!("发送 strip 失败: {}", e))?;
+      }
+      Ok(())
+    })();
 
     drop(tx);
 
