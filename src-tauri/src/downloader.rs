@@ -375,6 +375,9 @@ impl TileDownloader {
             .collect();
         let _download_guard = active_downloads::DownloadGuard::new(&active_src_key, &active_coords);
 
+        // 缓存写入失败计数器（put 在 future 闭包内异步调用，主循环通过 Arc 读取）
+        let put_fail_count = Arc::new(AtomicU32::new(0));
+
         let all_futures = need_download.into_iter().map(|tile| {
             let url = self.get_tile_url(&tile);
             let headers = self.get_headers();
@@ -385,6 +388,7 @@ impl TileDownloader {
             let cs = cache_src.clone();
             let ci = cache_info.clone();
             let ask = active_src_key.clone();
+            let pfc = put_fail_count.clone();
 
             async move {
                 let file_path = td.join(format!("{}_{}.png", tile.x, tile.y));
@@ -427,7 +431,10 @@ impl TileDownloader {
                                 bytes,
                                 content_type: Self::format_to_mime(fmt),
                             };
-                            let _ = tcache::Store::global().put(&cs, coord, stored, Some((*ci).clone()));
+                            if let Err(e) = tcache::Store::global().put(&cs, coord, stored, Some((*ci).clone())) {
+                                pfc.fetch_add(1, Ordering::Relaxed);
+                                log::warn!("tile_cache put failed src={} z={} x={} y={}: {}", cs.as_str(), coord.z, coord.x, coord.y, e);
+                            }
                         }
                     }
                 }
@@ -440,6 +447,10 @@ impl TileDownloader {
         let mut stall_timer = tokio::time::interval(Duration::from_secs(3));
         stall_timer.tick().await; // 跳过第一个立即触发的 tick
         let mut no_data_count = 0u32;
+        // 一次性告警：no_data 占比过高时主动提示用户图源可能无覆盖
+        let mut high_nodata_warned = false;
+        // 一次性告警：缓存写入失败次数过多
+        let mut high_putfail_warned = false;
 
         loop {
             // 暂停检查：如果已暂停，等待恢复后再继续拉取新瓦片
@@ -465,6 +476,29 @@ impl TileDownloader {
                             if e == "no_data" {
                                 no_data_count += 1;
                                 completed += 1;
+                                // 一次性触发：no_data 占已完成比例 >= 50% 且至少 100 张
+                                if !high_nodata_warned
+                                    && no_data_count >= 100
+                                    && no_data_count.saturating_mul(2) >= completed
+                                {
+                                    high_nodata_warned = true;
+                                    let pct = if completed > 0 {
+                                        no_data_count.saturating_mul(100) / completed
+                                    } else {
+                                        0
+                                    };
+                                    progress_callback(DownloadProgress {
+                                        total,
+                                        completed,
+                                        failed,
+                                        no_data: no_data_count,
+                                        browse_filled: active_downloads::browse_filled_count() as u32,
+                                        status: format!(
+                                            "已有 {} 张瓦片返回 404（占已完成 {}%），图源在此区域/级别可能无覆盖，建议降低缩放级别后重试",
+                                            no_data_count, pct
+                                        ),
+                                    });
+                                }
                             } else {
                                 failed_tiles.push(_tile);
                                 failed += 1;
@@ -485,6 +519,19 @@ impl TileDownloader {
                         progress_callback(DownloadProgress {
                             total, completed, failed, no_data: no_data_count, browse_filled: active_downloads::browse_filled_count() as u32, status,
                         });
+                        // 一次性触发：缓存写入失败 >= 50 次时主动告警
+                        let pf = put_fail_count.load(Ordering::Relaxed);
+                        if !high_putfail_warned && pf >= 50 {
+                            high_putfail_warned = true;
+                            progress_callback(DownloadProgress {
+                                total, completed, failed, no_data: no_data_count,
+                                browse_filled: active_downloads::browse_filled_count() as u32,
+                                status: format!(
+                                    "缓存写入失败累计 {} 次，瓦片可能未存入缓存数据库（详见控制台日志）",
+                                    pf
+                                ),
+                            });
+                        }
                     }
                 }
                 _ = stall_timer.tick() => {
@@ -548,6 +595,7 @@ impl TileDownloader {
                 let td = temp_dir.clone();
                 let cs = cache_src.clone();
                 let ci = cache_info.clone();
+                let pfc = put_fail_count.clone();
 
                 async move {
                     let file_path = td.join(format!("{}_{}.png", tile.x, tile.y));
@@ -580,7 +628,10 @@ impl TileDownloader {
                                     bytes,
                                     content_type: Self::format_to_mime(fmt),
                                 };
-                                let _ = tcache::Store::global().put(&cs, coord, stored, Some((*ci).clone()));
+                                if let Err(e) = tcache::Store::global().put(&cs, coord, stored, Some((*ci).clone())) {
+                                    pfc.fetch_add(1, Ordering::Relaxed);
+                                    log::warn!("tile_cache put failed (retry) src={} z={} x={} y={}: {}", cs.as_str(), coord.z, coord.x, coord.y, e);
+                                }
                             }
                         }
                     }

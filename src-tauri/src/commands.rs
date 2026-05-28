@@ -580,8 +580,11 @@ struct ZoomLevelResult {
     failed_count: u32,
     no_data: u32,
     pyramid_built: bool,
-    /// 成功瓦片数（Issue #31）：actual_count - failed_count，包含 no_data
-    /// 因为 no_data 是预期内的"该区域无数据"，不计入失败统计
+    /// 有数据的瓦片数（Issue #31）：`actual_count - failed_count`，其中 `failed_count`
+    /// 实际上包含真失败 + no_data（因为 `tile_files` 只装有图像数据的瓦片）。
+    /// 即：本字段 = 网络下载成功 + 缓存命中，**不含 no_data**。
+    /// 这样设计是为了让"全 404 区域"也能被 `min_export_success_ratio` 阈值拦截，
+    /// 避免生成大片留白的 GeoTIFF。
     success_count: u32,
     /// 该级别是否已导出（Issue #31）：成功率 < 阈值时跳过导出停留为 Paused
     exported: bool,
@@ -716,11 +719,15 @@ async fn execute_zoom_level(
                 format!("下载完成 {}/{}", progress.completed, progress.total)
             }
         } else if progress.status == "downloading" {
-            if progress.browse_filled > 0 {
+            let mut s = if progress.browse_filled > 0 {
                 format!("下载中 {}/{}（浏览补齐 {}）", progress.completed, progress.total, progress.browse_filled)
             } else {
                 format!("下载中 {}/{}", progress.completed, progress.total)
+            };
+            if progress.no_data > 0 {
+                s.push_str(&format!("，无数据 {}", progress.no_data));
             }
+            s
         } else {
             format!("{} ({}/{})", progress.status, progress.completed, progress.total)
         };
@@ -744,7 +751,12 @@ async fn execute_zoom_level(
         // 每10%记录一次日志
         if p - last_log_pct >= 10.0 {
             last_log_pct = (p / 10.0).floor() * 10.0;
-            if let Some(log) = tm_c.append_log(&tid, "INFO", &format!("下载进度 {:.0}% ({}/{})", p, progress.completed, progress.total)) {
+            let log_line = if progress.no_data > 0 {
+                format!("下载进度 {:.0}% ({}/{}，无数据 {})", p, progress.completed, progress.total, progress.no_data)
+            } else {
+                format!("下载进度 {:.0}% ({}/{})", p, progress.completed, progress.total)
+            };
+            if let Some(log) = tm_c.append_log(&tid, "INFO", &log_line) {
                 let _ = app_c.emit(&format!("task-log-{}", tid), &log);
             }
         }
@@ -926,7 +938,9 @@ async fn execute_zoom_level(
     // - success_ratio < min_ratio：跳过导出，缓存保留，标 exported=false（上层会 mark Paused 待用户决策）
     // - 否则正常导出（即使有少量失败，仍走自动导出流水线，上层根据 failed_count 决定 Completed / CompletedWithGaps）
     //
-    // 注：no_data 视为预期成功（"该区域无数据"是正常情况，不应计入失败率分母失败侧）
+    // 注：这里的 success_count = tile_files.len()（有图像数据的瓦片），
+    // failed_count 实际包含真失败 + no_data。这样"全 404 无覆盖"任务也能被阈值拦截，
+    // 避免直接生成大片留白的 GeoTIFF。
     let level_success_count = actual_count.saturating_sub(failed_count);
     let level_success_ratio = if actual_count > 0 {
         level_success_count as f32 / actual_count as f32

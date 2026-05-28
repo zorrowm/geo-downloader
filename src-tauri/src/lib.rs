@@ -165,6 +165,43 @@ pub fn run() {
                 }
             }
 
+            // 启动时异步清理上次运行残留的 tif-dl-* 临时目录（仅清 >24h 老的，
+            // 避免误删用户当前还在用的"完成但有缺块（CompletedWithGaps）"任务的 temp）
+            std::thread::spawn(|| {
+                let temp_root = std::env::temp_dir();
+                let rd = match std::fs::read_dir(&temp_root) {
+                    Ok(rd) => rd,
+                    Err(_) => return,
+                };
+                let now = std::time::SystemTime::now();
+                let mut cleaned = 0u32;
+                for entry in rd.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if !name_str.starts_with("tif-dl-") {
+                        continue;
+                    }
+                    let md = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    if !md.is_dir() {
+                        continue;
+                    }
+                    let too_old = md.modified().ok().and_then(|mtime| {
+                        now.duration_since(mtime).ok().map(|d| d.as_secs() > 86400)
+                    }).unwrap_or(false);
+                    if too_old {
+                        if std::fs::remove_dir_all(entry.path()).is_ok() {
+                            cleaned += 1;
+                        }
+                    }
+                }
+                if cleaned > 0 {
+                    log::info!("[startup] 清理了 {} 个 >24h 的孤儿临时目录 (tif-dl-*)", cleaned);
+                }
+            });
+
             // 系统托盘右键菜单
             let show = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
