@@ -271,7 +271,7 @@ pub fn filter_result_by_date(
 fn save_cache(result: &WaybackScanResult) -> Result<(), String> {
     let path = cache_path(&result.bbox, result.zoom_min, result.zoom_max, &result.scan_mode)?;
     let json = serde_json::to_vec(result).map_err(|e| format!("序列化缓存失败: {}", e))?;
-    std::fs::write(&path, json).map_err(|e| format!("写入缓存失败: {}", e))?;
+    crate::fs_util::atomic_write(&path, &json).map_err(|e| format!("写入缓存失败: {}", e))?;
     prune_cache_lru().ok();
     Ok(())
 }

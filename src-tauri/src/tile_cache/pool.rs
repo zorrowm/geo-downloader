@@ -238,7 +238,7 @@ impl Store {
                 .metadata()
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let src = SourceKey(stem);
+            let src = SourceKey::from_slug(stem);
             let handle = match self.handle(&src) {
                 Ok(h) => h,
                 Err(_) => continue,
@@ -321,7 +321,7 @@ impl Store {
             if current <= max_total_bytes {
                 break;
             }
-            let key = SourceKey(s.source.clone());
+            let key = SourceKey::from_slug(s.source.clone());
             let f = self.clear(Some(&key)).unwrap_or(0);
             current = current.saturating_sub(f);
             freed += f;

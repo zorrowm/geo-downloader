@@ -24,10 +24,7 @@ pub fn merge_and_export_streaming_png(
     save_path: &Path,
     polygons: Option<&[Vec<PolygonPoint>]>,
 ) -> Result<u64, String> {
-    let cols = x_max - x_min + 1;
-    let rows = y_max - y_min + 1;
-    let width = cols * TILE_SIZE;
-    let height = rows * TILE_SIZE;
+    let (_cols, _rows, width, height) = crate::streaming_tiff::grid_dims(x_min, y_min, x_max, y_max)?;
 
     let has_mask = polygons.is_some();
     let channels: u32 = if has_mask { 4 } else { 3 };

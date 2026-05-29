@@ -178,6 +178,8 @@ export type TaskStatus =
   | 'pending'
   | 'downloading'
   | 'paused'
+  /** Issue #31：成功率过低，等待用户决策（补漏重试 / 强制导出） */
+  | 'pending_decision'
   | 'merging'
   | 'processing'
   | 'exporting'

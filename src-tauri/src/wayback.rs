@@ -86,7 +86,7 @@ fn persist_versions(versions: &[WaybackVersion]) {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(json) = serde_json::to_string(versions) {
-            let _ = std::fs::write(&path, json);
+            let _ = crate::fs_util::atomic_write(&path, json.as_bytes());
         }
     }
 }

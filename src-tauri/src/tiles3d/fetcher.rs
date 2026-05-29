@@ -89,7 +89,7 @@ impl Tiles3dFetcher {
                     .await
                     .map_err(|e| format!("读取 Ion 响应失败: {}", e))?;
 
-                log::info!("Ion endpoint raw: {}", &resp_text[..resp_text.len().min(2000)]);
+                log::info!("Ion endpoint raw: {}", resp_text.chars().take(2000).collect::<String>());
 
                 let endpoint: IonEndpointResponse = serde_json::from_str(&resp_text)
                     .map_err(|e| format!("解析 Ion 响应失败: {}", e))?;
@@ -179,7 +179,7 @@ impl Tiles3dFetcher {
             status,
             content_type,
             text.len(),
-            &text[..text.len().min(300)]
+            text.chars().take(300).collect::<String>()
         );
 
         serde_json::from_str::<Tileset>(&text)
@@ -399,7 +399,8 @@ impl Tiles3dFetcher {
                             }
                             Err(e) => {
                                 failed.fetch_add(1, Ordering::Relaxed);
-                                log::warn!("下载失败: {} — {}", &url[url.len().saturating_sub(60)..], e);
+                                let url_tail: String = url.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+                                log::warn!("下载失败: …{} — {}", url_tail, e);
                             }
                         }
                     }));

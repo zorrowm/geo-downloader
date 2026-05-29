@@ -30,6 +30,33 @@ fn pipeline_slots(strip_byte_size: u64, budget_bytes: u64, num_strips: u32) -> u
     raw.min(num_strips.max(1) as usize)
 }
 
+/// 计算导出网格尺寸 (cols, rows, width_px, height_px)，并在入口拦截非法输入。
+/// 默认导出走 streaming 路径，这里返回 `Err` 而非裸算术：坐标反转 (x_max < x_min，
+/// 如反经线/swapped bounds) 会触发 u32 减法 panic；超大区域 `cols * TILE_SIZE` 会
+/// u32 乘法溢出 → 尺寸错乱写出损坏文件。返回 Err 让上层报"流式导出失败"而非崩溃/损坏。
+pub(crate) fn grid_dims(
+    x_min: u32,
+    y_min: u32,
+    x_max: u32,
+    y_max: u32,
+) -> Result<(u32, u32, u32, u32), String> {
+    if x_max < x_min || y_max < y_min {
+        return Err(format!(
+            "无效的瓦片范围: x[{}..{}] y[{}..{}]",
+            x_min, x_max, y_min, y_max
+        ));
+    }
+    let cols = x_max - x_min + 1;
+    let rows = y_max - y_min + 1;
+    let width = cols
+        .checked_mul(TILE_SIZE)
+        .ok_or_else(|| format!("导出宽度溢出: {} 列瓦片超出上限", cols))?;
+    let height = rows
+        .checked_mul(TILE_SIZE)
+        .ok_or_else(|| format!("导出高度溢出: {} 行瓦片超出上限", rows))?;
+    Ok((cols, rows, width, height))
+}
+
 /// LZW 压缩一个 strip（TIFF 规范：MSB 位序，最小码长 8，early code size switch）
 fn lzw_compress(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut encoder = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
@@ -89,10 +116,7 @@ pub fn merge_and_export_streaming_with_budget(
     polygons: Option<&[Vec<PolygonPoint>]>,
     budget_bytes: u64,
 ) -> Result<u64, String> {
-    let cols = x_max - x_min + 1;
-    let rows = y_max - y_min + 1;
-    let width = cols * TILE_SIZE;
-    let height = rows * TILE_SIZE;
+    let (_cols, rows, width, height) = grid_dims(x_min, y_min, x_max, y_max)?;
     let rows_per_strip = TILE_SIZE;
     let num_strips = rows; // 每行瓦片 = 一个 strip
 
@@ -300,6 +324,11 @@ pub fn merge_and_export_streaming_with_budget(
         write_u64(&mut w, cnt)?;
     }
 
+    // BigTIFF: 当只有 1 个 strip 时，1×LONG8=8 字节 ≤8，规范要求内联到 value 字段，
+    // 否则解析器会把外部偏移当作数据 → 文件损坏（单行瓦片导出场景）。
+    let strip_offsets_field = if num_strips == 1 { strip_offsets[0] } else { strip_offsets_offset };
+    let strip_counts_field = if num_strips == 1 { strip_counts[0] } else { strip_counts_offset };
+
     // GeoTIFF: 转换为 EPSG:3857 (Web Mercator) 米坐标
     let (west_m, south_m, east_m, north_m) = bounds_to_mercator(bounds);
     let x_res = (east_m - west_m) / width as f64;
@@ -347,10 +376,10 @@ pub fn merge_and_export_streaming_with_budget(
     write_bigtiff_entry(&mut w, 258, 3, bps_count, bps_inline)?;                    // BitsPerSample
     write_bigtiff_entry(&mut w, 259, 3, 1, comp_tag)?;                              // Compression
     write_bigtiff_entry(&mut w, 262, 3, 1, 2)?;                                     // PhotometricInterpretation = RGB
-    write_bigtiff_entry(&mut w, 273, 16, num_strips as u64, strip_offsets_offset)?;  // StripOffsets (LONG8)
+    write_bigtiff_entry(&mut w, 273, 16, num_strips as u64, strip_offsets_field)?;  // StripOffsets (LONG8)
     write_bigtiff_entry(&mut w, 277, 3, 1, channels as u64)?;                       // SamplesPerPixel
     write_bigtiff_entry(&mut w, 278, 4, 1, rows_per_strip as u64)?;                 // RowsPerStrip
-    write_bigtiff_entry(&mut w, 279, 16, num_strips as u64, strip_counts_offset)?;  // StripByteCounts (LONG8)
+    write_bigtiff_entry(&mut w, 279, 16, num_strips as u64, strip_counts_field)?;  // StripByteCounts (LONG8)
     write_bigtiff_entry(&mut w, 282, 5, 1, res_inline)?;                            // XResolution (inline 72/1)
     write_bigtiff_entry(&mut w, 283, 5, 1, res_inline)?;                            // YResolution (inline 72/1)
     write_bigtiff_entry(&mut w, 296, 3, 1, 2)?;                                     // ResolutionUnit = Inch
@@ -483,10 +512,7 @@ pub fn merge_and_export_dem_streaming_with_budget(
     polygons: Option<&[Vec<PolygonPoint>]>,
     budget_bytes: u64,
 ) -> Result<u64, String> {
-    let cols = x_max - x_min + 1;
-    let rows = y_max - y_min + 1;
-    let width = cols * TILE_SIZE;
-    let height = rows * TILE_SIZE;
+    let (_cols, rows, width, height) = grid_dims(x_min, y_min, x_max, y_max)?;
     let rows_per_strip = TILE_SIZE;
     let num_strips = rows;
     const NODATA: f32 = -9999.0;
@@ -677,6 +703,10 @@ pub fn merge_and_export_dem_streaming_with_budget(
         write_u64(&mut w, cnt)?;
     }
 
+    // BigTIFF: 单 strip 时 8 字节 ≤8，必须内联（否则单行 DEM 导出损坏）。
+    let strip_offsets_field = if num_strips == 1 { strip_offsets[0] } else { strip_offsets_offset };
+    let strip_counts_field = if num_strips == 1 { strip_counts[0] } else { strip_counts_offset };
+
     // GeoTIFF: EPSG:4326 经纬度坐标系
     let lng_span = bounds.east - bounds.west;
     let lat_span = bounds.north - bounds.south;
@@ -708,10 +738,12 @@ pub fn merge_and_export_dem_streaming_with_budget(
         write_u16(&mut w, k)?;
     }
 
-    // GDAL_NODATA tag value: ASCII 字符串 "-9999\0"
+    // GDAL_NODATA: 6 字节 ASCII "-9999\0"，count×1=6 ≤8，BigTIFF 规范要求内联到 value 字段
+    // （原先外置导致 GDAL/QGIS 读不到 NoData，-9999 被当作真实高程）。
     let nodata_str = b"-9999\0";
-    let nodata_offset = stream_pos(&mut w)?;
-    w.write_all(nodata_str).map_err(e2s)?;
+    let mut nodata_buf = [0u8; 8];
+    nodata_buf[..nodata_str.len()].copy_from_slice(nodata_str);
+    let nodata_inline = u64::from_le_bytes(nodata_buf);
 
     // ===== 4. BigTIFF IFD =====
     let ifd_pos = stream_pos(&mut w)?;
@@ -727,17 +759,17 @@ pub fn merge_and_export_dem_streaming_with_budget(
     write_bigtiff_entry(&mut w, 258, 3, 1, 32)?;                                    // BitsPerSample = 32 (inline)
     write_bigtiff_entry(&mut w, 259, 3, 1, comp_tag)?;                              // Compression
     write_bigtiff_entry(&mut w, 262, 3, 1, 1)?;                                     // Photometric = BlackIsZero
-    write_bigtiff_entry(&mut w, 273, 16, num_strips as u64, strip_offsets_offset)?; // StripOffsets (LONG8)
+    write_bigtiff_entry(&mut w, 273, 16, num_strips as u64, strip_offsets_field)?; // StripOffsets (LONG8)
     write_bigtiff_entry(&mut w, 277, 3, 1, 1)?;                                     // SamplesPerPixel = 1
     write_bigtiff_entry(&mut w, 278, 4, 1, rows_per_strip as u64)?;                 // RowsPerStrip
-    write_bigtiff_entry(&mut w, 279, 16, num_strips as u64, strip_counts_offset)?;  // StripByteCounts (LONG8)
+    write_bigtiff_entry(&mut w, 279, 16, num_strips as u64, strip_counts_field)?;  // StripByteCounts (LONG8)
     write_bigtiff_entry(&mut w, 282, 5, 1, res_inline)?;                            // XResolution
     write_bigtiff_entry(&mut w, 283, 5, 1, res_inline)?;                            // YResolution
     write_bigtiff_entry(&mut w, 339, 3, 1, 3)?;                                     // SampleFormat = IEEEFP
     write_bigtiff_entry(&mut w, 33550, 12, 3, pixel_scale_offset)?;                 // ModelPixelScale
     write_bigtiff_entry(&mut w, 33922, 12, 6, tiepoint_offset)?;                    // ModelTiepoint
     write_bigtiff_entry(&mut w, 34735, 3, 16, geokeys_offset)?;                     // GeoKeyDirectory
-    write_bigtiff_entry(&mut w, 42113, 2, nodata_str.len() as u64, nodata_offset)?; // GDAL_NODATA
+    write_bigtiff_entry(&mut w, 42113, 2, nodata_str.len() as u64, nodata_inline)?; // GDAL_NODATA (inline)
 
     write_u64(&mut w, 0)?; // next IFD = 0
 

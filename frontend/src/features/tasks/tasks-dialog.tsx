@@ -42,7 +42,7 @@ const ACTIVE_STATES: TaskStatus[] = [
 const FINISHED_STATES: TaskStatus[] = ['completed', 'failed', 'cancelled']
 
 function isActive(s: string): boolean {
-  return ACTIVE_STATES.includes(s as TaskStatus) || s === 'paused'
+  return ACTIVE_STATES.includes(s as TaskStatus) || s === 'paused' || s === 'pending_decision'
 }
 
 function isFinished(s: string): boolean {
@@ -52,7 +52,7 @@ function isFinished(s: string): boolean {
 function statusVariant(s: string): 'default' | 'secondary' | 'destructive' | 'outline' {
   if (s === 'completed') return 'default'
   if (s === 'failed' || s === 'cancelled') return 'destructive'
-  if (s === 'paused') return 'outline'
+  if (s === 'paused' || s === 'pending_decision') return 'outline'
   return 'secondary'
 }
 
@@ -64,6 +64,8 @@ function statusLabel(s: string): string {
       return '下载中'
     case 'paused':
       return '已暂停'
+    case 'pending_decision':
+      return '待决策'
     case 'merging':
       return '合并中'
     case 'processing':
@@ -153,19 +155,21 @@ function TaskRow({ task }: { task: TaskInfo }) {
         <div className="ml-auto flex items-center gap-1">
           {isActive(status) && (
             <>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => pauseMutation.mutate()}
-                disabled={pauseMutation.isPending}
-                title={status === 'paused' ? '恢复' : '暂停'}
-              >
-                {status === 'paused' ? (
-                  <Play className="size-4" />
-                ) : (
-                  <Pause className="size-4" />
-                )}
-              </Button>
+              {(status === 'downloading' || status === 'paused') && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => pauseMutation.mutate()}
+                  disabled={pauseMutation.isPending}
+                  title={status === 'paused' ? '恢复' : '暂停'}
+                >
+                  {status === 'paused' ? (
+                    <Play className="size-4" />
+                  ) : (
+                    <Pause className="size-4" />
+                  )}
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="ghost"

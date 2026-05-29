@@ -165,11 +165,12 @@ pub fn merge_tiles(
     x_max: u32,
     y_max: u32,
 ) -> RgbImage {
-    let cols = x_max - x_min + 1;
-    let rows = y_max - y_min + 1;
+    // 防御：异常坐标范围用 saturating 避免算术溢出 panic（正常范围行为完全不变）
+    let cols = x_max.saturating_sub(x_min).saturating_add(1);
+    let rows = y_max.saturating_sub(y_min).saturating_add(1);
 
-    let width = cols * TILE_SIZE;
-    let height = rows * TILE_SIZE;
+    let width = cols.saturating_mul(TILE_SIZE);
+    let height = rows.saturating_mul(TILE_SIZE);
 
     // 创建白色背景
     let mut merged = RgbImage::from_pixel(width, height, image::Rgb([255, 255, 255]));

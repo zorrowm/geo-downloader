@@ -14,9 +14,11 @@ export function WaybackTimeline() {
   const setPreviewVersionId = useWaybackStore((s) => s.setPreviewVersionId)
   const visible = mode === 'wayback'
 
-  // 复用 wayback-page 的缓存（同一 queryKey）
+  // 复用 wayback-page / map-canvas 的缓存（同一 queryKey ['settings']）：
+  // 必须与其他组件一致，否则版本列表来源分裂会导致 previewVersionId
+  // 被不同列表反复“纠正”→ setState 无限循环（React #185）。
   const settingsQuery = useQuery({
-    queryKey: ['app-settings'],
+    queryKey: ['settings'],
     queryFn: getSettings,
     enabled: visible,
   })
@@ -62,11 +64,13 @@ export function WaybackTimeline() {
     return result
   }, [yearMarkers])
 
-  // 当 previewVersionId 为空时，自动选最新（数组末尾）
+  // 仅当 previewVersionId 完全为空时自动选最新（数组末尾）。
+  // 注意：绝不能在 previewVersionId “不在本列表”时主动覆写——那会与
+  // wayback-page 的双向同步互相推翻，形成 setState 无限循环（React #185）。
   useEffect(() => {
     if (!visible) return
     if (!ascending.length) return
-    if (previewVersionId == null || !ascending.find((v) => v.id === previewVersionId)) {
+    if (previewVersionId == null) {
       setPreviewVersionId(ascending[ascending.length - 1].id)
     }
   }, [visible, ascending, previewVersionId, setPreviewVersionId])

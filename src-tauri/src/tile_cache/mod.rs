@@ -17,11 +17,16 @@ pub use pool::Store;
 ///
 /// 例如 `world_imagery`、`tdt_img`、`wayback_2024-03-14`。
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceKey(pub String);
+pub struct SourceKey(String);
 
 impl SourceKey {
     pub fn new(s: impl Into<String>) -> Self {
         Self(slugify(&s.into()))
+    }
+
+    /// 从已 slug 化的字符串（如磁盘文件名前缀）直接构造，跳过再次 slugify。
+    pub(crate) fn from_slug(s: impl Into<String>) -> Self {
+        Self(s.into())
     }
 
     pub fn as_str(&self) -> &str {

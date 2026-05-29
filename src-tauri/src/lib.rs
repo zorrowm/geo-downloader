@@ -15,6 +15,7 @@ pub mod tiles3d;
 pub mod wayback;
 pub mod wayback_metadata;
 pub mod budget;
+pub mod fs_util;
 pub mod dem;
 pub mod tile_cache;
 pub mod tile_pack;

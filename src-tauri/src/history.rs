@@ -93,6 +93,8 @@ impl DownloadRecord {
 /// 历史记录管理器
 pub struct HistoryManager {
     file_path: PathBuf,
+    /// 串行化 read-modify-write，避免并发 add/update/delete 丢记录
+    lock: std::sync::Mutex<()>,
 }
 
 impl HistoryManager {
@@ -103,7 +105,7 @@ impl HistoryManager {
             .map_err(|e| format!("无法创建数据目录: {}", e))?;
         
         let file_path = data_dir.join("history.json");
-        Ok(Self { file_path })
+        Ok(Self { file_path, lock: std::sync::Mutex::new(()) })
     }
 
     /// 获取所有记录
@@ -119,12 +121,18 @@ impl HistoryManager {
             return Ok(Vec::new());
         }
 
-        serde_json::from_str(&content)
-            .map_err(|e| format!("解析历史记录失败: {}", e))
+        serde_json::from_str(&content).or_else(|e| {
+            // 损坏的历史文件：备份后回退为空，避免整个历史功能不可用
+            let backup = self.file_path.with_extension("json.corrupt");
+            let _ = fs::rename(&self.file_path, &backup);
+            log::warn!("解析历史记录失败({}), 已备份到 {:?} 并重置", e, backup);
+            Ok(Vec::new())
+        })
     }
 
     /// 添加记录
     pub fn add(&self, record: DownloadRecord) -> Result<(), String> {
+        let _guard = self.lock.lock().map_err(|_| "历史记录锁异常".to_string())?;
         let mut records = self.get_all()?;
         records.insert(0, record); // 新记录插入到最前面
         self.save(&records)
@@ -132,6 +140,7 @@ impl HistoryManager {
 
     /// 删除记录
     pub fn delete(&self, id: &str) -> Result<(), String> {
+        let _guard = self.lock.lock().map_err(|_| "历史记录锁异常".to_string())?;
         let mut records = self.get_all()?;
         records.retain(|r| r.id != id);
         self.save(&records)
@@ -139,11 +148,13 @@ impl HistoryManager {
 
     /// 清空所有记录
     pub fn clear(&self) -> Result<(), String> {
+        let _guard = self.lock.lock().map_err(|_| "历史记录锁异常".to_string())?;
         self.save(&Vec::new())
     }
 
     /// 更新记录
     pub fn update(&self, record: &DownloadRecord) -> Result<(), String> {
+        let _guard = self.lock.lock().map_err(|_| "历史记录锁异常".to_string())?;
         let mut records = self.get_all()?;
         if let Some(r) = records.iter_mut().find(|r| r.id == record.id) {
             *r = record.clone();
@@ -156,7 +167,7 @@ impl HistoryManager {
         let content = serde_json::to_string_pretty(records)
             .map_err(|e| format!("序列化失败: {}", e))?;
         
-        fs::write(&self.file_path, content)
+        crate::fs_util::atomic_write(&self.file_path, content.as_bytes())
             .map_err(|e| format!("保存历史记录失败: {}", e))
     }
 

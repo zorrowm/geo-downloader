@@ -1835,6 +1835,25 @@ pub async fn resume_task(
     task_manager: State<'_, Arc<TaskManager>>,
     task_id: String,
 ) -> Result<CreateTaskResult, String> {
+    // 防止重复 resume：若任务正处于「活动运行」状态（下载/处理循环存活），拒绝二次
+    // 启动，避免两个 execute_download_task 循环同时写同一 temp_dir/save_path。
+    // 注意：Paused / PendingDecision / CompletedWithGaps 是静止态，resume_task 正是
+    // 用于这些状态的「恢复 / 补漏重导」，不能拒绝。
+    let already_running = task_manager
+        .get_all_tasks()
+        .iter()
+        .any(|t| t.id == task_id && matches!(
+            t.status,
+            TaskStatus::Pending
+                | TaskStatus::Downloading
+                | TaskStatus::Merging
+                | TaskStatus::Processing
+                | TaskStatus::Exporting
+        ));
+    if already_running {
+        return Err("任务已在进行中".to_string());
+    }
+
     // 读取持久化任务
     let tasks = crate::task::load_resumable_tasks();
     let persisted = tasks.into_iter()

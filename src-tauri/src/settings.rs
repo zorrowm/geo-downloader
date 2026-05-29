@@ -163,8 +163,13 @@ impl SettingsManager {
             return Ok(AppSettings::default());
         }
 
-        serde_json::from_str(&content)
-            .map_err(|e| format!("解析设置失败: {}", e))
+        serde_json::from_str(&content).or_else(|e| {
+            // 损坏的设置文件：备份后回退默认，避免应用无法读取设置
+            let backup = self.file_path.with_extension("json.corrupt");
+            let _ = fs::rename(&self.file_path, &backup);
+            log::warn!("解析设置失败({}), 已备份到 {:?} 并回退默认", e, backup);
+            Ok(AppSettings::default())
+        })
     }
 
     /// 保存设置
@@ -172,7 +177,7 @@ impl SettingsManager {
         let content = serde_json::to_string_pretty(settings)
             .map_err(|e| format!("序列化失败: {}", e))?;
         
-        fs::write(&self.file_path, content)
+        crate::fs_util::atomic_write(&self.file_path, content.as_bytes())
             .map_err(|e| format!("保存设置失败: {}", e))
     }
 }

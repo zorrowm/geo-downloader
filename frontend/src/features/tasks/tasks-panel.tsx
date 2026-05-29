@@ -47,7 +47,7 @@ const ACTIVE_STATES: TaskStatus[] = [
 const FINISHED_STATES: TaskStatus[] = ['completed', 'failed', 'cancelled']
 
 function isActive(s: string): boolean {
-  return ACTIVE_STATES.includes(s as TaskStatus) || s === 'paused'
+  return ACTIVE_STATES.includes(s as TaskStatus) || s === 'paused' || s === 'pending_decision'
 }
 function isFinished(s: string): boolean {
   return FINISHED_STATES.includes(s as TaskStatus)
@@ -59,7 +59,7 @@ function isCompletedWithGaps(s: string): boolean {
 function statusVariant(s: string): 'default' | 'secondary' | 'destructive' | 'outline' {
   if (s === 'completed') return 'default'
   if (s === 'failed' || s === 'cancelled') return 'destructive'
-  if (s === 'paused' || s === 'completed_with_gaps') return 'outline'
+  if (s === 'paused' || s === 'pending_decision' || s === 'completed_with_gaps') return 'outline'
   return 'secondary'
 }
 
@@ -67,6 +67,7 @@ const STATUS_TEXT: Record<string, string> = {
   pending: '等待中',
   downloading: '下载中',
   paused: '已暂停',
+  pending_decision: '待决策',
   merging: '拼接中',
   processing: '处理中',
   exporting: '导出中',
@@ -254,7 +255,7 @@ function TaskRow({ task }: { task: TaskInfo }) {
   useEffect(() => {
     const start = getStartTime(task.id)
     const status = String(task.status)
-    if (isFinished(status) || status === 'paused') {
+    if (isFinished(status) || status === 'paused' || status === 'pending_decision') {
       setElapsed(Date.now() - start)
       return
     }
@@ -379,22 +380,37 @@ function TaskRow({ task }: { task: TaskInfo }) {
           </Button>
           {isActive(status) && (
             <>
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => pauseMutation.mutate()}
-                disabled={pauseMutation.isPending}
-                className="size-7"
-                title={status === 'paused' ? '恢复' : '暂停'}
-              >
-                {status === 'paused' ? (
-                  <Play className="size-3.5" />
-                ) : (
-                  <Pause className="size-3.5" />
-                )}
-              </Button>
-              {/* Issue #31：暂停态加「强制按现状导出」入口 */}
-              {status === 'paused' && (
+              {(status === 'downloading' || status === 'paused') && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => pauseMutation.mutate()}
+                  disabled={pauseMutation.isPending}
+                  className="size-7"
+                  title={status === 'paused' ? '恢复' : '暂停'}
+                >
+                  {status === 'paused' ? (
+                    <Play className="size-3.5" />
+                  ) : (
+                    <Pause className="size-3.5" />
+                  )}
+                </Button>
+              )}
+              {/* Issue #31：待决策态加「补漏重试」入口（仅下载缺失瓦片） */}
+              {status === 'pending_decision' && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => resumeMutation.mutate()}
+                  disabled={resumeMutation.isPending}
+                  className="size-7"
+                  title="补漏重试（仅下载缺失瓦片）"
+                >
+                  <RefreshCw className="size-3.5" />
+                </Button>
+              )}
+              {/* Issue #31：暂停 / 待决策态加「强制按现状导出」入口 */}
+              {(status === 'paused' || status === 'pending_decision') && (
                 <Button
                   size="icon"
                   variant="ghost"

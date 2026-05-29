@@ -17,6 +17,10 @@ pub enum TaskStatus {
     Pending,
     Downloading,
     Paused,
+    /// Issue #31：成功率过低，跳过自动导出，等待用户决策（补漏重试 / 强制导出）。
+    /// 独立于 Paused，避免被「暂停/恢复」开关误操作成假 Downloading 卡死。
+    #[serde(rename = "pending_decision")]
+    PendingDecision,
     Merging,
     Processing,
     Exporting,
@@ -85,8 +89,16 @@ impl PauseControl {
 
     /// 如果当前处于暂停状态，等待恢复
     pub async fn wait_if_paused(&self) {
-        while self.flag.load(Ordering::Relaxed) {
-            self.notify.notified().await;
+        loop {
+            // 先登记 waiter（enable）再检查 flag，避免 toggle_pause 的 notify_waiters()
+            // 在「检查 flag」与「await」之间触发导致丢失唤醒 → 暂停永久卡死。
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.flag.load(Ordering::Relaxed) {
+                return;
+            }
+            notified.await;
         }
     }
 }
@@ -200,6 +212,16 @@ impl TaskManager {
     /// 标记任务完成
     pub fn complete_task(&self, id: &str, file_size: u64) {
         if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
+            // 终态保护：已取消/失败/完成的任务不被覆写
+            if matches!(
+                entry.info.status,
+                TaskStatus::Cancelled
+                    | TaskStatus::Failed
+                    | TaskStatus::Completed
+                    | TaskStatus::CompletedWithGaps
+            ) {
+                return;
+            }
             entry.info.status = TaskStatus::Completed;
             entry.info.progress = 100.0;
             entry.info.file_size = file_size;
@@ -213,6 +235,16 @@ impl TaskManager {
     /// 切到 `CompletedWithGaps` 而非 `Completed`，让 UI 展示缺块徽章。
     pub fn complete_task_with_gaps(&self, id: &str, file_size: u64, failed_count: u32) {
         if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
+            // 终态保护：已取消/失败/完成的任务不被覆写
+            if matches!(
+                entry.info.status,
+                TaskStatus::Cancelled
+                    | TaskStatus::Failed
+                    | TaskStatus::Completed
+                    | TaskStatus::CompletedWithGaps
+            ) {
+                return;
+            }
             entry.info.status = TaskStatus::CompletedWithGaps;
             entry.info.progress = 100.0;
             entry.info.file_size = file_size;
@@ -227,7 +259,17 @@ impl TaskManager {
     /// 「补漏重试」(`resume_task`) 或「强制按现状导出」(`export_partial_task`)。
     pub fn mark_pending_decision(&self, id: &str, reason: String) {
         if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
-            entry.info.status = TaskStatus::Paused;
+            // 终态保护：已取消/失败/完成的任务不被覆写
+            if matches!(
+                entry.info.status,
+                TaskStatus::Cancelled
+                    | TaskStatus::Failed
+                    | TaskStatus::Completed
+                    | TaskStatus::CompletedWithGaps
+            ) {
+                return;
+            }
+            entry.info.status = TaskStatus::PendingDecision;
             entry.info.message = Some(reason);
         }
     }
@@ -235,6 +277,15 @@ impl TaskManager {
     /// 标记任务失败
     pub fn fail_task(&self, id: &str, error: String) {
         if let Some(entry) = self.tasks.lock().unwrap().get_mut(id) {
+            // 终态保护：已取消/已完成的任务不被覆写成失败
+            if matches!(
+                entry.info.status,
+                TaskStatus::Cancelled
+                    | TaskStatus::Completed
+                    | TaskStatus::CompletedWithGaps
+            ) {
+                return;
+            }
             entry.info.status = TaskStatus::Failed;
             entry.info.error = Some(error);
         }
@@ -442,7 +493,7 @@ pub fn save_task_file(task: &PersistedTask) -> Result<(), String> {
     let path = tasks_dir().join(format!("{}.json", task.task_id));
     let content = serde_json::to_string_pretty(task)
         .map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(&path, content)
+    crate::fs_util::atomic_write(&path, content.as_bytes())
         .map_err(|e| format!("保存任务文件失败: {}", e))
 }
 

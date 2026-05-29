@@ -184,8 +184,12 @@ pub fn check_budget(
 
     // RGB 3 通道；裁剪时 RGBA 4 通道
     let channels: u64 = if has_crop { 4 } else { 3 };
-    let pixel_bytes =
-        (cols as u64) * (rows as u64) * TILE_SIZE * TILE_SIZE * channels;
+    let pixel_bytes = (cols as u64)
+        .checked_mul(rows as u64)
+        .and_then(|v| v.checked_mul(TILE_SIZE))
+        .and_then(|v| v.checked_mul(TILE_SIZE))
+        .and_then(|v| v.checked_mul(channels))
+        .unwrap_or(u64::MAX);
     let multiplier = peak_multiplier(format, has_crop);
     let estimated_peak = (pixel_bytes as f64 * multiplier) as u64;
 
