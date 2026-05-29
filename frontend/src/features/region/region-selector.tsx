@@ -178,6 +178,16 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
     void loadByCode(code, label)
   }
 
+  // 清除选区：同时清空地图选区与行政区划三段下拉。
+  // 三段 state 置空后，上方 [provinceCode, cityCode, districtCode] 的 useEffect 会自动
+  // 把空值同步回 store（adminSelection / currentAdminCode），无需在此重复 set。
+  const onClearSelection = () => {
+    useSelectionStore.getState().clear()
+    setProvinceCode('')
+    setCityCode('')
+    setDistrictCode('')
+  }
+
   const onSearch = async () => {
     const q = query.trim()
     if (!q) return
@@ -435,7 +445,7 @@ export function RegionSelector({ extras }: { extras?: import('react').ReactNode 
           type="button"
           variant="outline"
           size="icon"
-          onClick={() => useSelectionStore.getState().clear()}
+          onClick={onClearSelection}
           title="清除选区"
           className="size-8"
         >
