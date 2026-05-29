@@ -44,3 +44,6 @@ output/
 
 # Local Claude Code settings
 .claude/
+
+# CodeGraph index (generated)
+.codegraph/
