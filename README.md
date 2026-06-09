@@ -1,11 +1,7 @@
 <h1 align="center">
-  <img src="https://img.shields.io/badge/GeoD-ownloader-blue?style=for-the-badge&labelColor=2563eb&color=475569" alt="GeoDownloader" height="36">
-</h1>
+<img width="2172" height="724" alt="ChatGPT Image 2026年6月9日 21_38_21" src="https://github.com/user-attachments/assets/107849ff-eb30-425a-91d8-b93b9048dae7" />
 
-<p align="center">
-  <b>一站式地理空间数据下载与导出桌面工具</b><br>
-  2D 影像瓦片 · 矢量瓦片 · 3D Tiles · DEM · Esri Wayback 历史影像
-</p>
+</h1>
 
 <p align="center">
   <a href="https://geodownloader.pages.dev"><b>官网</b></a> ·
