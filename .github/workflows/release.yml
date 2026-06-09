@@ -173,3 +173,38 @@ jobs:
           files: artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-mirror:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(ls artifacts/ | head -1 | sed 's/GeoDownloader_\([^_]*\)_.*/\1/')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload to mirror server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.MIRROR_HOST }}
+          username: ${{ secrets.MIRROR_USER }}
+          password: ${{ secrets.MIRROR_PASSWORD }}
+          source: "artifacts/*"
+          target: "C:/nginx-1.30.2/packages/v${{ steps.version.outputs.VERSION }}"
+          strip_components: 1
+
+      - name: Copy latest
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.MIRROR_HOST }}
+          username: ${{ secrets.MIRROR_USER }}
+          password: ${{ secrets.MIRROR_PASSWORD }}
+          script: |
+            powershell -Command "Remove-Item 'C:\nginx-1.30.2\packages\latest\*' -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path 'C:\nginx-1.30.2\packages\latest'; Copy-Item 'C:\nginx-1.30.2\packages\v${{ steps.version.outputs.VERSION }}\*' -Destination 'C:\nginx-1.30.2\packages\latest\'"

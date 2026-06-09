@@ -1,0 +1,46 @@
+name: Deploy Mirror (Manual)
+
+# 手动触发：从已有 GitHub Release 下载安装包并推送到镜像服务器
+# 用途：测试镜像服务器配置 / 补传历史版本
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不带 v 前缀，如 3.5.3）'
+        required: true
+        default: '3.5.3'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p artifacts
+          cd artifacts
+          gh release download "v${{ inputs.version }}" \
+            --repo ${{ github.repository }} \
+            --pattern "GeoDownloader_*"
+          ls -la
+
+      - name: Upload to mirror server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.MIRROR_HOST }}
+          username: ${{ secrets.MIRROR_USER }}
+          password: ${{ secrets.MIRROR_PASSWORD }}
+          source: "artifacts/*"
+          target: "C:/nginx-1.30.2/packages/v${{ inputs.version }}"
+          strip_components: 1
+
+      - name: Copy to latest
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.MIRROR_HOST }}
+          username: ${{ secrets.MIRROR_USER }}
+          password: ${{ secrets.MIRROR_PASSWORD }}
+          script: |
+            powershell -Command "Remove-Item 'C:\nginx-1.30.2\packages\latest\*' -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path 'C:\nginx-1.30.2\packages\latest'; Copy-Item 'C:\nginx-1.30.2\packages\v${{ inputs.version }}\*' -Destination 'C:\nginx-1.30.2\packages\latest\' -Force"

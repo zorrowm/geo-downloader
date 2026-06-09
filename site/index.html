@@ -329,6 +329,17 @@
   <script>
     const REPO = 'gaopengbin/geo-downloader';
     const API = `https://api.github.com/repos/${REPO}/releases/latest`;
+    const MIRROR_BASE = 'http://8.140.249.31:8080/packages/latest/';
+
+    // 静态 fallback — 每次发版时更新这里
+    const FALLBACK_VERSION = 'v3.5.3';
+    const FALLBACK_ASSETS = [
+      { name: 'GeoDownloader_3.5.3_windows_x64-setup.exe',   size: 0, os: 'windows', label: 'Windows (EXE)' },
+      { name: 'GeoDownloader_3.5.3_macos_arm64.dmg',         size: 0, os: 'macos',   label: 'macOS (Apple Silicon)' },
+      { name: 'GeoDownloader_3.5.3_macos_x64.dmg',           size: 0, os: 'macos',   label: 'macOS (Intel)' },
+      { name: 'GeoDownloader_3.5.3_linux_amd64.deb',         size: 0, os: 'linux',   label: 'Linux (deb)' },
+      { name: 'GeoDownloader_3.5.3_linux_amd64.AppImage',    size: 0, os: 'linux',   label: 'Linux (AppImage)' },
+    ];
 
     const PLATFORM_MAP = [
       { match: /\.msi$/i,           name: 'Windows (MSI)',         icon: winIcon(),   os: 'windows' },
@@ -365,31 +376,93 @@
       return bytes + ' B';
     }
 
+    function getOSIcon(os) {
+      if (os === 'windows') return winIcon();
+      if (os === 'macos') return macIcon();
+      return linuxIcon();
+    }
+
+    function renderCards(cards, version) {
+      var userOS = detectOS();
+      var grid = document.getElementById('download-grid');
+      var heroSet = false;
+
+      cards.sort(function(a, b) { return (b.isUserOS ? 1 : 0) - (a.isUserOS ? 1 : 0); });
+
+      grid.innerHTML = cards.map(function(c) {
+        var highlight = c.isUserOS
+          ? 'border-blue-200 bg-blue-50/50 ring-2 ring-blue-100'
+          : 'border-gray-100 bg-white';
+        var badge = c.isUserOS
+          ? '<span class="ml-auto text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full shrink-0">推荐</span>'
+          : '';
+        var sizeText = c.size ? formatSize(c.size) : '';
+        var mirrorBadge = c.mirror
+          ? '<span class="text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">国内高速</span>'
+          : '';
+        return '<a href="' + c.url + '" '
+          + 'class="flex items-center gap-4 p-5 rounded-xl border ' + highlight + ' hover:shadow-md transition group">'
+          + '<div class="text-gray-400 group-hover:text-blue-600 transition shrink-0">' + c.icon + '</div>'
+          + '<div class="text-left min-w-0">'
+          + '<div class="font-medium text-gray-900 truncate">' + c.label + '</div>'
+          + '<div class="text-xs text-gray-400 mt-0.5 flex items-center gap-2">' + sizeText + mirrorBadge + '</div>'
+          + '</div>'
+          + badge
+          + '</a>';
+      }).join('');
+
+      // 设置 hero 按钮
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].isUserOS) {
+          document.getElementById('hero-download-btn').href = cards[i].url;
+          document.getElementById('hero-download-text').textContent = '下载 ' + version + ' (' + cards[i].label + ')';
+          heroSet = true;
+          break;
+        }
+      }
+      if (!heroSet && cards.length > 0) {
+        document.getElementById('hero-download-btn').href = cards[0].url;
+        document.getElementById('hero-download-text').textContent = '下载 ' + version;
+      }
+    }
+
+    function buildFallbackCards() {
+      var userOS = detectOS();
+      return FALLBACK_ASSETS.map(function(a) {
+        return {
+          url: MIRROR_BASE + a.name,
+          label: a.label,
+          icon: getOSIcon(a.os),
+          size: a.size,
+          isUserOS: a.os === userOS,
+          mirror: true
+        };
+      });
+    }
+
     async function loadRelease() {
       try {
         var res = await fetch(API);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         var data = await res.json();
         var version = data.tag_name;
         document.getElementById('latest-version').textContent = version;
 
         var userOS = detectOS();
-        var grid = document.getElementById('download-grid');
-        var heroSet = false;
+        var statsEl = document.getElementById('download-stats');
 
-        // 计算总下载量（所有 asset）
         var totalDownloads = 0;
         for (var k = 0; k < data.assets.length; k++) {
           totalDownloads += data.assets[k].download_count || 0;
         }
-        var statsEl = document.getElementById('download-stats');
         if (totalDownloads > 0) {
           statsEl.textContent = '本版本已被下载 ' + totalDownloads.toLocaleString() + ' 次';
         }
 
-        // 同时拉取所有 release 的总下载量
         fetch('https://api.github.com/repos/' + REPO + '/releases')
           .then(function(r) { return r.json(); })
           .then(function(releases) {
+            if (!Array.isArray(releases)) return;
             var allTotal = 0;
             for (var i = 0; i < releases.length; i++) {
               for (var j = 0; j < releases[i].assets.length; j++) {
@@ -416,43 +489,23 @@
             }
           }
           if (!pm) continue;
-          var isUserOS = pm.os === userOS;
-          cards.push({ asset: asset, pm: pm, isUserOS: isUserOS });
-
-          if (isUserOS && !heroSet) {
-            document.getElementById('hero-download-btn').href = asset.browser_download_url;
-            document.getElementById('hero-download-text').textContent = '下载 ' + version + ' (' + pm.name + ')';
-            heroSet = true;
-          }
+          // 优先用国内镜像链接
+          cards.push({
+            url: MIRROR_BASE + asset.name,
+            label: pm.name,
+            icon: pm.icon,
+            size: asset.size,
+            isUserOS: pm.os === userOS,
+            mirror: true
+          });
         }
 
-        cards.sort(function(a, b) { return (b.isUserOS ? 1 : 0) - (a.isUserOS ? 1 : 0); });
-
-        grid.innerHTML = cards.map(function(c) {
-          var highlight = c.isUserOS
-            ? 'border-blue-200 bg-blue-50/50 ring-2 ring-blue-100'
-            : 'border-gray-100 bg-white';
-          var badge = c.isUserOS
-            ? '<span class="ml-auto text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full shrink-0">推荐</span>'
-            : '';
-          return '<a href="' + c.asset.browser_download_url + '" '
-            + 'class="flex items-center gap-4 p-5 rounded-xl border ' + highlight + ' hover:shadow-md transition group">'
-            + '<div class="text-gray-400 group-hover:text-blue-600 transition shrink-0">' + c.pm.icon + '</div>'
-            + '<div class="text-left min-w-0">'
-            + '<div class="font-medium text-gray-900 truncate">' + c.pm.name + '</div>'
-            + '<div class="text-xs text-gray-400 mt-0.5">' + formatSize(c.asset.size) + (c.asset.download_count > 0 ? ' · ' + c.asset.download_count.toLocaleString() + ' 次下载' : '') + '</div>'
-            + '</div>'
-            + badge
-            + '</a>';
-        }).join('');
+        renderCards(cards, version);
 
       } catch (e) {
-        document.getElementById('latest-version').textContent = '加载失败';
-        document.getElementById('download-grid').innerHTML =
-          '<div class="col-span-full text-gray-400 py-8">'
-          + '无法连接 GitHub API，请前往 '
-          + '<a href="https://github.com/gaopengbin/geo-downloader/releases" target="_blank" class="text-blue-600 hover:underline">Releases 页面</a> 下载'
-          + '</div>';
+        // GitHub API 不可用，使用静态 fallback
+        document.getElementById('latest-version').textContent = FALLBACK_VERSION;
+        renderCards(buildFallbackCards(), FALLBACK_VERSION);
       }
     }
 
