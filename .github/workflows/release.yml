@@ -200,17 +200,21 @@ jobs:
 
       - name: Create remote directories
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
         with:
           host: ${{ secrets.MIRROR_HOST }}
           username: ${{ secrets.MIRROR_USER }}
           password: ${{ secrets.MIRROR_PASSWORD }}
+          envs: VERSION
           script: |
             powershell -Command "
-              New-Item -ItemType Directory -Force -Path 'C:\nginx-1.30.2\packages\v${{ steps.version.outputs.VERSION }}' | Out-Null
+              New-Item -ItemType Directory -Force -Path \"C:\nginx-1.30.2\packages\v$env:VERSION\" | Out-Null
               New-Item -ItemType Directory -Force -Path 'C:\nginx-1.30.2\packages\latest' | Out-Null
+              New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE 'temp_upload') | Out-Null
             "
 
-      - name: Upload files via scp
+      - name: SCP files to temp directory
         env:
           SSHPASS: ${{ secrets.MIRROR_PASSWORD }}
         run: |
@@ -219,18 +223,32 @@ jobs:
             echo "Uploading $(basename $f)..."
             sshpass -e scp -o StrictHostKeyChecking=no \
               "$f" \
-              "${{ secrets.MIRROR_USER }}@${{ secrets.MIRROR_HOST }}:C:/nginx-1.30.2/packages/v${{ steps.version.outputs.VERSION }}/$(basename $f)"
+              "${{ secrets.MIRROR_USER }}@${{ secrets.MIRROR_HOST }}:temp_upload/$(basename $f)"
           done
 
-      - name: Copy to latest
+      - name: Move files to final location
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
         with:
           host: ${{ secrets.MIRROR_HOST }}
           username: ${{ secrets.MIRROR_USER }}
           password: ${{ secrets.MIRROR_PASSWORD }}
+          envs: VERSION
           script: |
             powershell -Command "
-              Remove-Item 'C:\nginx-1.30.2\packages\latest\*' -Force -ErrorAction SilentlyContinue
-              Copy-Item 'C:\nginx-1.30.2\packages\v${{ steps.version.outputs.VERSION }}\*' -Destination 'C:\nginx-1.30.2\packages\latest\' -Force
+              $version = $env:VERSION
+              $src = Join-Path $env:USERPROFILE 'temp_upload'
+              $dest = \"C:\nginx-1.30.2\packages\v$version\"
+              $latest = 'C:\nginx-1.30.2\packages\latest'
+
+              Get-ChildItem $src | ForEach-Object {
+                Move-Item $_.FullName -Destination $dest -Force
+                Write-Host \"  Moved: $($_.Name)\"
+              }
+
+              Remove-Item \"$latest\*\" -Force -ErrorAction SilentlyContinue
+              Copy-Item \"$dest\*\" -Destination $latest -Force
+              Remove-Item $src -Force -Recurse -ErrorAction SilentlyContinue
               Write-Host 'Done.'
             "
