@@ -19,6 +19,7 @@ pub mod fs_util;
 pub mod dem;
 pub mod tile_cache;
 pub mod tile_pack;
+pub mod cache_migration;
 
 // Tauri commands
 mod commands;
@@ -70,6 +71,7 @@ pub fn run() {
             }
         })
         .manage(Arc::new(TaskManager::new()))
+        .manage(Arc::new(cache_migration::CacheMigrationManager::new()))
         .manage(wayback_metadata::new_progress_map())
         .plugin(
             tauri_plugin_log::Builder::default()
@@ -149,6 +151,12 @@ pub fn run() {
             commands::cache_set_max_size_mb,
             commands::cache_set_dir,
             commands::cache_set_enabled,
+            cache_migration::cache_migration_preflight,
+            cache_migration::cache_migration_start,
+            cache_migration::cache_migration_status,
+            cache_migration::cache_migration_cancel,
+            cache_migration::cache_migration_cleanup_staging,
+            cache_migration::cache_migration_delete_source,
         ])
         .setup(|app| {
             // 启动时从用户设置同步 TLS 严格性开关（默认 false = 严格验证证书）
@@ -207,6 +215,10 @@ pub fn run() {
             let show = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+            let migration_manager = app
+                .state::<Arc<cache_migration::CacheMigrationManager>>()
+                .inner()
+                .clone();
 
             // 创建托盘图标
             let tray_icon = app.default_window_icon().cloned().expect("no default icon");
@@ -214,7 +226,7 @@ pub fn run() {
                 .icon(tray_icon)
                 .tooltip("GeoDownloader")
                 .menu(&menu)
-                .on_menu_event(|app, event| {
+                .on_menu_event(move |app, event| {
                     match event.id().as_ref() {
                         "show" => {
                             if let Some(w) = app.get_webview_window("main") {
@@ -223,7 +235,16 @@ pub fn run() {
                             }
                         }
                         "quit" => {
-                            app.exit(0);
+                            if migration_manager.has_active_migration() {
+                                let app = app.clone();
+                                let manager = migration_manager.clone();
+                                std::thread::spawn(move || {
+                                    manager.cancel_and_wait();
+                                    app.exit(0);
+                                });
+                            } else {
+                                app.exit(0);
+                            }
                         }
                         _ => {}
                     }

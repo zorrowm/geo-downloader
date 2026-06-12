@@ -150,6 +150,11 @@ impl SettingsManager {
         Ok(Self { file_path })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_file_path(file_path: PathBuf) -> Self {
+        Self { file_path }
+    }
+
     /// 获取设置
     pub fn get(&self) -> Result<AppSettings, String> {
         if !self.file_path.exists() {

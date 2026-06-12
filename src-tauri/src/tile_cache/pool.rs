@@ -134,6 +134,9 @@ impl Store {
     }
 
     pub fn get(&self, src: &SourceKey, coord: TileCoord) -> Result<Option<StoredTile>, String> {
+        let Some(_access) = crate::cache_migration::begin_cache_access() else {
+            return Ok(None);
+        };
         if !get_config().enabled {
             return Ok(None);
         }
@@ -153,6 +156,9 @@ impl Store {
         tile: StoredTile,
         info: Option<SourceInfo>,
     ) -> Result<(), String> {
+        let Some(_access) = crate::cache_migration::begin_cache_access() else {
+            return Ok(());
+        };
         if !get_config().enabled {
             return Ok(());
         }
@@ -174,6 +180,9 @@ impl Store {
         batch: Vec<(TileCoord, StoredTile)>,
         info: Option<SourceInfo>,
     ) -> Result<(), String> {
+        let Some(_access) = crate::cache_migration::begin_cache_access() else {
+            return Ok(());
+        };
         if !get_config().enabled || batch.is_empty() {
             return Ok(());
         }
@@ -196,6 +205,9 @@ impl Store {
         src: &SourceKey,
         coords: &[TileCoord],
     ) -> Result<HashSet<TileCoord>, String> {
+        let Some(_access) = crate::cache_migration::begin_cache_access() else {
+            return Ok(HashSet::new());
+        };
         if !get_config().enabled || coords.is_empty() {
             return Ok(HashSet::new());
         }
@@ -209,6 +221,9 @@ impl Store {
     }
 
     pub fn ensure_source(&self, src: &SourceKey, info: SourceInfo) -> Result<(), String> {
+        let Some(_access) = crate::cache_migration::begin_cache_access() else {
+            return Ok(());
+        };
         let handle = self.handle(src)?;
         let mut store = handle.lock().map_err(|_| "store poisoned".to_string())?;
         store.ensure_metadata(&info)
@@ -216,6 +231,16 @@ impl Store {
 
     /// 列出磁盘上所有 source 的统计信息（包括未在连接池中的）。
     pub fn stats(&self) -> Result<Vec<SourceStats>, String> {
+        let _access = crate::cache_migration::begin_cache_access()
+            .ok_or_else(|| "缓存正在迁移".to_string())?;
+        self.stats_inner()
+    }
+
+    pub(crate) fn stats_during_migration(&self) -> Result<Vec<SourceStats>, String> {
+        self.stats_inner()
+    }
+
+    fn stats_inner(&self) -> Result<Vec<SourceStats>, String> {
         let cfg = get_config();
         if !cfg.root_dir.exists() {
             return Ok(vec![]);
@@ -256,6 +281,12 @@ impl Store {
 
     /// 清理：source=Some 删单库；None 全清。返回释放的字节数。
     pub fn clear(&self, src: Option<&SourceKey>) -> Result<u64, String> {
+        let _access = crate::cache_migration::begin_cache_access()
+            .ok_or_else(|| "缓存正在迁移".to_string())?;
+        self.clear_inner(src)
+    }
+
+    fn clear_inner(&self, src: Option<&SourceKey>) -> Result<u64, String> {
         match src {
             Some(s) => {
                 self.close(s);
@@ -293,13 +324,15 @@ impl Store {
 
     /// LRU 整库淘汰：按 gd_last_used_at 升序删，直到总大小 <= max_total_bytes。
     pub fn prune(&self, max_total_bytes: u64) -> Result<PruneReport, String> {
+        let _access = crate::cache_migration::begin_cache_access()
+            .ok_or_else(|| "缓存正在迁移".to_string())?;
         if max_total_bytes == 0 {
             return Ok(PruneReport {
                 removed_sources: vec![],
                 freed_bytes: 0,
             });
         }
-        let mut stats = self.stats()?;
+        let mut stats = self.stats_inner()?;
         let total: u64 = stats.iter().map(|s| s.size_bytes).sum();
         if total <= max_total_bytes {
             return Ok(PruneReport {
@@ -322,7 +355,7 @@ impl Store {
                 break;
             }
             let key = SourceKey::from_slug(s.source.clone());
-            let f = self.clear(Some(&key)).unwrap_or(0);
+            let f = self.clear_inner(Some(&key)).unwrap_or(0);
             current = current.saturating_sub(f);
             freed += f;
             removed.push(s.source);

@@ -352,6 +352,18 @@ impl TaskManager {
             .collect()
     }
 
+    pub fn has_active_tasks(&self) -> bool {
+        self.tasks.lock().unwrap().values().any(|entry| {
+            !matches!(
+                entry.info.status,
+                TaskStatus::Completed
+                    | TaskStatus::CompletedWithGaps
+                    | TaskStatus::Failed
+                    | TaskStatus::Cancelled
+            )
+        })
+    }
+
     /// 移除已完成/失败/取消的任务
     pub fn remove_finished(&self, id: &str) {
         let mut tasks = self.tasks.lock().unwrap();

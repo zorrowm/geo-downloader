@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ask as askDialog, open as openDialog } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, Loader2, RefreshCw, Trash2 } from 'lucide-react'
+import { FolderSync, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -10,10 +10,14 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import {
   clearCache,
+  getCacheMigrationStatus,
   getCacheStats,
-  setCacheDir,
+  preflightCacheMigration,
+  type CacheMigrationPreflight,
+  type CacheMigrationStatus,
   type TileCacheStats,
 } from './tile-cache-api'
+import { CacheMigrationDialog } from './cache-migration-dialog'
 
 export interface TileCacheSectionProps {
   enabled: boolean
@@ -45,15 +49,22 @@ export function TileCacheSection({
   onDirChange,
 }: TileCacheSectionProps) {
   const queryClient = useQueryClient()
-  const [maxGb, setMaxGb] = useState<string>(String(Math.max(0, maxSizeMb / 1024)))
-
-  useEffect(() => {
-    setMaxGb(String(Math.max(0, maxSizeMb / 1024)))
-  }, [maxSizeMb])
+  const [maxGbDraft, setMaxGbDraft] = useState<string | null>(null)
+  const [migrationOpen, setMigrationOpen] = useState(false)
+  const [migrationPreflight, setMigrationPreflight] =
+    useState<CacheMigrationPreflight | null>(null)
+  const [migrationInitialStatus, setMigrationInitialStatus] =
+    useState<CacheMigrationStatus | null>(null)
+  const [checkingMigration, setCheckingMigration] = useState(false)
 
   const statsQuery = useQuery<TileCacheStats>({
     queryKey: ['tile-cache-stats'],
     queryFn: getCacheStats,
+    refetchOnWindowFocus: false,
+  })
+  const migrationStatusQuery = useQuery({
+    queryKey: ['cache-migration-status'],
+    queryFn: getCacheMigrationStatus,
     refetchOnWindowFocus: false,
   })
 
@@ -73,25 +84,25 @@ export function TileCacheSection({
     },
   })
 
-  const handlePickDir = async () => {
-    // 用户未自定义时 dir 为空，输入框显示的是 placeholder（即当前生效的默认目录）。
-    // 选择对话框也应当从这个实际目录出发，方便就近调整。
-    const current = (dir ?? '').trim() || (statsQuery.data?.rootDir ?? '').trim()
+  const handleMigrate = async () => {
+    const current = (statsQuery.data?.rootDir ?? dir ?? '').trim()
     const picked = await openDialog({
       directory: true,
       multiple: false,
       defaultPath: current || undefined,
     })
     if (typeof picked === 'string' && picked.trim()) {
-      onDirChange(picked)
+      setCheckingMigration(true)
       try {
-        const applied = await setCacheDir(picked)
-        toast.success(`缓存目录已切换并保存: ${applied}`)
-        queryClient.invalidateQueries({ queryKey: ['tile-cache-stats'] })
-        queryClient.invalidateQueries({ queryKey: ['settings'] })
+        const result = await preflightCacheMigration(picked)
+        setMigrationInitialStatus(null)
+        setMigrationPreflight(result)
+        setMigrationOpen(true)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        toast.error(`切换失败：${msg}`)
+        toast.error(`迁移预检失败：${msg}`)
+      } finally {
+        setCheckingMigration(false)
       }
     }
   }
@@ -105,18 +116,38 @@ export function TileCacheSection({
   }
 
   const stats = statsQuery.data
+  const recordedMigration = migrationStatusQuery.data
   const usedBytes = stats?.usedBytes ?? 0
   const maxBytes = (stats?.maxTotalBytes ?? 0) || maxSizeMb * 1024 * 1024
+  const maxGb = maxGbDraft ?? String(Math.max(0, maxSizeMb / 1024))
   const percent =
     maxBytes > 0 ? Math.min(100, Math.round((usedBytes / maxBytes) * 100)) : 0
 
   const handleMaxGbBlur = () => {
     const n = Number.parseFloat(maxGb)
     if (!Number.isFinite(n) || n < 0) {
-      setMaxGb(String(Math.max(0, maxSizeMb / 1024)))
+      setMaxGbDraft(null)
       return
     }
     onMaxSizeMbChange(Math.round(n * 1024))
+    setMaxGbDraft(null)
+  }
+
+  const handleOpenRecordedMigration = () => {
+    if (!recordedMigration) return
+    setMigrationInitialStatus(recordedMigration)
+    setMigrationPreflight({
+      sourceDir: recordedMigration.sourceDir,
+      targetDir: recordedMigration.targetDir,
+      totalBytes: recordedMigration.totalBytes,
+      fileCount: recordedMigration.fileCount,
+      availableBytes: 0,
+      requiredBytes: recordedMigration.totalBytes,
+      canStart: false,
+      blockers: [],
+      warnings: [],
+    })
+    setMigrationOpen(true)
   }
 
   return (
@@ -140,52 +171,59 @@ export function TileCacheSection({
           max={1024}
           step="0.5"
           value={maxGb}
-          onChange={(e) => setMaxGb(e.target.value)}
+          onChange={(e) => setMaxGbDraft(e.target.value)}
           onBlur={handleMaxGbBlur}
         />
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="tile_cache_dir">缓存目录</Label>
+        <Label htmlFor="tile_cache_dir">当前缓存目录</Label>
         <div className="flex gap-2">
           <Input
             id="tile_cache_dir"
-            placeholder={stats?.rootDir ?? '使用默认 data_local_dir'}
-            value={dir}
-            onChange={(e) => onDirChange(e.target.value)}
+            value={stats?.rootDir ?? dir}
+            readOnly
           />
-          <Button type="button" variant="outline" size="sm" onClick={handlePickDir}>
-            <FolderOpen className="size-3.5" />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleMigrate}
+            disabled={checkingMigration}
+          >
+            {checkingMigration ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <FolderSync className="size-3.5" />
+            )}
+            迁移
           </Button>
-          {dir && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={async () => {
-                onDirChange('')
-                try {
-                  const applied = await setCacheDir(null)
-                  toast.success(`已恢复默认缓存目录：${applied}`)
-                  queryClient.invalidateQueries({ queryKey: ['tile-cache-stats'] })
-                  queryClient.invalidateQueries({ queryKey: ['settings'] })
-                } catch (e) {
-                  const msg = e instanceof Error ? e.message : String(e)
-                  toast.error(`重置失败：${msg}`)
-                }
-              }}
-              title="重置为默认目录"
-            >
-              重置
-            </Button>
-          )}
         </div>
-        {dir && dir !== (stats?.rootDir ?? '') && (
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            目录变更后保存生效；旧目录文件不会自动迁移
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground">
+          迁移会复制并校验全部缓存，成功后才切换目录，旧缓存默认保留。
+        </p>
       </div>
+
+      {recordedMigration &&
+        (recordedMigration.status === 'completed' ||
+          recordedMigration.status === 'failed' ||
+          recordedMigration.status === 'cancelled') && (
+          <div className="flex items-center justify-between gap-3 rounded-md border p-2.5 text-sm">
+            <div className="min-w-0">
+              <div className="font-medium">
+                {recordedMigration.status === 'completed'
+                  ? '上次缓存迁移已完成'
+                  : '有未完成的缓存迁移'}
+              </div>
+              <div className="truncate text-xs text-muted-foreground">
+                {recordedMigration.message}
+              </div>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={handleOpenRecordedMigration}>
+              处理
+            </Button>
+          </div>
+        )}
 
       <div className="rounded-md border p-2.5">
         <div className="mb-1.5 flex items-center justify-between text-xs">
@@ -272,6 +310,26 @@ export function TileCacheSection({
         <Trash2 className="mr-1 size-3.5" />
         清空全部缓存
       </Button>
+
+      {migrationOpen && (
+        <CacheMigrationDialog
+          open
+          preflight={migrationPreflight}
+          initialStatus={migrationInitialStatus}
+          onOpenChange={(next) => {
+            setMigrationOpen(next)
+            if (!next) {
+              queryClient.invalidateQueries({ queryKey: ['cache-migration-status'] })
+            }
+          }}
+          onCompleted={(targetDir) => {
+            onDirChange(targetDir)
+            queryClient.invalidateQueries({ queryKey: ['tile-cache-stats'] })
+            queryClient.invalidateQueries({ queryKey: ['settings'] })
+            queryClient.invalidateQueries({ queryKey: ['cache-migration-status'] })
+          }}
+        />
+      )}
     </div>
   )
 }

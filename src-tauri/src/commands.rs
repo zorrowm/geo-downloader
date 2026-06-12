@@ -2469,6 +2469,9 @@ pub fn get_settings() -> Result<AppSettings, String> {
 /// 保存应用设置
 #[tauri::command]
 pub fn save_settings(settings: AppSettings) -> Result<(), String> {
+    if crate::cache_migration::is_migrating() {
+        return Err("缓存正在迁移，暂时不能保存设置".to_string());
+    }
     let manager = SettingsManager::new()?;
     manager.save(&settings)?;
     // 同步全局 TLS 严格性开关，避免用户变更后仍需重启才生效
@@ -3854,6 +3857,9 @@ pub async fn cache_stats() -> Result<CacheStatsResponse, String> {
 
 #[tauri::command]
 pub async fn cache_clear(source: Option<String>) -> Result<u64, String> {
+    if crate::cache_migration::is_migrating() {
+        return Err("缓存正在迁移，暂时不能清理".to_string());
+    }
     let src = source.map(SourceKey::new);
     tokio::task::spawn_blocking(move || tile_cache::Store::global().clear(src.as_ref()))
         .await
@@ -3862,6 +3868,9 @@ pub async fn cache_clear(source: Option<String>) -> Result<u64, String> {
 
 #[tauri::command]
 pub async fn cache_set_max_size_mb(mb: u64) -> Result<u64, String> {
+    if crate::cache_migration::is_migrating() {
+        return Err("缓存正在迁移，暂时不能修改容量".to_string());
+    }
     let bytes = mb.saturating_mul(1024 * 1024);
     tile_cache::set_max_total_bytes(bytes);
     // 立即触发一次 prune
@@ -3875,6 +3884,9 @@ pub async fn cache_set_max_size_mb(mb: u64) -> Result<u64, String> {
 
 #[tauri::command]
 pub async fn cache_set_dir(dir: Option<String>) -> Result<String, String> {
+    if crate::cache_migration::is_migrating() {
+        return Err("缓存正在迁移，暂时不能切换目录".to_string());
+    }
     let path = match &dir {
         Some(s) if !s.trim().is_empty() => std::path::PathBuf::from(s.trim()),
         _ => tile_cache::CacheConfig::default_root(),
@@ -3895,6 +3907,9 @@ pub async fn cache_set_dir(dir: Option<String>) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn cache_set_enabled(enabled: bool) -> Result<(), String> {
+    if crate::cache_migration::is_migrating() {
+        return Err("缓存正在迁移，暂时不能修改开关".to_string());
+    }
     tile_cache::set_enabled(enabled);
     Ok(())
 }

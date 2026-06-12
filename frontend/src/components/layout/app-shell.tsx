@@ -1,4 +1,4 @@
-import type { PropsWithChildren, ReactNode } from 'react'
+import type { MouseEvent, PropsWithChildren, ReactNode } from 'react'
 import { Minus, Square, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -33,6 +33,16 @@ async function withCurrentWindow(action: 'minimize' | 'toggleMaximize' | 'close'
   }
 }
 
+async function startModalWindowDrag(event: MouseEvent<HTMLElement>) {
+  if (event.button !== 0 || !isTauriRuntime()) return
+  if (getComputedStyle(document.body).pointerEvents !== 'none') return
+  const target = event.target as HTMLElement
+  if (target.closest('button, a, input, select, textarea, [role="button"], [data-no-drag]')) return
+
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  await getCurrentWindow().startDragging()
+}
+
 interface AppShellProps extends PropsWithChildren {
   modeSlot?: ReactNode
   headerExtras?: ReactNode
@@ -43,7 +53,8 @@ export function AppShell({ children, modeSlot, headerExtras }: AppShellProps) {
     <div className="min-h-screen bg-background text-foreground">
       <div
         data-tauri-drag-region
-        className="flex h-12 items-center justify-between gap-4 border-b border-border/60 bg-background/95 px-4 backdrop-blur"
+        onMouseDown={(event) => void startModalWindowDrag(event)}
+        className="relative z-[60] flex h-12 items-center justify-between gap-4 border-b border-border/60 bg-background/95 px-4 pointer-events-auto backdrop-blur"
       >
         <div data-tauri-drag-region className="flex select-none items-center gap-3">
           <div data-tauri-drag-region className="flex items-center gap-2">
