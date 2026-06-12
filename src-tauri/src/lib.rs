@@ -141,6 +141,7 @@ pub fn run() {
             commands::get_wayback_scan_progress,
             commands::download_wayback_incremental,
             // 更新
+            commands::get_update_info,
             commands::download_and_install_update,
             // 瓦片缓存
             commands::cache_get_tile,

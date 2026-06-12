@@ -2671,7 +2671,45 @@ pub async fn download_admin_boundary_file(
     Ok(save_path)
 }
 
-/// 下载并安装更新
+const UPDATE_MANIFEST_URL: &str = "https://laogao.xyz/packages/latest/update.json";
+const GITHUB_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/gaopengbin/geo-downloader/releases/latest";
+const GITHUB_RELEASES_URL: &str =
+    "https://api.github.com/repos/gaopengbin/geo-downloader/releases?per_page=5";
+
+/// 获取更新信息。稳定版优先使用镜像清单，失败后回退 GitHub。
+#[tauri::command]
+pub async fn get_update_info(prerelease: bool) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .user_agent("GeoDownloader")
+        .build()
+        .map_err(|e| format!("创建更新检查客户端失败: {}", e))?;
+
+    let urls: &[&str] = if prerelease {
+        &[GITHUB_RELEASES_URL]
+    } else {
+        &[UPDATE_MANIFEST_URL, GITHUB_LATEST_RELEASE_URL]
+    };
+    let mut errors = Vec::new();
+
+    for url in urls {
+        match client.get(*url).send().await {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(payload) => return Ok(payload),
+                    Err(error) => errors.push(format!("{} 返回的数据无效: {}", url, error)),
+                }
+            }
+            Ok(response) => errors.push(format!("{} 返回 HTTP {}", url, response.status())),
+            Err(error) => errors.push(format!("{} 请求失败: {}", url, error)),
+        }
+    }
+
+    Err(format!("获取更新信息失败：{}", errors.join("；")))
+}
+
+/// 下载并安装更新。
 #[tauri::command]
 pub async fn download_and_install_update(
     app: AppHandle,

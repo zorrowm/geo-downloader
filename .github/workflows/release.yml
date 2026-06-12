@@ -196,6 +196,18 @@ jobs:
             --repo ${{ github.repository }} \
             --pattern "GeoDownloader_*" \
             --dir artifacts
+          gh api "repos/${{ github.repository }}/releases/tags/v${{ steps.version.outputs.VERSION }}" \
+            | jq --arg base "https://laogao.xyz/packages/latest/" '{
+                tag_name,
+                html_url,
+                body,
+                draft,
+                prerelease,
+                assets: [.assets[] | {
+                  name,
+                  browser_download_url: ($base + .name)
+                }]
+              }' > artifacts/update.json
           ls -la artifacts/
 
       - name: Create directories and upload

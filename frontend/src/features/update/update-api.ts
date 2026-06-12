@@ -1,7 +1,5 @@
-import { isTauriRuntime } from '@/lib/tauri'
+import { invokeCommand, isTauriRuntime } from '@/lib/tauri'
 import { useUpdateStore } from './update-store'
-
-const GITHUB_REPO = 'gaopengbin/geo-downloader'
 
 interface GithubAsset {
   name: string
@@ -152,13 +150,9 @@ export async function checkForUpdates(silent: boolean) {
   try {
     const currentVersion = await getCurrentVersion()
     const isPrerelease = currentVersion.includes('-')
-    const apiUrl = isPrerelease
-      ? `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=5`
-      : `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`
-
-    const resp = await fetch(apiUrl)
-    if (!resp.ok) throw new Error('获取更新信息失败')
-    const payload = (await resp.json()) as GithubRelease | GithubRelease[]
+    const payload = await invokeCommand<GithubRelease | GithubRelease[]>('get_update_info', {
+      prerelease: isPrerelease,
+    })
     const data = Array.isArray(payload) ? payload.find((r) => !r.draft) : payload
     if (!data) throw new Error('未找到可用的发布版本')
 
