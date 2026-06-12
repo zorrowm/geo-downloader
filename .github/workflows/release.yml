@@ -168,7 +168,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           name: 'GeoDownloader v${{ steps.version.outputs.VERSION }}'
-          generate_release_notes: true
+          body_path: 'docs/release-notes/release-notes-v${{ steps.version.outputs.VERSION }}.md'
           prerelease: ${{ steps.version.outputs.PRERELEASE == 'true' }}
           files: artifacts/*
         env:
