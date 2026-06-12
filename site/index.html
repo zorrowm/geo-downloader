@@ -343,6 +343,7 @@
   <script>
     const REPO = 'gaopengbin/geo-downloader';
     const API = `https://api.github.com/repos/${REPO}/releases/latest`;
+    const MIRROR_API = 'https://laogao.xyz/packages/latest/update.json';
     const MIRROR_BASE = 'https://laogao.xyz/packages/latest/';
     const GITHUB_DL_BASE = `https://github.com/${REPO}/releases/download/`;
 
@@ -474,8 +475,14 @@
 
     async function loadRelease() {
       try {
-        var res = await fetch(API);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var res;
+        try {
+          res = await fetch(MIRROR_API, { cache: 'no-store' });
+          if (!res.ok) throw new Error('Mirror HTTP ' + res.status);
+        } catch (mirrorError) {
+          res = await fetch(API);
+          if (!res.ok) throw new Error('GitHub HTTP ' + res.status);
+        }
         var data = await res.json();
         currentVersion = data.tag_name;
         document.getElementById('latest-version').textContent = currentVersion;
