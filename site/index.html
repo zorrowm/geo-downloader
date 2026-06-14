@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GeoDownloader — 高性能地理空间数据下载工具</title>
+  <title>GeoD — 地理空间数据下载与导出工具</title>
   <meta name="description" content="基于 Rust + Tauri 的开源桌面工具，支持 2D 地图瓦片、3D Tiles、Esri Wayback 历史影像下载，导出 GeoTIFF。安装包仅 10MB，Win/macOS/Linux 全平台。">
   <meta name="keywords" content="GeoDownloader,GeoTIFF,地图下载,瓦片下载,3D Tiles,Wayback,卫星影像,遥感,GIS,开源,Tauri,Rust">
   <meta name="author" content="gaopengbin">
@@ -12,171 +12,159 @@
   <!-- Open Graph -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://geodownloader.pages.dev/">
-  <meta property="og:title" content="GeoDownloader — 高性能地理空间数据下载工具">
+  <meta property="og:title" content="GeoD — 高性能地理空间数据下载工具">
   <meta property="og:description" content="开源免费桌面工具，支持 2D 瓦片 / 3D Tiles / 历史影像下载，导出 GeoTIFF。Rust + Tauri 构建，安装包仅 10MB。">
   <meta property="og:image" content="https://geodownloader.pages.dev/images/og-cover.png">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="GeoDownloader — 高性能地理空间数据下载工具">
+  <meta name="twitter:title" content="GeoD — 高性能地理空间数据下载工具">
   <meta name="twitter:description" content="开源免费桌面工具，支持 2D 瓦片 / 3D Tiles / 历史影像下载，导出 GeoTIFF。">
   <meta name="twitter:image" content="https://geodownloader.pages.dev/images/og-cover.png">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%232563eb'/><path d='m14 22 18-9 18 9-18 9-18-9Zm0 10 18 9 18-9M14 42l18 9 18-9' fill='none' stroke='white' stroke-width='4' stroke-linejoin='round'/></svg>">
   <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    html { scroll-behavior: smooth; }
-    .hero-bg {
-      background: linear-gradient(135deg, #1e3a5a 0%, #1e40af 50%, #2563eb 100%);
-    }
-    .screenshot-card {
-      transition: transform 0.3s ease, box-shadow 0.3s ease;
-    }
-    .screenshot-card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 20px 40px rgba(0,0,0,0.15);
-    }
-    .feature-icon {
-      width: 48px; height: 48px;
-      display: flex; align-items: center; justify-content: center;
-      border-radius: 12px; font-size: 24px;
-    }
-    @keyframes fade-up {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    .animate-fade-up { animation: fade-up 0.6s ease-out both; }
-    .dl-btn {
-      transition: all 0.2s ease;
-    }
-    .dl-btn:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
-    }
-  </style>
+  <link rel="stylesheet" href="./site-shell.css?v=20260614-2">
+  <link rel="stylesheet" href="./redesign.css?v=20260614-4">
+  <script src="./site-shell.js?v=20260614-1" defer></script>
 </head>
-<body class="bg-white text-gray-900 antialiased">
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
 
-  <!-- Nav -->
-  <nav class="fixed top-0 w-full bg-white/80 backdrop-blur-md border-b border-gray-100 z-50">
-    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-      <a href="#" class="font-bold text-xl">
-        <span class="text-blue-600">GeoD</span><span class="text-gray-700">ownloader</span>
-      </a>
-      <div class="hidden md:flex items-center gap-8 text-sm text-gray-600">
-        <a href="#features" class="hover:text-blue-600 transition">功能</a>
-        <a href="#screenshots" class="hover:text-blue-600 transition">截图</a>
-        <a href="#comparison" class="hover:text-blue-600 transition">对比</a>
-        <a href="#download" class="hover:text-blue-600 transition">下载</a>
-        <a href="./history.html" class="hover:text-blue-600 transition">历史版本</a>
-        <a href="#community" class="hover:text-blue-600 transition">社区</a>
-        <a href="./disclaimer.html" class="hover:text-blue-600 transition">免责声明</a>
-        <a href="https://github.com/gaopengbin/geo-downloader" target="_blank" class="hover:text-blue-600 transition flex items-center gap-1">
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-          GitHub
-        </a>
-      </div>
-    </div>
-  </nav>
+  <geod-nav current="home"></geod-nav>
 
-  <!-- Hero -->
-  <section class="hero-bg pt-32 pb-20 md:pt-40 md:pb-28">
-    <div class="max-w-6xl mx-auto px-6 text-center text-white">
-      <h1 class="text-4xl md:text-6xl font-bold tracking-tight animate-fade-up">
-        <span class="text-blue-200">GeoD</span>ownloader
-      </h1>
-      <p class="mt-6 text-lg md:text-xl text-blue-100 max-w-2xl mx-auto animate-fade-up" style="animation-delay:0.1s">
-        高性能地理空间数据下载工具<br class="md:hidden">
-        <span class="text-blue-200">2D 瓦片 · 3D Tiles · 历史影像 · GeoTIFF 导出</span>
-      </p>
-      <div class="mt-4 flex flex-wrap justify-center gap-3 text-sm text-blue-200 animate-fade-up" style="animation-delay:0.15s">
-        <span class="bg-white/10 rounded-full px-3 py-1">Rust + Tauri 2.0</span>
-        <span class="bg-white/10 rounded-full px-3 py-1">安装包 ~10 MB</span>
-        <span class="bg-white/10 rounded-full px-3 py-1">开源免费</span>
-        <span class="bg-white/10 rounded-full px-3 py-1">Win / macOS / Linux</span>
-      </div>
-      <div class="mt-4 flex justify-center gap-2 animate-fade-up" style="animation-delay:0.18s">
-        <img src="https://img.shields.io/github/downloads/gaopengbin/geo-downloader/total?color=brightgreen&label=downloads&style=flat-square" alt="Total Downloads" class="h-5">
-        <img src="https://img.shields.io/github/downloads/gaopengbin/geo-downloader/latest/total?label=latest&style=flat-square&color=blue" alt="Latest Downloads" class="h-5">
-        <img src="https://img.shields.io/github/stars/gaopengbin/geo-downloader?style=flat-square&color=yellow" alt="Stars" class="h-5">
-      </div>
-      <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-up" style="animation-delay:0.2s">
-        <a id="hero-download-btn" href="#download" class="dl-btn inline-flex items-center gap-2 bg-white font-semibold px-8 py-3.5 rounded-xl text-lg shadow-lg" style="color:#1d4ed8">
+  <main id="main-content">
+  <section class="hero-bg" aria-labelledby="hero-title">
+    <div class="hero-inner">
+      <div class="hero-copy">
+        <div class="hero-kicker animate-fade-up">开源桌面 GIS 数据工具</div>
+        <h1 id="hero-title" class="hero-title animate-fade-up" style="animation-delay:.06s"><span>GeoD</span></h1>
+        <p class="hero-tagline animate-fade-up" style="animation-delay:.1s">面向 GIS 工作流的桌面数据工具。</p>
+        <p class="hero-lead animate-fade-up" style="animation-delay:.12s">
+          选定区域、批量下载、断点续传并导出 GeoTIFF。2D 影像、DEM、3D Tiles 与历史影像，都在一套轻量桌面工具里完成。
+        </p>
+        <div class="hero-points animate-fade-up" style="animation-delay:.16s">
+          <span>GeoTIFF / DEM</span>
+          <span>3D Tiles</span>
+          <span>Wayback 历史影像</span>
+          <span>跨平台桌面端</span>
+        </div>
+        <div class="hero-actions animate-fade-up" style="animation-delay:.22s">
+        <a id="hero-download-btn" href="#download" class="hero-primary">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V3"/></svg>
           <span id="hero-download-text">下载最新版</span>
         </a>
-        <a href="https://github.com/gaopengbin/geo-downloader" target="_blank" class="inline-flex items-center gap-2 border border-white/30 text-white font-medium px-6 py-3 rounded-xl hover:bg-white/10 transition">
+        <a href="#screenshots" class="hero-secondary">查看产品界面</a>
+        <a href="https://github.com/gaopengbin/geo-downloader" target="_blank" rel="noreferrer" class="hero-secondary">
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
           GitHub
         </a>
+        </div>
+      </div>
+    </div>
+    <div class="hero-stats" aria-label="产品信息">
+      <div class="hero-stats-inner">
+        <div class="hero-stat">约 10 MB<small>轻量安装包</small></div>
+        <div class="hero-stat">10+ 图源<small>支持自定义 XYZ 服务</small></div>
+        <div class="hero-stat">断点续传<small>大范围任务更从容</small></div>
+        <div class="hero-stat">Windows / macOS / Linux<small>三端原生体验</small></div>
       </div>
     </div>
   </section>
 
-  <!-- Features -->
-  <section id="features" class="py-20 bg-gray-50">
-    <div class="max-w-6xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-4">核心功能</h2>
-      <p class="text-center text-gray-500 mb-14 max-w-xl mx-auto">覆盖 GIS 数据获取的全场景需求</p>
-      <div class="grid md:grid-cols-3 gap-8">
+  <section id="features">
+    <div class="section-shell">
+      <div class="section-heading">
+        <div>
+          <span class="section-index">01 / Capabilities</span>
+          <h2>从选区到成果，流程不再断开</h2>
+        </div>
+        <p>GeoD 把分散的地图数据获取流程收进一个桌面工作台。无需在多个脚本和工具之间来回切换，下载任务、空间边界与导出结果始终保持关联。</p>
+      </div>
+      <div class="capability-grid">
 
-        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div class="feature-icon bg-blue-50 text-blue-600 mb-4">
+        <article class="capability">
+          <div class="feature-icon">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           </div>
-          <h3 class="font-semibold text-lg mb-2">10+ 内置图源</h3>
-          <p class="text-gray-500 text-sm leading-relaxed">OSM、ArcGIS、天地图、Google Maps、高德地图等，支持自定义 XYZ 瓦片图源</p>
-        </div>
+          <h3>10+ 内置图源</h3>
+          <p>OSM、ArcGIS、天地图、Google Maps、高德地图等，并支持自定义 XYZ 瓦片服务。</p>
+          <span class="capability-code">XYZ / WMTS / CUSTOM SOURCE</span>
+        </article>
 
-        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div class="feature-icon bg-emerald-50 text-emerald-600 mb-4">
+        <article class="capability">
+          <div class="feature-icon">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
           </div>
-          <h3 class="font-semibold text-lg mb-2">3D Tiles 下载</h3>
-          <p class="text-gray-500 text-sm leading-relaxed">Cesium Ion / Google 3D Tiles / 自定义 URL，空间裁剪，递归下载全 LOD，离线预览</p>
-        </div>
+          <h3>3D Tiles 下载</h3>
+          <p>支持 Cesium Ion、Google 3D Tiles 与自定义 URL，按空间范围递归下载并离线预览。</p>
+          <span class="capability-code">CESIUM / GOOGLE / LOD</span>
+        </article>
 
-        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div class="feature-icon bg-amber-50 text-amber-600 mb-4">
+        <article class="capability">
+          <div class="feature-icon">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           </div>
-          <h3 class="font-semibold text-lg mb-2">历史影像回溯</h3>
-          <p class="text-gray-500 text-sm leading-relaxed">Esri World Imagery Wayback，时间轴选择任意历史时期影像，支持批量下载</p>
-        </div>
+          <h3>历史影像回溯</h3>
+          <p>通过 Esri World Imagery Wayback 时间轴定位历史时期影像，并按选区批量下载。</p>
+          <span class="capability-code">ESRI WAYBACK / TIMELINE</span>
+        </article>
 
-        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div class="feature-icon bg-purple-50 text-purple-600 mb-4">
+        <article class="capability">
+          <div class="feature-icon">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
           </div>
-          <h3 class="font-semibold text-lg mb-2">GeoTIFF 导出</h3>
-          <p class="text-gray-500 text-sm leading-relaxed">自动写入坐标投影标签，可选 LZW / Deflate 压缩，大范围自动 BigTIFF 流式写入</p>
-        </div>
+          <h3>GeoTIFF 导出</h3>
+          <p>自动写入坐标投影标签，支持 LZW / Deflate 压缩与大范围 BigTIFF 流式写入。</p>
+          <span class="capability-code">GEOTIFF / BIGTIFF / COMPRESS</span>
+        </article>
 
-        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div class="feature-icon bg-rose-50 text-rose-600 mb-4">
+        <article class="capability">
+          <div class="feature-icon">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
           </div>
-          <h3 class="font-semibold text-lg mb-2">行政区划裁剪</h3>
-          <p class="text-gray-500 text-sm leading-relaxed">省/市/区县三级联动，上传 GeoJSON / Shapefile / KML / KMZ，手绘矩形/多边形，按边界精准裁剪</p>
-        </div>
+          <h3>多种空间选区</h3>
+          <p>行政区划联动、手绘范围或导入 GeoJSON、Shapefile、KML、KMZ，按真实边界裁剪。</p>
+          <span class="capability-code">BOUNDARY / VECTOR IMPORT</span>
+        </article>
 
-        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div class="feature-icon bg-cyan-50 text-cyan-600 mb-4">
+        <article class="capability">
+          <div class="feature-icon">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
           </div>
-          <h3 class="font-semibold text-lg mb-2">极致性能</h3>
-          <p class="text-gray-500 text-sm leading-relaxed">Rust 真异步并发，安装包仅 ~10 MB，内存占用 ~50 MB，多任务并行 + 断点续传</p>
-        </div>
+          <h3>可靠的大任务执行</h3>
+          <p>多任务并行、断点续传与失败重试，缓存目录可迁移，让长期任务更稳定、更可控。</p>
+          <span class="capability-code">RESUME / RETRY / CACHE MOVE</span>
+        </article>
 
       </div>
     </div>
   </section>
 
-  <!-- Screenshots -->
-  <section id="screenshots" class="py-20">
-    <div class="max-w-6xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-4">界面预览</h2>
-      <p class="text-center text-gray-500 mb-14">五大核心模块，一个桌面工具搞定</p>
-      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+  <section id="screenshots">
+    <div class="section-shell">
+      <div class="section-heading">
+        <div>
+          <span class="section-index">02 / Product</span>
+          <h2>真实界面，直接看工作流</h2>
+        </div>
+        <p>地图交互、参数配置、任务进度和结果预览都围绕同一套桌面操作逻辑展开。切换模块，查看 GeoD 在不同数据场景下的实际界面。</p>
+      </div>
+      <div class="product-stage">
+        <div class="stage-toolbar">
+          <div class="stage-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+          <span id="stage-label" class="stage-label">GeoTIFF 下载与导出</span>
+          <span class="stage-label">GeoD Desktop</span>
+        </div>
+        <img id="stage-image" class="stage-image" src="./images/geotiff.png" alt="GeoD GeoTIFF 下载与导出界面">
+      </div>
+      <div class="shot-tabs" role="tablist" aria-label="产品模块截图">
+        <button class="shot-tab" role="tab" aria-selected="true" data-image="./images/geotiff.png" data-label="GeoTIFF 下载与导出" data-alt="GeoD GeoTIFF 下载与导出界面"><strong>GeoTIFF</strong><span>图源、选区与导出</span></button>
+        <button class="shot-tab" role="tab" aria-selected="false" data-image="./images/dem.png" data-label="DEM 高程数据" data-alt="GeoD DEM 高程数据下载界面"><strong>DEM</strong><span>多源高程与裁剪</span></button>
+        <button class="shot-tab" role="tab" aria-selected="false" data-image="./images/3dtiles.png" data-label="3D Tiles 下载" data-alt="GeoD 3D Tiles 下载界面"><strong>3D Tiles</strong><span>空间过滤与离线化</span></button>
+        <button class="shot-tab" role="tab" aria-selected="false" data-image="./images/wayback.png" data-label="Wayback 历史影像" data-alt="GeoD Wayback 历史影像界面"><strong>Wayback</strong><span>时间轴影像回溯</span></button>
+        <button class="shot-tab" role="tab" aria-selected="false" data-image="./images/vector.png" data-label="MVT 矢量瓦片" data-alt="GeoD MVT 矢量瓦片下载界面"><strong>MVT</strong><span>矢量瓦片与导出</span></button>
+      </div>
+      <div class="legacy-shot-grid grid md:grid-cols-2 lg:grid-cols-3 gap-6" aria-hidden="true">
 
         <div class="screenshot-card rounded-2xl overflow-hidden shadow-md border border-gray-100">
           <img src="./images/geotiff.png" alt="GeoTIFF 地图下载" class="w-full" loading="lazy">
@@ -222,138 +210,94 @@
     </div>
   </section>
 
-  <!-- Comparison -->
-  <section id="comparison" class="py-20 bg-gray-50">
-    <div class="max-w-4xl mx-auto px-6">
-      <h2 class="text-3xl font-bold text-center mb-4">为什么选 Rust + Tauri?</h2>
-      <p class="text-center text-gray-500 mb-14">从 Python + PyWebView 重构而来，性能质变</p>
-      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="bg-gray-50 border-b border-gray-100">
-              <th class="py-4 px-6 text-left font-semibold text-gray-600"></th>
-              <th class="py-4 px-6 text-center font-semibold text-gray-400">Python 版</th>
-              <th class="py-4 px-6 text-center font-semibold text-blue-600">Rust/Tauri 版</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-50">
-            <tr>
-              <td class="py-4 px-6 font-medium">安装包大小</td>
-              <td class="py-4 px-6 text-center text-gray-400">~200 MB</td>
-              <td class="py-4 px-6 text-center font-semibold text-blue-600">~10 MB</td>
-            </tr>
-            <tr>
-              <td class="py-4 px-6 font-medium">运行内存</td>
-              <td class="py-4 px-6 text-center text-gray-400">~300 MB</td>
-              <td class="py-4 px-6 text-center font-semibold text-blue-600">~50 MB</td>
-            </tr>
-            <tr>
-              <td class="py-4 px-6 font-medium">下载速度</td>
-              <td class="py-4 px-6 text-center text-gray-400">受 GIL 限制</td>
-              <td class="py-4 px-6 text-center font-semibold text-blue-600">tokio 真异步</td>
-            </tr>
-            <tr>
-              <td class="py-4 px-6 font-medium">大图导出</td>
-              <td class="py-4 px-6 text-center text-gray-400">内存爆炸</td>
-              <td class="py-4 px-6 text-center font-semibold text-blue-600">BigTIFF 流式写入</td>
-            </tr>
-            <tr>
-              <td class="py-4 px-6 font-medium">跨平台</td>
-              <td class="py-4 px-6 text-center text-gray-400">打包困难</td>
-              <td class="py-4 px-6 text-center font-semibold text-blue-600">Win / macOS / Linux</td>
-            </tr>
-          </tbody>
-        </table>
+  <section id="download">
+    <div class="section-shell">
+      <div class="section-heading">
+        <div>
+          <span class="section-index">03 / Download</span>
+          <h2>选择你的平台，开始工作</h2>
+        </div>
+        <p>GeoD 免费开源，支持 Windows、macOS 与 Linux。页面会自动识别当前系统，并优先展示适合你的安装包。</p>
       </div>
-    </div>
-  </section>
-
-  <!-- Download -->
-  <section id="download" class="py-20">
-    <div class="max-w-4xl mx-auto px-6 text-center">
-      <h2 class="text-3xl font-bold mb-4">立即下载</h2>
-      <p class="text-gray-500 mb-2">当前最新版本：<span id="latest-version" class="font-mono text-blue-600">加载中...</span></p>
-      <p class="text-gray-400 text-sm mb-4" id="download-stats"></p>
-
-      <!-- 线路切换 -->
-      <div class="inline-flex items-center gap-1 p-1 bg-gray-100 rounded-lg mt-2 mb-2">
-        <button id="src-mirror" class="px-4 py-1.5 rounded-md text-sm font-medium transition bg-white text-blue-600 shadow-sm" data-src="mirror">
-          国内高速 <span class="text-xs text-gray-400 font-normal">(阿里云)</span>
-        </button>
-        <button id="src-github" class="px-4 py-1.5 rounded-md text-sm font-medium transition text-gray-600 hover:text-gray-900" data-src="github">
-          GitHub <span class="text-xs text-gray-400 font-normal">(海外)</span>
-        </button>
+      <div class="download-meta">
+        <div class="version-line">
+          当前版本 <strong id="latest-version" class="font-mono">加载中...</strong>
+          <span id="download-stats"></span>
+        </div>
+        <div class="source-switch" aria-label="下载线路">
+          <button id="src-mirror" class="is-active" data-src="mirror">国内高速</button>
+          <button id="src-github" data-src="github">GitHub</button>
+        </div>
       </div>
 
-      <div id="download-grid" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-8">
+      <div id="download-grid">
         <!-- JS 动态填充 -->
       </div>
 
-      <p class="mt-8 text-sm text-gray-400">
-        <a href="./history.html" class="text-blue-600 hover:underline">查看历史版本</a>
-        <span class="mx-2">·</span>
-        <a href="https://github.com/gaopengbin/geo-downloader/releases" target="_blank" class="text-blue-600 hover:underline">GitHub Releases</a>
+      <p class="download-links">
+        <a href="./history.html">历史版本</a>
+        <span> / </span>
+        <a href="https://github.com/gaopengbin/geo-downloader/releases" target="_blank" rel="noreferrer">GitHub Releases</a>
+        <span> / </span>
+        <a href="./disclaimer.html">免责声明</a>
       </p>
     </div>
   </section>
 
-  <!-- Community -->
-  <section id="community" class="py-20 bg-gray-50">
-    <div class="max-w-4xl mx-auto px-6 text-center">
-      <h2 class="text-3xl font-bold mb-3">加入社区</h2>
-      <p class="text-gray-500 mb-12">关注公众号获取版本更新与教程，加入交流群与同行讨论 GIS 数据下载与处理</p>
-      <div class="grid sm:grid-cols-2 gap-8 max-w-2xl mx-auto">
-        <div class="bg-white rounded-2xl shadow p-6 flex flex-col items-center">
-          <div class="text-sm font-semibold text-gray-700 mb-3">微信公众号</div>
+  <section id="community">
+    <div class="section-shell community-layout">
+      <div class="community-copy">
+        <span class="section-index">04 / Community</span>
+        <h2>和真实用户一起，把工具打磨得更稳</h2>
+        <p>关注公众号获取版本更新、教程和常见问题说明；加入技术交流群，与 GIS 从业者讨论数据下载、处理与交付。</p>
+        <div class="community-note">交流群目前约 130 人。二维码失效时，可添加微信 <strong>gpb230314</strong>。</div>
+      </div>
+      <div class="qr-list">
+        <div class="qr-item">
+          <h3>微信公众号</h3>
           <img src="https://laogao.xyz/packages/qr-assets/gzh.jpg" onerror="this.onerror=null;this.src='images/gzh.jpg'" alt="GeoD 公众号二维码" class="w-48 h-48 object-contain rounded-lg" loading="lazy">
-          <p class="text-xs text-gray-500 mt-3">扫码关注 · 获取版本更新</p>
+          <p>版本更新、使用教程与问题说明</p>
         </div>
-        <div class="bg-white rounded-2xl shadow p-6 flex flex-col items-center">
-          <div class="text-sm font-semibold text-gray-700 mb-3">技术交流群</div>
+        <div class="qr-item">
+          <h3>技术交流群</h3>
           <img src="https://laogao.xyz/packages/qr-assets/wxq_sq.png" onerror="this.onerror=null;this.src='images/wxq_sq.png'" alt="GeoD 技术交流群二维码" class="w-48 h-48 object-contain rounded-lg" loading="lazy">
-          <p class="text-xs text-gray-500 mt-3">扫码加群 · 二维码失效请加微信 <span class="font-mono">gpb230314</span></p>
+          <p>交流 GIS 数据下载、处理与交付经验</p>
         </div>
       </div>
     </div>
   </section>
+  </main>
 
-  <!-- Footer -->
-  <footer class="bg-gray-900 text-gray-400 py-12">
-    <div class="max-w-6xl mx-auto px-6">
-      <div class="flex flex-col md:flex-row items-center justify-between gap-6">
-        <div class="text-center md:text-left">
-          <span class="text-white font-bold text-lg"><span class="text-blue-400">GeoD</span>ownloader</span>
-          <p class="text-sm mt-1">开源免费 · MIT License</p>
-        </div>
-        <div class="flex items-center gap-6 text-sm">
-          <a href="https://github.com/gaopengbin/geo-downloader" target="_blank" class="hover:text-white transition">GitHub</a>
-          <a href="https://github.com/gaopengbin/geo-downloader/issues" target="_blank" class="hover:text-white transition">反馈</a>
-          <a href="./disclaimer.html" class="hover:text-white transition">免责声明</a>
-          <span>微信: gpb230314</span>
-        </div>
-      </div>
-      <div class="mt-8 pt-6 border-t border-gray-800 text-center text-xs text-gray-500">
-        &copy; 2024-2025 GeoD. All rights reserved.
-        <span class="mx-2">·</span>
-        <a href="./disclaimer.html" class="hover:text-white transition">使用本工具即表示同意免责声明</a>
-      </div>
-    </div>
-  </footer>
+  <geod-footer></geod-footer>
 
   <script>
+    document.querySelectorAll('.shot-tab').forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        var image = document.getElementById('stage-image');
+        var label = document.getElementById('stage-label');
+        document.querySelectorAll('.shot-tab').forEach(function(item) {
+          item.setAttribute('aria-selected', 'false');
+        });
+        tab.setAttribute('aria-selected', 'true');
+        image.src = tab.dataset.image;
+        image.alt = tab.dataset.alt;
+        label.textContent = tab.dataset.label;
+      });
+    });
+
     const REPO = 'gaopengbin/geo-downloader';
     const API = `https://api.github.com/repos/${REPO}/releases/latest`;
     const MIRROR_API = 'https://laogao.xyz/packages/latest/update.json';
     const MIRROR_BASE = 'https://laogao.xyz/packages/latest/';
     const GITHUB_DL_BASE = `https://github.com/${REPO}/releases/download/`;
 
-    const FALLBACK_VERSION = 'v3.5.3';
+    const FALLBACK_VERSION = 'v3.6.1';
     const FALLBACK_ASSETS = [
-      { name: 'GeoDownloader_3.5.3_windows_x64-setup.exe',   size: 8787480,  os: 'windows', label: 'Windows (EXE)' },
-      { name: 'GeoDownloader_3.5.3_macos_arm64.dmg',         size: 12302795, os: 'macos',   label: 'macOS (Apple Silicon)' },
-      { name: 'GeoDownloader_3.5.3_macos_x64.dmg',           size: 12752364, os: 'macos',   label: 'macOS (Intel)' },
-      { name: 'GeoDownloader_3.5.3_linux_amd64.deb',         size: 14010658, os: 'linux',   label: 'Linux (deb)' },
-      { name: 'GeoDownloader_3.5.3_linux_amd64.AppImage',    size: 92477944, os: 'linux',   label: 'Linux (AppImage)' },
+      { name: 'GeoDownloader_3.6.1_windows_x64-setup.exe',   size: 8882645,  os: 'windows', label: 'Windows (EXE)' },
+      { name: 'GeoDownloader_3.6.1_macos_arm64.dmg',         size: 12388196, os: 'macos',   label: 'macOS (Apple Silicon)' },
+      { name: 'GeoDownloader_3.6.1_macos_x64.dmg',           size: 12835826, os: 'macos',   label: 'macOS (Intel)' },
+      { name: 'GeoDownloader_3.6.1_linux_amd64.deb',         size: 14072714, os: 'linux',   label: 'Linux (deb)' },
+      { name: 'GeoDownloader_3.6.1_linux_amd64.AppImage',    size: 92539384, os: 'linux',   label: 'Linux (AppImage)' },
     ];
 
     const PLATFORM_MAP = [
@@ -464,11 +408,11 @@
       var mirrorBtn = document.getElementById('src-mirror');
       var githubBtn = document.getElementById('src-github');
       if (src === 'mirror') {
-        mirrorBtn.className = 'px-4 py-1.5 rounded-md text-sm font-medium transition bg-white text-blue-600 shadow-sm';
-        githubBtn.className = 'px-4 py-1.5 rounded-md text-sm font-medium transition text-gray-600 hover:text-gray-900';
+        mirrorBtn.className = 'is-active';
+        githubBtn.className = '';
       } else {
-        githubBtn.className = 'px-4 py-1.5 rounded-md text-sm font-medium transition bg-white text-blue-600 shadow-sm';
-        mirrorBtn.className = 'px-4 py-1.5 rounded-md text-sm font-medium transition text-gray-600 hover:text-gray-900';
+        githubBtn.className = 'is-active';
+        mirrorBtn.className = '';
       }
       renderCards();
     }
@@ -543,14 +487,14 @@
   {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    "name": "GeoDownloader",
+    "name": "GeoD",
     "applicationCategory": "UtilitiesApplication",
     "operatingSystem": "Windows, macOS, Linux",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "description": "高性能地理空间数据下载工具，支持 2D 地图瓦片、3D Tiles、Esri Wayback 历史影像下载，导出 GeoTIFF。",
     "url": "https://geodownloader.pages.dev/",
     "downloadUrl": "https://github.com/gaopengbin/geo-downloader/releases/latest",
-    "softwareVersion": "3.4.2",
+    "softwareVersion": "3.6.1",
     "author": { "@type": "Person", "name": "gaopengbin", "url": "https://github.com/gaopengbin" },
     "license": "https://opensource.org/licenses/MIT",
     "screenshot": "https://geodownloader.pages.dev/images/og-cover.png"
