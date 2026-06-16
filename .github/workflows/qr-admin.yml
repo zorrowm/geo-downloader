@@ -1,0 +1,65 @@
+name: QR Admin Service
+
+on:
+  workflow_dispatch:
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Upload service script
+        env:
+          SSHPASS: ${{ secrets.MIRROR_PASSWORD }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${{ secrets.MIRROR_USER }}@${{ secrets.MIRROR_HOST }}" \
+            "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path 'C:\nginx-1.30.2\tools' | Out-Null\""
+
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            scripts/qr-upload-server.js \
+            "${{ secrets.MIRROR_USER }}@${{ secrets.MIRROR_HOST }}:/C:/nginx-1.30.2/tools/qr-upload-server.js"
+
+      - name: Restart QR admin service
+        env:
+          SSHPASS: ${{ secrets.MIRROR_PASSWORD }}
+          QR_ADMIN_TOKEN: ${{ secrets.QR_ADMIN_TOKEN }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${{ secrets.MIRROR_USER }}@${{ secrets.MIRROR_HOST }}" \
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command @'
+          $ErrorActionPreference = 'Stop'
+          $script = 'C:\nginx-1.30.2\tools\qr-upload-server.js'
+          $tokenFile = 'C:\nginx-1.30.2\qr-admin-token.txt'
+          $token = '${{ secrets.QR_ADMIN_TOKEN }}'
+          if ([string]::IsNullOrWhiteSpace($token)) {
+            throw 'QR_ADMIN_TOKEN secret is empty'
+          }
+          Set-Content -LiteralPath $tokenFile -Value $token -NoNewline -Encoding UTF8
+
+          $node = (Get-Command node.exe -ErrorAction Stop).Source
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.CommandLine -like '*qr-upload-server.js*' } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+          $taskName = 'GeoDQrAdmin'
+          $action = New-ScheduledTaskAction -Execute $node -Argument "`"$script`""
+          $trigger = New-ScheduledTaskTrigger -AtStartup
+          Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Force | Out-Null
+
+          Start-Process -FilePath $node -ArgumentList @($script) -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          $response = Invoke-WebRequest -Uri 'http://127.0.0.1:9090/qr-admin/' -UseBasicParsing -TimeoutSec 10
+          if ($response.StatusCode -ne 200) {
+            throw "QR admin returned status $($response.StatusCode)"
+          }
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.CommandLine -like '*qr-upload-server.js*' } |
+            Select-Object ProcessId,CommandLine |
+            Format-List
+          '@"
