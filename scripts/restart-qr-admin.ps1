@@ -38,6 +38,7 @@ if ($response.StatusCode -ne 200) {
 
 if (Test-Path $nginxConf) {
   $conf = Get-Content -LiteralPath $nginxConf -Raw
+  $conf = $conf.TrimStart([char]0xFEFF)
   $location = @'
         location /qr-admin/ {
             proxy_pass http://127.0.0.1:9090/qr-admin/;
@@ -64,12 +65,22 @@ if (Test-Path $nginxConf) {
   if ($updated) {
     $backup = "$nginxConf.bak-$(Get-Date -Format 'yyyyMMddHHmmss')"
     Copy-Item -LiteralPath $nginxConf -Destination $backup -Force
-    Set-Content -LiteralPath $nginxConf -Value $conf -Encoding UTF8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($nginxConf, $conf, $utf8NoBom)
+  } elseif ((Get-Content -LiteralPath $nginxConf -Encoding Byte -TotalCount 3) -join ',' -eq '239,187,191') {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($nginxConf, $conf, $utf8NoBom)
   }
 
   if (Test-Path $nginxExe) {
     & $nginxExe -t -p $nginxRoot -c conf/nginx.conf
+    if ($LASTEXITCODE -ne 0) {
+      throw "nginx config test failed with exit code $LASTEXITCODE"
+    }
     & $nginxExe -s reload -p $nginxRoot -c conf/nginx.conf
+    if ($LASTEXITCODE -ne 0) {
+      throw "nginx reload failed with exit code $LASTEXITCODE"
+    }
   }
 }
 
