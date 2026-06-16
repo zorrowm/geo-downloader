@@ -79,7 +79,12 @@ if (Test-Path $nginxConf) {
     }
     & $nginxExe -s reload -p $nginxRoot -c conf/nginx.conf
     if ($LASTEXITCODE -ne 0) {
-      throw "nginx reload failed with exit code $LASTEXITCODE"
+      Write-Warning "nginx reload failed with exit code $LASTEXITCODE; starting nginx instead"
+      & $nginxExe -p $nginxRoot -c conf/nginx.conf
+      if ($LASTEXITCODE -ne 0) {
+        throw "nginx start failed with exit code $LASTEXITCODE"
+      }
+      Start-Sleep -Seconds 2
     }
   }
 }
