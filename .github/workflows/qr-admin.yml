@@ -36,4 +36,4 @@ jobs:
         run: |
           sshpass -e ssh -o StrictHostKeyChecking=no \
             "${{ secrets.MIRROR_USER }}@${{ secrets.MIRROR_HOST }}" \
-            "powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\nginx-1.30.2\tools\restart-qr-admin.ps1' -Token '${{ secrets.QR_ADMIN_TOKEN }}'"
+            "powershell -NoProfile -ExecutionPolicy Bypass -File C:/nginx-1.30.2/tools/restart-qr-admin.ps1 -Token ${{ secrets.QR_ADMIN_TOKEN }}"
