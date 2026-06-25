@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $script = 'C:\nginx-1.30.2\tools\qr-upload-server.js'
 $tokenFile = 'C:\nginx-1.30.2\qr-admin-token.txt'
+$watchdogScript = 'C:\nginx-1.30.2\tools\qr-admin-watchdog.ps1'
 $nginxRoot = 'C:\nginx-1.30.2'
 $nginxConf = Join-Path $nginxRoot 'conf\nginx.conf'
 $nginxExe = Join-Path $nginxRoot 'nginx.exe'
@@ -27,6 +28,35 @@ $taskName = 'GeoDQrAdmin'
 $action = New-ScheduledTaskAction -Execute $node -Argument "`"$script`""
 $trigger = New-ScheduledTaskTrigger -AtStartup
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Force | Out-Null
+
+$watchdogContent = @"
+`$ErrorActionPreference = 'Stop'
+`$taskName = '$taskName'
+`$process = Get-CimInstance Win32_Process |
+  Where-Object { `$_.CommandLine -like '*qr-upload-server.js*' } |
+  Select-Object -First 1
+
+if (-not `$process) {
+  Start-ScheduledTask -TaskName `$taskName
+}
+"@
+Set-Content -LiteralPath $watchdogScript -Value $watchdogContent -Encoding UTF8
+
+$watchdogTaskName = 'GeoDQrAdminWatchdog'
+$watchdogAction = New-ScheduledTaskAction `
+  -Execute 'powershell.exe' `
+  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$watchdogScript`""
+$watchdogStartupTrigger = New-ScheduledTaskTrigger -AtStartup
+$watchdogRepeatTrigger = New-ScheduledTaskTrigger `
+  -Once `
+  -At (Get-Date).AddMinutes(1) `
+  -RepetitionInterval (New-TimeSpan -Minutes 5) `
+  -RepetitionDuration (New-TimeSpan -Days 3650)
+Register-ScheduledTask `
+  -TaskName $watchdogTaskName `
+  -Action $watchdogAction `
+  -Trigger @($watchdogStartupTrigger, $watchdogRepeatTrigger) `
+  -Force | Out-Null
 
 Start-ScheduledTask -TaskName $taskName
 Start-Sleep -Seconds 3
