@@ -1,0 +1,40 @@
+GeoDownloader 社区与联系方式
+==============================
+
+作者信息：
+- 姓名：高鹏斌（老高）
+- 职业：GIS 开发工程师
+- 微信号：gpb230314
+- 公众号：GeoD
+
+交流渠道：
+1. 微信公众号"GeoD"：关注获取版本更新通知和使用教程
+2. 微信技术交流群：关注公众号回复"加群"获取最新群二维码（每周更新）
+3. GitHub Discussions：https://github.com/gaopengbin/geo-downloader/discussions（使用问题、功能建议、案例分享）
+4. GitHub Issues：https://github.com/gaopengbin/geo-downloader/issues（Bug 报告）
+
+如何反馈 Bug：
+1. 推荐方式：在 GitHub Issues 中提交，附带以下信息：
+   - 操作系统和版本
+   - GeoDownloader 版本号
+   - 复现步骤
+   - 错误截图或日志
+2. 也可以在微信交流群中反馈
+
+如何提建议：
+- 在 GitHub Discussions 中发帖讨论
+- 或在微信交流群中提出
+
+赞助支持：
+如果 GeoDownloader 对你有帮助，欢迎赞助支持开发：
+- 微信支付
+- 支付宝
+（扫码方式：关注公众号查看）
+
+贡献代码：
+项目开源欢迎贡献。Fork 仓库后提 Pull Request 即可。
+仓库地址：https://github.com/gaopengbin/geo-downloader
+
+使用许可：
+MIT License — 免费用于个人和商业项目，无需授权。
+注意：软件本身免费，但下载的地图数据版权归各数据源提供方所有，请遵守相应数据源的使用条款。

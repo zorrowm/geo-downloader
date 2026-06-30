@@ -1,0 +1,103 @@
+GeoDownloader 设置项说明
+=========================
+
+所有设置通过软件内的"设置"页面修改，自动保存。
+
+一、基础设置
+
+天地图 Token (tianditu_token)：
+- 用途：访问天地图数据源所需的授权令牌
+- 默认：内置公共 Token
+- 如何获取：在 https://lbs.tianditu.gov.cn/ 注册并申请
+
+代理设置：
+- proxy_enabled：是否启用代理（true/false）
+- proxy_url：代理地址（如 http://127.0.0.1:7890）
+- 用途：访问国外数据源（Google、ArcGIS 等）时需要
+
+默认并发数 (default_concurrency)：
+- 范围：1-100
+- 默认：30
+- 说明：同时下载的线程数。并发越高速度越快，但可能被服务器封IP
+
+默认层级 (default_zoom)：
+- 默认：15
+- 说明：新建下载任务时的默认层级
+
+默认格式 (default_format)：
+- 可选：geotiff, png, jpeg, mbtiles, gpkg, tiles, pbf
+- 默认：geotiff
+
+默认数据源 (default_source)：
+- 默认：osm
+- 说明：新建下载任务时默认选中的数据源
+
+二、高级设置
+
+Cesium Ion Token (cesium_ion_token)：
+- 用途：下载 Cesium Ion 上的 3D Tiles 数据
+- 如何获取：在 https://ion.cesium.com/ 注册并创建 Token
+
+内存预算 (memory_budget_mb)：
+- 范围：512-16384 MB
+- 默认：2048 MB
+- 说明：单个导出任务允许使用的最大内存
+
+允许不安全证书 (allow_invalid_certs)：
+- 默认：false
+- 说明：允许连接自签名 HTTPS 服务器（有安全风险）
+
+浏览缓存开关 (tile_cache_enabled)：
+- 默认：true
+- 说明：浏览地图时是否自动缓存看过的瓦片
+
+缓存大小限制 (tile_cache_max_size_mb)：
+- 默认：5120 MB (5GB)
+- 0 表示不限制
+- 说明：本地瓦片缓存的磁盘空间上限
+
+缓存目录 (tile_cache_dir)：
+- 默认：系统 AppData 目录下 geo-downloader 文件夹
+- 说明：可以改到其他磁盘分区
+
+最低导出成功率 (min_export_success_ratio)：
+- 范围：0.0-1.0
+- 默认：0.0（即任何瓦片下载成功都导出）
+- 说明：下载完成时，如果成功率低于此阈值则不自动导出
+
+导出缓冲大小 (export_buffer_mb)：
+- 范围：16-512 MB
+- 默认：64 MB
+- 说明：流式导出时每个条带的缓冲区大小，影响并行度
+
+调试模式 (debug_mode)：
+- 默认：false
+- 说明：保留下载过程中的临时瓦片文件（用于排查问题）
+
+三、TIFF 压缩选项（下载时选择）
+
+无压缩 (None)：
+- 读取最快，文件最大
+- 适合临时处理，后续会用 GIS 软件再压缩的场景
+
+LZW 压缩：
+- 无损压缩，通用性好
+- 卫星影像约压缩 5-10%
+- QGIS/ArcGIS 都能直接打开
+
+Deflate 压缩：
+- 无损压缩，压缩率略高于 LZW
+- 卫星影像约压缩 8-15%
+- 推荐日常使用
+
+四、数据存储位置
+
+Windows: %APPDATA%\geo-downloader\
+macOS: ~/Library/Application Support/geo-downloader/
+Linux: ~/.local/share/geo-downloader/
+
+目录下包含：
+- settings.json：设置文件
+- history.json：下载历史
+- tile_cache.db：瓦片缓存数据库
+- temp/：临时下载文件（正常情况下会自动清理）

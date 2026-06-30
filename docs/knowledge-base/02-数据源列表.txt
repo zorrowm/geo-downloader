@@ -1,0 +1,59 @@
+GeoDownloader 数据源列表
+========================
+
+一、内置栅格瓦片数据源
+
+1. OpenStreetMap (OSM)
+   - 最大层级：19
+   - 免费使用，需注明来源
+
+2. ArcGIS 系列
+   - ArcGIS Satellite（卫星影像）：最大层级 19
+   - ArcGIS Terrain（地形图）：最大层级 19
+   - ArcGIS Street（街道图）：最大层级 19
+
+3. Google 系列
+   - Google Satellite（卫星影像）：最大层级 20
+   - Google Map（地图）：最大层级 20
+   - Google Hybrid（混合）：最大层级 20
+
+4. 天地图系列（需要 Token，软件内置默认 Token）
+   - 天地图卫星影像：最大层级 18
+   - 天地图矢量地图：最大层级 18
+   - 天地图卫星注记：最大层级 18
+   - 天地图矢量注记：最大层级 18
+   - 天地图地形注记：最大层级 18
+
+5. 高德地图系列
+   - 高德地图：最大层级 18
+   - 高德卫星影像：最大层级 18
+
+6. Carto 系列
+   - Carto Light（浅色）：最大层级 19
+   - Carto Dark（深色）：最大层级 19
+
+7. OpenTopoMap（地形图）：最大层级 17
+
+8. DEM 高程数据
+   - AWS Terrarium：最大层级 15，PNG 编码的全球高程数据
+
+二、矢量瓦片数据源
+
+1. OpenFreeMap：最大层级 14，免费矢量瓦片
+2. VersaTiles OSM：最大层级 14，开源 OSM 矢量瓦片
+
+三、3D Tiles 数据源
+
+1. Cesium Ion 资产 - 输入 Asset ID + Token 即可下载
+2. Google 3D Tiles - 全球倾斜摄影三维模型
+3. 自定义 tileset.json URL
+
+四、自定义数据源
+
+用户可添加任意 {z}/{x}/{y} 格式的瓦片服务地址：
+- 支持配置子域名轮换
+- 支持自定义 Referer 请求头
+- 支持配置 API Key
+- 支持设置最大层级限制
+
+配置方式：设置页面 → 自定义数据源 → 添加

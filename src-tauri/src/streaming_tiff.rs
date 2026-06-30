@@ -266,23 +266,32 @@ pub fn merge_and_export_streaming_with_budget(
                 }
                 intersections.sort_unstable();
 
+                // 构造本行 inside 掩码（与 DEM 路径一致），环外整像素清零。
+                let mut inside = vec![false; width_u];
+                let mut k = 0;
+                while k + 1 < intersections.len() {
+                    let x0 = (intersections[k].max(0) as usize).min(width_u);
+                    let x1 = (intersections[k + 1].max(0) as usize).min(width_u);
+                    for x in x0..x1 {
+                        if x < inside.len() { inside[x] = true; }
+                    }
+                    k += 2;
+                }
+
                 let row_offset = local_row as usize * width_u * channels_u;
                 for x in 0..width_u {
-                    let idx = row_offset + x * channels_u + 3;
-                    if idx < strip.len() {
-                        strip[idx] = 0;
-                    }
-                }
-                for chunk in intersections.chunks(2) {
-                    if chunk.len() == 2 {
-                        let x_start = (chunk[0].max(0) as usize).min(width_u);
-                        let x_end = (chunk[1].max(0) as usize).min(width_u);
-                        for x in x_start..x_end {
-                            let idx = row_offset + x * channels_u + 3;
-                            if idx < strip.len() {
-                                strip[idx] = 255;
-                            }
-                        }
+                    let di = row_offset + x * channels_u;
+                    if di + channels_u - 1 >= strip.len() { continue; }
+                    if inside[x] {
+                        // 环内：保留影像，标记不透明
+                        strip[di + 3] = 255;
+                    } else {
+                        // 环外：整像素清零（RGB+alpha），与内存版 mask_image_by_polygons 一致。
+                        // 仅清 alpha 会残留整张外接矩形 RGB → 群友报告的「外接矩形/黑边里有数据」。
+                        strip[di] = 0;
+                        strip[di + 1] = 0;
+                        strip[di + 2] = 0;
+                        strip[di + 3] = 0;
                     }
                 }
             }
@@ -831,6 +840,197 @@ mod tests {
 
     fn dummy_bounds() -> TileBounds {
         TileBounds { west: -10.0, south: -10.0, east: 10.0, north: 10.0 }
+    }
+
+    /// 生成一张纯色 256×256 PNG 瓦片（RGB 全非零，便于检测裁剪外是否残留数据）。
+    fn make_solid_tile(r: u8, g: u8, b: u8) -> Vec<u8> {
+        let mut buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(TILE_SIZE, TILE_SIZE);
+        for px in buf.pixels_mut() {
+            *px = Rgb([r, g, b]);
+        }
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(buf)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("encode png");
+        out
+    }
+
+    fn solid_tile_files(
+        x_min: u32, y_min: u32, x_max: u32, y_max: u32, r: u8, g: u8, b: u8,
+    ) -> HashMap<(u32, u32), TileSource> {
+        let mut map = HashMap::new();
+        for y in y_min..=y_max {
+            for x in x_min..=x_max {
+                map.insert((x, y), TileSource::Bytes(Arc::new(make_solid_tile(r, g, b))));
+            }
+        }
+        map
+    }
+
+    /// 回归：多边形裁剪必须真正清除环外像素，而不是仅把 alpha 置 0 却保留 RGB。
+    /// 群友报告「下载下来的是外接矩形，数据有黑边，黑边里有数据」——根因是流式
+    /// 掩码只清 alpha、RGB 残留整张外接矩形影像。环外像素应整体清零 (0,0,0,0)。
+    #[test]
+    fn rgb_streaming_mask_zeroes_pixels_outside_polygon() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 2×2 瓦片纯色 (50,100,150)，导出范围 west-10/south-10/east10/north10
+        let tiles = solid_tile_files(0, 0, 1, 1, 50, 100, 150);
+        let bounds = dummy_bounds();
+
+        // 多边形 = 左上象限（lng[-10,0]、lat[0,10]）→ 像素方块 (0,0)-(256,256)
+        let poly = vec![vec![
+            PolygonPoint { lat: 10.0, lng: -10.0 },
+            PolygonPoint { lat: 10.0, lng: 0.0 },
+            PolygonPoint { lat: 0.0, lng: 0.0 },
+            PolygonPoint { lat: 0.0, lng: -10.0 },
+        ]];
+
+        let path = tmp.path().join("mask.tif");
+        // compression=none → strip 未压缩、紧跟 16 字节文件头连续排布，可直接按偏移读回
+        merge_and_export_streaming_with_budget(
+            &tiles, 0, 0, 1, 1, &bounds, &path, "none", Some(&poly), 64 * 1024 * 1024,
+        )
+        .unwrap();
+
+        let raw = std::fs::read(&path).unwrap();
+        let width = 2 * TILE_SIZE as usize; // 512
+        let strip_bytes = width * TILE_SIZE as usize * 4; // 一条未压缩 RGBA strip
+        let px = |x: usize, y: usize| -> [u8; 4] {
+            let strip_idx = y / TILE_SIZE as usize;
+            let local_row = y % TILE_SIZE as usize;
+            let off = 16 + strip_idx * strip_bytes + (local_row * width + x) * 4;
+            [raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]
+        };
+
+        // 多边形内：保留真实影像且不透明
+        assert_eq!(px(100, 100), [50, 100, 150, 255], "多边形内像素应保留影像且不透明");
+        // 多边形外：必须整体清零，而非 RGB 残留 + alpha=0
+        assert_eq!(
+            px(400, 400), [0, 0, 0, 0],
+            "多边形外像素必须清零；RGB 残留即「外接矩形/黑边里有数据」回归"
+        );
+    }
+
+    /// 端到端：用群友「测试黑边一个圆.shp」的真实几何（92 顶点近似圆，WGS84，
+    /// 巴西 lng≈-54.5 / lat≈-5.6）跑一遍裁剪导出。验证修复对真实凸多边形数据有效：
+    /// 形状内保留影像、外接矩形四角必须清零（不残留 RGB）。
+    #[test]
+    fn rgb_streaming_mask_real_circle_shapefile() {
+        // 真实顶点（lat, lng），取自用户上传的 shapefile，闭合环。
+        let ring: Vec<PolygonPoint> = [
+            (-5.613039, -54.545762), (-5.611840, -54.545720), (-5.610646, -54.545596),
+            (-5.609464, -54.545390), (-5.608299, -54.545103), (-5.607156, -54.544736),
+            (-5.606041, -54.544291), (-5.604960, -54.543770), (-5.603917, -54.543176),
+            (-5.602918, -54.542512), (-5.601967, -54.541780), (-5.601068, -54.540984),
+            (-5.600227, -54.540128), (-5.599447, -54.539216), (-5.598731, -54.538252),
+            (-5.598084, -54.537242), (-5.597508, -54.536189), (-5.597006, -54.535099),
+            (-5.596580, -54.533976), (-5.596233, -54.532828), (-5.595966, -54.531657),
+            (-5.595781, -54.530472), (-5.595677, -54.529276), (-5.595656, -54.528076),
+            (-5.595719, -54.526877), (-5.595863, -54.525686), (-5.596090, -54.524507),
+            (-5.596397, -54.523347), (-5.596784, -54.522211), (-5.597248, -54.521104),
+            (-5.597787, -54.520032), (-5.598399, -54.519000), (-5.599081, -54.518012),
+            (-5.599829, -54.517074), (-5.600640, -54.516189), (-5.601511, -54.515363),
+            (-5.602436, -54.514599), (-5.603412, -54.513900), (-5.604433, -54.513270),
+            (-5.605496, -54.512712), (-5.606595, -54.512229), (-5.607724, -54.511823),
+            (-5.608879, -54.511496), (-5.610053, -54.511249), (-5.611242, -54.511084),
+            (-5.612439, -54.511001), (-5.613639, -54.511001), (-5.614837, -54.511084),
+            (-5.616025, -54.511249), (-5.617200, -54.511496), (-5.618355, -54.511823),
+            (-5.619484, -54.512229), (-5.620583, -54.512712), (-5.621645, -54.513270),
+            (-5.622667, -54.513900), (-5.623643, -54.514599), (-5.624568, -54.515363),
+            (-5.625438, -54.516189), (-5.626250, -54.517074), (-5.626998, -54.518012),
+            (-5.627680, -54.519000), (-5.628292, -54.520032), (-5.628831, -54.521104),
+            (-5.629295, -54.522211), (-5.629682, -54.523347), (-5.629989, -54.524507),
+            (-5.630216, -54.525686), (-5.630360, -54.526877), (-5.630422, -54.528076),
+            (-5.630402, -54.529276), (-5.630298, -54.530472), (-5.630112, -54.531657),
+            (-5.629845, -54.532828), (-5.629498, -54.533976), (-5.629073, -54.535099),
+            (-5.628571, -54.536189), (-5.627995, -54.537242), (-5.627347, -54.538252),
+            (-5.626632, -54.539216), (-5.625852, -54.540128), (-5.625010, -54.540984),
+            (-5.624112, -54.541780), (-5.623161, -54.542512), (-5.622162, -54.543176),
+            (-5.621119, -54.543770), (-5.620037, -54.544291), (-5.618923, -54.544736),
+            (-5.617780, -54.545103), (-5.616615, -54.545390), (-5.615433, -54.545596),
+            (-5.614239, -54.545720), (-5.613039, -54.545762),
+        ]
+        .iter()
+        .map(|&(lat, lng)| PolygonPoint { lat, lng })
+        .collect();
+        let poly = vec![ring];
+
+        // 导出范围 = 圆的外接矩形；单瓦片纯色填充。
+        let bounds = TileBounds {
+            west: -54.545762, east: -54.511001, south: -5.630422, north: -5.595656,
+        };
+        let tiles = solid_tile_files(0, 0, 0, 0, 50, 100, 150);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("circle.tif");
+        merge_and_export_streaming_with_budget(
+            &tiles, 0, 0, 0, 0, &bounds, &path, "none", Some(&poly), 64 * 1024 * 1024,
+        )
+        .unwrap();
+
+        let raw = std::fs::read(&path).unwrap();
+        let width = TILE_SIZE as usize; // 256
+        let px = |x: usize, y: usize| -> [u8; 4] {
+            let off = 16 + (y * width + x) * 4;
+            [raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]
+        };
+
+        // 圆心附近：保留影像且不透明
+        assert_eq!(px(128, 128), [50, 100, 150, 255], "圆内像素应保留影像");
+        // 外接矩形四角：必须清零（这正是用户看到的「黑边」位置）
+        for (cx, cy) in [(2usize, 2usize), (253, 2), (2, 253), (253, 253)] {
+            assert_eq!(
+                px(cx, cy), [0, 0, 0, 0],
+                "外接矩形角点 ({cx},{cy}) 必须清零；残留 RGB 即「黑边里有数据」"
+            );
+        }
+    }
+
+    /// 端到端：用群友「测试黑边一个多边形.shp」的真实几何（7 顶点凹多边形，WGS84）
+    /// 模拟「拆分」模式——该要素用自己的 bbox 作导出范围、自己的环作裁剪。
+    /// 验证修复对真实不规则多边形有效：内部保留影像、外接矩形四角清零。
+    #[test]
+    fn rgb_streaming_mask_real_polygon_shapefile() {
+        // 真实顶点（lat, lng），闭合环。
+        let ring: Vec<PolygonPoint> = [
+            (-5.611263, -54.539796), (-5.605561, -54.532162), (-5.605561, -54.523437),
+            (-5.612198, -54.520633), (-5.618679, -54.518888), (-5.622917, -54.524248),
+            (-5.623633, -54.538144), (-5.611263, -54.539796),
+        ]
+        .iter()
+        .map(|&(lat, lng)| PolygonPoint { lat, lng })
+        .collect();
+        let poly = vec![ring];
+
+        // 导出范围 = 多边形自己的外接矩形（拆分模式：每个要素用各自 bbox）。
+        let bounds = TileBounds {
+            west: -54.539796, east: -54.518888, south: -5.623633, north: -5.605561,
+        };
+        let tiles = solid_tile_files(0, 0, 0, 0, 200, 60, 30);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("polygon.tif");
+        merge_and_export_streaming_with_budget(
+            &tiles, 0, 0, 0, 0, &bounds, &path, "none", Some(&poly), 64 * 1024 * 1024,
+        )
+        .unwrap();
+
+        let raw = std::fs::read(&path).unwrap();
+        let width = TILE_SIZE as usize; // 256
+        let px = |x: usize, y: usize| -> [u8; 4] {
+            let off = 16 + (y * width + x) * 4;
+            [raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]
+        };
+
+        // 稳健内部点（由 masker 精确变换 + 射线法求得，四邻均在环内）
+        assert_eq!(px(92, 8), [200, 60, 30, 255], "多边形内像素应保留影像");
+        // 外接矩形四角：必须清零
+        for (cx, cy) in [(2usize, 2usize), (253, 2), (2, 253), (253, 253)] {
+            assert_eq!(
+                px(cx, cy), [0, 0, 0, 0],
+                "外接矩形角点 ({cx},{cy}) 必须清零；残留 RGB 即「黑边里有数据」"
+            );
+        }
     }
 
     /// 不同流水线 budget 必须输出字节级一致的 GeoTIFF。

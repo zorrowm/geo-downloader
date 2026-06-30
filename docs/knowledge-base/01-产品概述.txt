@@ -1,0 +1,31 @@
+GeoDownloader 产品概述
+=======================
+
+GeoDownloader 是一款开源免费的地理空间数据下载与导出桌面工具，由开发者高鹏斌（老高）开发维护。
+
+基本信息：
+- 技术栈：Rust + Tauri 2.x + React 19
+- 安装包大小：约 10MB
+- 支持平台：Windows x64、macOS（arm64 + x64）、Linux（deb/AppImage）
+- 开源协议：MIT License
+- GitHub 仓库：https://github.com/gaopengbin/geo-downloader
+
+下载方式：
+- 官网（国内可访问）：https://geodownloader.pages.dev
+- 国内高速下载：https://laogao.xyz/packages/latest/
+- GitHub Releases：https://github.com/gaopengbin/geo-downloader/releases
+
+核心功能模块：
+1. 2D 影像瓦片下载 - 支持天地图、高德、ArcGIS、Google、OSM 等 30+ 数据源，导出 GeoTIFF/PNG/JPEG
+2. 矢量瓦片下载 - 支持 Mapbox Vector Tile，导出 MBTiles/GeoPackage/原始 PBF
+3. 3D Tiles 下载 - 支持 Cesium Ion、Google 3D Tiles，可离线预览
+4. DEM 高程数据下载 - 支持 AWS Terrarium 全球高程
+5. Esri Wayback 历史影像 - 按时间范围筛选历史卫星影像
+6. 浏览即缓存 - 地图浏览时自动缓存瓦片，下载时复用
+
+技术特点：
+- 并行下载：支持 10-100 并发线程
+- 断点续传：程序崩溃后自动恢复未完成任务
+- 流式导出：内存占用恒定，支持超大区域导出
+- 多格式支持：GeoTIFF、PNG、JPEG、MBTiles、GeoPackage、原始瓦片目录
+- 区域选择：支持 Shapefile、GeoJSON、KML、行政区划选择、手绘矩形/多边形

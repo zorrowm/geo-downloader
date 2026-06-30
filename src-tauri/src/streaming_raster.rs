@@ -141,24 +141,31 @@ pub fn merge_and_export_streaming_png(
                 }
                 intersections.sort_unstable();
 
-                // 先清 alpha，再填充多边形内部
+                // 构造本行 inside 掩码，环外整像素清零（RGB+alpha）。
+                let mut inside = vec![false; width as usize];
+                let mut k = 0;
+                while k + 1 < intersections.len() {
+                    let x0 = (intersections[k].max(0) as usize).min(width as usize);
+                    let x1 = (intersections[k + 1].max(0) as usize).min(width as usize);
+                    for x in x0..x1 {
+                        if x < inside.len() { inside[x] = true; }
+                    }
+                    k += 2;
+                }
+
                 let row_offset = local_row as usize * width as usize * ch;
                 for x in 0..width as usize {
-                    let idx = row_offset + x * ch + 3;
-                    if idx < strip.len() {
-                        strip[idx] = 0;
-                    }
-                }
-                for chunk in intersections.chunks(2) {
-                    if chunk.len() == 2 {
-                        let x_start = (chunk[0].max(0) as usize).min(width as usize);
-                        let x_end = (chunk[1].max(0) as usize).min(width as usize);
-                        for x in x_start..x_end {
-                            let idx = row_offset + x * ch + 3;
-                            if idx < strip.len() {
-                                strip[idx] = 255;
-                            }
-                        }
+                    let di = row_offset + x * ch;
+                    if di + ch - 1 >= strip.len() { continue; }
+                    if inside[x] {
+                        strip[di + 3] = 255;
+                    } else {
+                        // 环外整像素清零；仅清 alpha 会残留整张外接矩形 RGB
+                        // → 群友报告的「外接矩形/黑边里有数据」。
+                        strip[di] = 0;
+                        strip[di + 1] = 0;
+                        strip[di + 2] = 0;
+                        strip[di + 3] = 0;
                     }
                 }
             }
